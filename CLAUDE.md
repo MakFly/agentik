@@ -73,13 +73,13 @@ Invariants (tests enforce them):
   agentik run    stalled task,        │                 … RELATED SESSIONS
                  backend switch,      ├─ recordIncident  KNOWN FAILURES (unresolved, seen ≥2, this workspace)
                  blocked / rejected   │   (src/incidents.ts)   ⚠ codex@opencodex · adapter_eof … · seen 4× · last … · fix: …
-  agentik harvest --status failed|    │                 top-3, ≤100 chars/line, seen=1 prints nothing
+  agentik harvest --status failed|    │                 top-3, symptom ≤60 chars, seen=1 prints nothing
                  partial --cause TEXT ┘
         │
         ▼  table `incidents` in sessions.sqlite   FTS5 unicode61 + trigram over goal/symptom/cause/fix
   dedup key = (workspace, harness, symptom lowercased, spaces collapsed, digits→#, 200 chars)
      same key, unresolved  → seen += 1, last_at, errors ∪ (cap 20)      resolved → a NEW row
-     symptom/errors/cause/fix masked at WRITE (memoryContentProblem → "[BLOCKED: …]"), never a raw token
+     goal/symptom/errors/cause/fix masked at WRITE (memoryContentProblem → "[BLOCKED: …]"), never a raw token
         │
         ▼  agentik postmortem [--workspace] [--since 7d|ISO] [--all] [--json]   grouped by cause, uncategorised last
            agentik postmortem classify <id> "<cause>" | resolve <id> "<fix>" | review <id>
@@ -97,7 +97,8 @@ Invariants (tests enforce them):
   `overridden` are the human's decisions, not failures).
 - `harvest --status failed|partial` needs `--cause` (exit 2 otherwise): the cause is the incident's symptom.
 - Unresolved and seen ≥2 ⇒ in `agentik context` as KNOWN FAILURES; seen once is silent (log only).
-- Secrets are masked at write time in the incident log; the disk never holds the token.
+- Secrets are masked at write time in the incident log (goal included); the disk never holds the token.
+- Recording an incident never changes the exit code of `spawn` nor breaks `harvest` / `run` (try/catch, one stderr line).
 - Code never writes MEMORY.md, a cause, or a fix on its own: the review (a model) or a human does.
   The reviewer's memory guidance routes transient failures to the incident log, not to memory.
 

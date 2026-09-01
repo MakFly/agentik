@@ -85,7 +85,7 @@ describe("incidents — the failure log (same sessions.sqlite, FTS5 unicode61 + 
     const token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4";
     const rec = await recordIncident(
       {
-        goal: "push the release",
+        goal: `push the release with ${token}`,
         harness: "codex",
         errors: [`auth failed with token ${token}`, "second error"],
         symptom: `bearer: ${token} rejected by the API`,
@@ -97,6 +97,7 @@ describe("incidents — the failure log (same sessions.sqlite, FTS5 unicode61 + 
     expect(rec.errors[1]).toBe("second error");
     expect(rec.symptom).toMatch(/^\[BLOCKED: looks like a secret/);
     expect(rec.cause).toMatch(/^\[BLOCKED:/);
+    expect(rec.goal).toMatch(/^\[BLOCKED:/);
     const raw = await Bun.file(join(home, "sessions.sqlite")).text();
     expect(raw).not.toContain(token);
     const fixed = await resolveIncident(rec.id, `export API_KEY=${token}`, { home });

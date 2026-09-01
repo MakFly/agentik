@@ -3,7 +3,7 @@ import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AvailabilityMap, HarnessName } from "../src/availability.ts";
 import { main, parseSince, recordRunIncidents } from "../src/cli.ts";
-import { formatIncidentLine, getIncident, listIncidents, recordIncident, resolveIncident } from "../src/incidents.ts";
+import { classifyIncident, formatIncidentLine, getIncident, listIncidents, recordIncident, resolveIncident } from "../src/incidents.ts";
 import { listSessions } from "../src/sessions.ts";
 import { makeWorkspace } from "./helpers.ts";
 
@@ -153,6 +153,23 @@ describe("spawn: every non-zero exit leaves an incident", () => {
     expect(inc.goal).toBe("implement the thing");
     expect(inc.symptom).toContain("finished without calling a single tool");
   }, 30_000);
+
+  test("a home that cannot be written keeps the verdict: exit 125 and a 'could not record incident' line", async () => {
+    const home = await makeWorkspace("inc-spawn-ro-home-");
+    const workspace = await makeWorkspace("inc-spawn-ro-ws-");
+    const bin = join(home, "fakebin");
+    await fakeClaudeOnPath(bin);
+    await writeFile(join(home, "backends.json"), JSON.stringify(availability({ claude: true })), "utf8");
+    await chmod(home, 0o555);
+    try {
+      const res = await spawnCli(["spawn", "--harness", "claude", "--require-tools", "--workspace", workspace, "--agentik-home", home, "--timeout", "30", "implement the thing"], bin);
+      expect(res.code).toBe(125);
+      expect(res.stderr).toContain("agentik spawn: could not record incident:");
+      expect(res.stderr).not.toContain("incident #");
+    } finally {
+      await chmod(home, 0o755);
+    }
+  }, 30_000);
 });
 
 describe("run: stalled tasks, backend switches and a blocked/rejected run are incidents", () => {
@@ -242,16 +259,19 @@ describe("context: KNOWN FAILURES only for unresolved incidents seen ≥2 on thi
     expect((await captureStdout(() => main(argv))).out).not.toContain("KNOWN FAILURES");
   });
 
-  test("a long symptom is cut to 100 chars with … so the section stays under ~300 chars", async () => {
+  test("a long symptom is cut to 60 chars with …; seen / last / fix stay visible on the line", async () => {
     const home = await makeWorkspace("inc-context-long-");
     const symptom = `codex ${"very ".repeat(40)}long failure`;
-    for (let i = 0; i < 2; i++) await recordIncident({ goal: "build the site", workspace: "/tmp/ctx", harness: "codex", symptom }, { home });
+    let rec;
+    for (let i = 0; i < 2; i++) rec = await recordIncident({ goal: "build the site", workspace: "/tmp/ctx", harness: "codex", symptom }, { home });
+    await classifyIncident(rec!.id, "known cause", { home });
     const { out } = await captureStdout(() => main(["context", "build the site", "--workspace", "/tmp/ctx", "--agentik-home", home]));
     const line = out.split("\n").find((l) => l.startsWith("- #1 ⚠"))!;
     expect(line).toBeDefined();
-    expect([...line].length).toBeLessThanOrEqual(100);
-    expect([...line].length).toBeGreaterThan(90);
-    expect(line.endsWith("…")).toBe(true);
+    expect(line).toContain("codex very very");
+    expect(line).toContain("… · seen 2× · last ");
+    expect(line).not.toContain("long failure");
+    expect([...line].length).toBeLessThanOrEqual(130);
   });
 });
 

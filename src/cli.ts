@@ -973,18 +973,23 @@ async function harvestCmd(args: string[]): Promise<number> {
   console.log(`memory: ${harvested.memoryLayer} #${harvested.sessionId}`);
   if (status !== "completed") {
     // The conductor named the cause; that is the symptom until a postmortem classifies it.
-    const rec = await recordIncident(
-      {
-        goal: harvestGoal,
-        workspace,
-        profile: flags.profile ?? process.env.AGENTIK_PROFILE ?? "default",
-        harness: undefined,
-        errors: [],
-        symptom: cause,
-      },
-      { home: homeFor(flags) },
-    );
-    console.log(`incident: #${rec.id} recorded (seen ${rec.seen}×) — agentik postmortem review ${rec.id}`);
+    // The session is already recorded; a failure to log the incident must not undo that.
+    try {
+      const rec = await recordIncident(
+        {
+          goal: harvestGoal,
+          workspace,
+          profile: flags.profile ?? process.env.AGENTIK_PROFILE ?? "default",
+          harness: undefined,
+          errors: [],
+          symptom: cause,
+        },
+        { home: homeFor(flags) },
+      );
+      console.log(`incident: #${rec.id} recorded (seen ${rec.seen}×) — agentik postmortem review ${rec.id}`);
+    } catch (err) {
+      console.error(`agentik harvest: could not record incident: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
   if (flags.transcript && !flags.noReview) {
     // The conductor wrote down what happened; hand it to the reviewer in the same call.

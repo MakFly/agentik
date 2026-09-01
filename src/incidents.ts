@@ -152,7 +152,7 @@ export async function recordIncident(input: IncidentInput, opts?: { home?: strin
       `INSERT INTO incidents (goal, workspace, profile, harness, backend, exit_code, stop_reason, errors, symptom, cause, fix, seen, first_at, last_at, resolved_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL)`,
       [
-        input.goal.replace(/\s+/g, " ").trim(),
+        maskIncidentText(input.goal.replace(/\s+/g, " ").trim()),
         workspace,
         input.profile ?? "",
         harness,

@@ -20,9 +20,12 @@ export interface SkillIndexEntry {
 /** Descriptions longer than this are cut to 57 chars + "…" in the index. */
 export const SKILL_DESCRIPTION_MAX = 60;
 
-/** KNOWN FAILURES: at most 3 lines of 100 chars — a warning, not a report. */
+/**
+ * KNOWN FAILURES: at most 3 lines — a warning, not a report. The symptom is what gets cut, so
+ * `seen N×`, `last` and `fix:` (the parts the conductor acts on) always survive on the line.
+ */
 export const KNOWN_FAILURES_MAX = 3;
-export const KNOWN_FAILURE_LINE_MAX = 100;
+export const KNOWN_FAILURE_SYMPTOM_MAX = 60;
 
 export async function skillIndex(opts?: { home?: string }): Promise<SkillIndexEntry[]> {
   const paths = memoryPaths(agentikHome(opts?.home));
@@ -100,7 +103,9 @@ export async function buildContext(opts: {
   if (failures.length) {
     out.push("");
     out.push("KNOWN FAILURES (unresolved, seen ≥2, this workspace)");
-    for (const f of failures) out.push(truncateDescription(`- #${f.id} ${formatIncidentHit(f)}`, KNOWN_FAILURE_LINE_MAX));
+    for (const f of failures) {
+      out.push(`- #${f.id} ${formatIncidentHit({ ...f, symptom: truncateDescription(f.symptom, KNOWN_FAILURE_SYMPTOM_MAX) })}`);
+    }
   }
   return `${out.join("\n")}\n`;
 }
