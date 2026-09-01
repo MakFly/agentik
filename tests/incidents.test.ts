@@ -104,6 +104,27 @@ describe("incidents — the failure log (same sessions.sqlite, FTS5 unicode61 + 
     expect(fixed?.fix).toMatch(/^\[BLOCKED:/);
   });
 
+  test("an anthropic key in the symptom is masked at write: the raw sk-ant token never reaches sessions.sqlite", async () => {
+    const home = await makeWorkspace("inc-secret-ant-");
+    const token = "sk-ant-api03-" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_AbCdEfGhIj";
+    const rec = await recordIncident(
+      {
+        goal: "call the API from the worker",
+        harness: "claude",
+        errors: ["401 unauthorized"],
+        symptom: `authentication_error: invalid x-api-key ${token}`,
+      },
+      { home },
+    );
+    expect(rec.symptom).toBe("[BLOCKED: looks like a secret (anthropic_key)]");
+    expect(rec.goal).toBe("call the API from the worker");
+    expect(rec.errors).toEqual(["401 unauthorized"]);
+    const raw = await Bun.file(join(home, "sessions.sqlite")).text();
+    expect(raw).not.toContain(token);
+    expect(raw).not.toContain("sk-ant-api03");
+    expect((await getIncident(rec.id, { home }))?.symptom).toBe("[BLOCKED: looks like a secret (anthropic_key)]");
+  });
+
   test("FTS: « clôturer » is found via cloturer and the prefix migrat; a token hit outranks a fuzzy one", async () => {
     const home = await makeWorkspace("inc-fts-");
     await recordIncident({ goal: "Clôturer le RAF migration 0021", harness: "codex", symptom: "codex exited 1" }, { home });
