@@ -376,6 +376,11 @@ export function parseLegacySession(text: string): SessionInput {
 
 // ---------------------------------------------------------------------------------------------
 
+/** The shared store: sessions.sqlite with the `sessions` schema in place (incidents.ts adds its own). */
+export async function openSessionsDb(home: string): Promise<Database> {
+  return openSessions(home);
+}
+
 async function openSessions(home: string): Promise<Database> {
   await mkdir(home, { recursive: true });
   const db = new Database(memoryPaths(home).sessionsDb, { create: true });
