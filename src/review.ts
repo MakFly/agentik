@@ -1,7 +1,7 @@
 import { agentikHome } from "./home.ts";
 import { recallHot } from "./memory.ts";
 import { formatSessionHit, recordSession, searchSessions } from "./sessions.ts";
-import type { RunReport } from "./types.ts";
+import type { RunReport, RunStatus } from "./types.ts";
 
 export interface ReviewResult {
   sessionId: number;
@@ -53,7 +53,10 @@ export async function recallBeforeRun(opts: {
   return hits;
 }
 
-export type ReviewReport = Pick<RunReport, "status" | "executedTools" | "artifacts"> &
+/** A run status, or what the conductor declares by hand: `agentik harvest --status failed|partial`. */
+export type SessionStatus = RunStatus | "failed" | "partial";
+
+export type ReviewReport = { status: SessionStatus } & Pick<RunReport, "executedTools" | "artifacts"> &
   Partial<Pick<RunReport, "stalledTasks" | "backendSwitches">>;
 
 /** One useful line: status, artifacts, and stalled / backend switches when the report has them. */
