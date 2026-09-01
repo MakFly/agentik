@@ -208,11 +208,54 @@ export interface MigrationResult {
 
 const LEGACY_LINE = /^- \(session\) (.*)$/;
 
+/**
+ * Move any `- (session) …` lines still sitting in MEMORY.md into sessions.sqlite and rewrite
+ * HOT without them. Returns how many were moved (0 = file untouched, no backup taken).
+ */
+export async function sweepLegacySessionLines(home: string): Promise<number> {
+  const paths = memoryPaths(home);
+  if (!existsSync(paths.hot)) return 0;
+  const body = await readFile(paths.hot, "utf8");
+  const kept: string[] = [];
+  const moved: SessionInput[] = [];
+  for (const line of body.split("\n")) {
+    const m = LEGACY_LINE.exec(line);
+    if (m) moved.push(parseLegacySession(m[1]));
+    else kept.push(line);
+  }
+  if (moved.length === 0) return 0;
+  const stamp = new Date().toISOString();
+  const db = await openSessions(home);
+  try {
+    const exists = db.query<{ id: number }, [string, string, string]>(
+      "SELECT id FROM sessions WHERE workspace = '' AND goal = ? AND status = ? AND artifacts = ?",
+    );
+    for (const s of moved) {
+      const artifacts = JSON.stringify(s.artifacts ?? []);
+      if (exists.get(s.goal, s.status, artifacts)) continue;
+      insertSession(db, { ...s, workspace: "", profile: "" }, stamp);
+    }
+  } finally {
+    db.close();
+  }
+  await copyFile(paths.hot, `${paths.hot}.bak.${stamp.replace(/[:.]/g, "-")}`);
+  // Drop the blank lines the removed entries leave behind, keep the § structure intact.
+  const cleaned = kept.join("\n").replace(/\n{3,}/g, "\n\n").replace(/\n+§/g, "\n§");
+  await writeFile(paths.hot, cleaned.endsWith("\n") ? cleaned : `${cleaned}\n`, "utf8");
+  return moved.length;
+}
+
 export async function migrateLegacyMemory(opts?: { home?: string }): Promise<MigrationResult> {
   const home = agentikHome(opts?.home);
   const paths = memoryPaths(home);
   const none: MigrationResult = { ran: false, fromHot: 0, fromNotes: 0 };
-  if (existsSync(paths.migratedMarker)) return none;
+  if (existsSync(paths.migratedMarker)) {
+    // The one-shot import is done, but a client running older code can still append
+    // `- (session)` lines to HOT afterwards. Sweep them out on every open; it is a no-op
+    // when there is nothing to sweep.
+    const swept = await sweepLegacySessionLines(home);
+    return swept ? { ran: true, fromHot: swept, fromNotes: 0 } : none;
+  }
   const hasHot = existsSync(paths.hot);
   const hasNotes = existsSync(paths.db);
   if (!hasHot && !hasNotes) return none;
@@ -270,7 +313,7 @@ export async function migrateLegacyMemory(opts?: { home?: string }): Promise<Mig
       try {
         for (const s of imported) {
           const artifacts = JSON.stringify(s.artifacts ?? []);
-          const key = `${s.goal} ${s.status} ${artifacts}`;
+          const key = `${s.goal}\u0000${s.status}\u0000${artifacts}`;
           if (seen.has(key)) continue;
           seen.add(key);
           if (exists.get(s.goal, s.status, artifacts)) continue;
