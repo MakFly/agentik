@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   autoCycle,
@@ -75,6 +75,40 @@ describe("spawnCapture reports a kill as a kill", () => {
     expect(res.exitCode).toBe(0);
     expect(res.stdout.trim()).toBe("done");
   });
+
+  test("a timeout removes descendants of the worker process", async () => {
+    // Negative-PID signalling is a POSIX feature; Windows keeps Bun's direct
+    // subprocess fallback and cannot provide this invariant.
+    if (process.platform === "win32") return;
+    const temp = await mkdtemp("/tmp/agentik-descendant-");
+    const pidFile = join(temp, "child.pid");
+    const source = [
+      'const { spawn } = require("node:child_process");',
+      'const fs = require("node:fs");',
+      'const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 60000)"], { stdio: "ignore" });',
+      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));`,
+      'process.on("SIGTERM", () => {});',
+      'setInterval(() => {}, 60000);',
+    ].join(" ");
+    try {
+      const res = await spawnCapture("bun", ["-e", source], 500);
+      expect(res.timedOut).toBe(true);
+      const pid = Number(await readFile(pidFile, "utf8"));
+      let alive = true;
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        try {
+          process.kill(pid, 0);
+        } catch {
+          alive = false;
+          break;
+        }
+        await Bun.sleep(50);
+      }
+      expect(alive).toBe(false);
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
 
 describe("the auth probe reads each CLI's real output shape", () => {

@@ -683,6 +683,44 @@ export interface SpawnResult {
   signal: string | null;
 }
 
+type PipeSpawnOptions = { stdout: "pipe"; stderr: "pipe"; cwd?: string };
+type InheritSpawnOptions = { stdout: "inherit"; stderr: "inherit"; cwd?: string };
+
+/**
+ * Start workers in their own process group on POSIX hosts.
+ *
+ * Foreign harnesses are allowed to start MCP servers, browsers, or other helper
+ * processes. Killing only the top-level CLI leaves those descendants behind and
+ * is especially painful after a timeout. `setsid` gives each worker a private
+ * process group; Windows (or hosts without `setsid`) keeps the existing direct
+ * spawn behaviour and falls back to killing the subprocess itself.
+ */
+function spawnManaged(cmd: string, args: string[], options: PipeSpawnOptions): Bun.ReadableSubprocess;
+function spawnManaged(cmd: string, args: string[], options: InheritSpawnOptions): Bun.Subprocess<any, "inherit", "inherit">;
+function spawnManaged(
+  cmd: string,
+  args: string[],
+  options: PipeSpawnOptions | InheritSpawnOptions,
+): Bun.Subprocess {
+  const setsid = process.platform === "win32" ? undefined : Bun.which("setsid");
+  if (setsid) return Bun.spawn([setsid, "--", cmd, ...args], options);
+  return Bun.spawn([cmd, ...args], options);
+}
+
+/** Terminate a worker and every descendant in its private process group. */
+function killManaged(proc: Bun.Subprocess, signal: "SIGTERM" | "SIGKILL" = "SIGTERM"): void {
+  const pid = proc.pid;
+  if (process.platform !== "win32" && typeof pid === "number" && pid > 1 && Bun.which("setsid")) {
+    try {
+      process.kill(-pid, signal);
+      return;
+    } catch {
+      // The process may have exited between the timeout and this signal.
+    }
+  }
+  proc.kill(signal);
+}
+
 /**
  * Same bound and `timedOut` semantics as `spawnCapture`, but stdout is decoded line by line
  * as it arrives. Needed to read a harness's NDJSON event stream live instead of waiting for a
@@ -695,15 +733,15 @@ export async function spawnLines(
   cwd: string | undefined,
   onLine: (line: string) => void,
 ): Promise<SpawnResult> {
-  const proc = Bun.spawn([cmd, ...args], { stdout: "pipe", stderr: "pipe", cwd });
+  const proc = spawnManaged(cmd, args, { stdout: "pipe", stderr: "pipe", cwd });
   let timedOut = false;
   let term: ReturnType<typeof setTimeout> | undefined;
   let hard: ReturnType<typeof setTimeout> | undefined;
   if (timeoutMs > 0) {
     term = setTimeout(() => {
       timedOut = true;
-      proc.kill();
-      hard = setTimeout(() => proc.kill("SIGKILL"), KILL_GRACE_MS);
+      killManaged(proc);
+      hard = setTimeout(() => killManaged(proc, "SIGKILL"), KILL_GRACE_MS);
     }, timeoutMs);
   }
   const decoder = new TextDecoder();
@@ -758,16 +796,20 @@ export async function spawnCapture(
   cwd?: string,
   opts: SpawnOptions = {},
 ): Promise<SpawnResult> {
-  const stdio = opts.stream ? ("inherit" as const) : ("pipe" as const);
-  const proc = Bun.spawn([cmd, ...args], { stdout: stdio, stderr: stdio, cwd });
+  // The stream path intentionally has numeric stdout/stderr handles. The
+  // conditional reads below never touch them; keep the pipe subtype here so
+  // TypeScript can model the non-stream branch without weakening Bun's types.
+  const proc = (opts.stream
+    ? spawnManaged(cmd, args, { stdout: "inherit", stderr: "inherit", cwd })
+    : spawnManaged(cmd, args, { stdout: "pipe", stderr: "pipe", cwd })) as Bun.ReadableSubprocess;
   let timedOut = false;
   let term: ReturnType<typeof setTimeout> | undefined;
   let hard: ReturnType<typeof setTimeout> | undefined;
   if (timeoutMs > 0) {
     term = setTimeout(() => {
       timedOut = true;
-      proc.kill();
-      hard = setTimeout(() => proc.kill("SIGKILL"), KILL_GRACE_MS);
+      killManaged(proc);
+      hard = setTimeout(() => killManaged(proc, "SIGKILL"), KILL_GRACE_MS);
     }, timeoutMs);
   }
   const [stdout, stderr, exitCode] = await Promise.all([
