@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { memoryAdd, MEMORY_CAP, readEntries } from "../src/memory-store.ts";
 import { Orchestrator } from "../src/orchestrator.ts";
-import { POSTMORTEM_GUIDANCE, reviewSystemPrompt, runReview } from "../src/reviewer.ts";
+import { POSTMORTEM_GUIDANCE, reviewSystemPrompt, runReview, WORKSPACE_INSTRUCTIONS_CAP, workspaceInstructions } from "../src/reviewer.ts";
 import { getIncident, listIncidents, recordIncident } from "../src/incidents.ts";
 import { executeTool, newReviewState } from "../src/tools.ts";
 import { makeWorkspace } from "./helpers.ts";
@@ -137,6 +137,53 @@ describe("runReview: bounded, judged, honest about what it did", () => {
     const dead: Backend = { id: "dead", async complete() { throw new Error("gone"); } };
     const out2 = await runReview({ goal: "g", transcript: "t", workspace: "/tmp", home, backend: dead });
     expect(out2.stoppedBecause).toBe("backend_error");
+  });
+
+  test("the workspace's CLAUDE.md is DATA for the reviewer, right after the skills index; none → no envelope", async () => {
+    const home = await makeWorkspace("review-claudemd-home-");
+    const ws = await makeWorkspace("review-claudemd-ws-");
+    await Bun.write(join(ws, "CLAUDE.md"), "# project\nTests: `bun test`. Typecheck: `bunx tsc --noEmit`.");
+    const backend = new ScriptedReviewer([{ text: "nothing", toolCalls: [] }]);
+    await runReview({ goal: "g", transcript: "t", workspace: ws, home, backend });
+    const req = backend.seen[0];
+    const origins = req.envelopes.map((e) => e.origin);
+    expect(origins).toEqual(["memory:snapshot", "user:snapshot", "skills:index", "workspace:claude-md", "run:transcript"]);
+    const env = req.envelopes.find((e) => e.origin === "workspace:claude-md")!;
+    expect(env.body).toBe("# project\nTests: `bun test`. Typecheck: `bunx tsc --noEmit`.");
+    expect(env.trust).toBe("untrusted");
+    expect(env.channel).toBe("retrieved");
+    // The guidance tells the reviewer not to copy it into memory.
+    expect(req.system).toContain("A fact already stated in the workspace's CLAUDE.md (given as DATA) is not memory: do not add it, and remove an existing entry that merely repeats it when consolidating.");
+    expect(reviewSystemPrompt()).toContain("A fact already stated in the workspace's CLAUDE.md (given as DATA) is not memory");
+
+    const bare = await makeWorkspace("review-noclaudemd-ws-");
+    const backend2 = new ScriptedReviewer([{ text: "nothing", toolCalls: [] }]);
+    await runReview({ goal: "g", transcript: "t", workspace: bare, home, backend: backend2 });
+    expect(backend2.seen[0].envelopes.map((e) => e.origin)).not.toContain("workspace:claude-md");
+    expect(backend2.seen[0].envelopes.map((e) => e.origin)).toEqual(["memory:snapshot", "user:snapshot", "skills:index", "run:transcript"]);
+  });
+
+  test("a long CLAUDE.md is capped at 6000 chars with a truncation marker; a missing one reads as undefined", async () => {
+    const home = await makeWorkspace("review-claudemd-long-home-");
+    const ws = await makeWorkspace("review-claudemd-long-ws-");
+    await Bun.write(join(ws, "CLAUDE.md"), "y".repeat(10000));
+    const text = await workspaceInstructions(ws);
+    expect(text).toBeDefined();
+    expect(text!.length).toBeLessThanOrEqual(6100);
+    expect(text!.length).toBeGreaterThanOrEqual(WORKSPACE_INSTRUCTIONS_CAP);
+    expect(text!.endsWith("…[truncated]")).toBe(true);
+    expect(text!.slice(0, WORKSPACE_INSTRUCTIONS_CAP)).toBe("y".repeat(WORKSPACE_INSTRUCTIONS_CAP));
+    const backend = new ScriptedReviewer([{ text: "nothing", toolCalls: [] }]);
+    await runReview({ goal: "g", transcript: "t", workspace: ws, home, backend });
+    const env = backend.seen[0].envelopes.find((e) => e.origin === "workspace:claude-md")!;
+    expect(env.body.length).toBeLessThanOrEqual(6100);
+    expect(env.body).toEndWith("…[truncated]");
+    // No CLAUDE.md, or a directory named CLAUDE.md: nothing, silently.
+    expect(await workspaceInstructions(await makeWorkspace("review-claudemd-none-"))).toBeUndefined();
+    expect(await workspaceInstructions(join(ws, "does-not-exist"))).toBeUndefined();
+    const short = await makeWorkspace("review-claudemd-short-");
+    await Bun.write(join(short, "CLAUDE.md"), "x".repeat(WORKSPACE_INSTRUCTIONS_CAP));
+    expect(await workspaceInstructions(short)).toBe("x".repeat(WORKSPACE_INSTRUCTIONS_CAP));
   });
 });
 

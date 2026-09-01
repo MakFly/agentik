@@ -29,7 +29,8 @@ the README and this file disagree; this file wins for agents.
      └─ RELATED SESSIONS ← searchSessions(goal)          │
             workspace-filtered (unknown ws never hidden) └─ agentik review  ──► model (sonnet ▸ codex ▸ grok)
             top-6, token hit > trigram hit                     16 iterations max, DATA in: snapshots +
-                                                              skills index + transcript
+                                                              skills index + workspace CLAUDE.md (≤6000
+                                                              chars, never memory) + transcript
                                                               tools: memory · skill_manage · incident · read_file
                                                                  │
                                         ┌────────────────────────┴────────────────────────┐
