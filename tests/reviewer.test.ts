@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { memoryAdd, MEMORY_CAP, readEntries } from "../src/memory-store.ts";
 import { Orchestrator } from "../src/orchestrator.ts";
-import { runReview } from "../src/reviewer.ts";
+import { POSTMORTEM_GUIDANCE, reviewSystemPrompt, runReview } from "../src/reviewer.ts";
+import { getIncident, listIncidents, recordIncident } from "../src/incidents.ts";
 import { executeTool, newReviewState } from "../src/tools.ts";
 import { makeWorkspace } from "./helpers.ts";
 import type { Backend, CompleteRequest, WorkerMessage } from "../src/types.ts";
@@ -158,5 +159,104 @@ describe("agentik review / harvest --transcript (CLI)", () => {
     expect(code).toBe(0);
     // A session was recorded, so a bare review now has something to look at.
     expect(await main(["review", "--workspace", ws, "--agentik-home", home, "--backend", "mock"])).toBe(0);
+  });
+});
+
+describe("postmortem: the review answers why, and what prevents it", () => {
+  test("incident classify + memory add: the incident gets its cause and memory the fact; the guidance is on only with an incident", async () => {
+    const home = await makeWorkspace("postmortem-home-");
+    const inc = await recordIncident(
+      { goal: "wire codex into the crew", workspace: "/tmp/pm", harness: "codex", backend: "opencodex", exitCode: 1, stopReason: "turn.failed", errors: ["adapter_eof"], symptom: "codex never reported a completed turn" },
+      { home },
+    );
+    await recordIncident({ goal: "wire codex into the crew", workspace: "/tmp/pm", harness: "codex", symptom: "codex never reported a completed turn" }, { home });
+    const other = await recordIncident({ goal: "codex again elsewhere", workspace: "/tmp/pm", harness: "codex", symptom: "codex exited 1 with adapter_eof" }, { home });
+    const backend = new ScriptedReviewer([
+      {
+        text: "seen twice, the cause is the proxy",
+        toolCalls: [
+          { tool: "incident", args: { action: "classify", id: inc.id, cause: "opencodex's responses adapter closes the stream on --output-schema (adapter_eof)" } },
+          { tool: "memory", args: { target: "memory", action: "add", content: "Behind opencodex (127.0.0.1:10100) codex cannot take --output-schema; agentik learns it per routing." } },
+        ],
+      },
+      { text: "done", toolCalls: [] },
+    ]);
+    const out = await runReview({ goal: inc.goal, transcript: "incident transcript", workspace: "/tmp/pm", home, backend, incident: { ...inc, seen: 2 } });
+    expect(out.incidentOps).toBe(1);
+    expect(out.memoryOps).toBe(1);
+    expect(out.refused).toBe(0);
+    expect((await getIncident(inc.id, { home }))?.cause).toBe("opencodex's responses adapter closes the stream on --output-schema (adapter_eof)");
+    expect((await getIncident(inc.id, { home }))?.resolvedAt).toBeNull();
+    expect(await readEntries("memory", home)).toEqual(["Behind opencodex (127.0.0.1:10100) codex cannot take --output-schema; agentik learns it per routing."]);
+    // Prompt: guidance present, incident + similar incidents as DATA envelopes.
+    const req = backend.seen[0];
+    expect(req.system).toContain(POSTMORTEM_GUIDANCE);
+    expect(req.trustedGoal).toContain(`Postmortem of incident #${inc.id}`);
+    const origins = req.envelopes.map((e) => e.origin);
+    expect(origins).toContain("incident:current");
+    expect(origins).toContain("incidents:similar");
+    const current = req.envelopes.find((e) => e.origin === "incident:current")!;
+    expect(current.body).toContain("symptom: codex never reported a completed turn");
+    expect(current.body).toContain("adapter_eof");
+    expect(current.channel).toBe("tool_output");
+    const similar = req.envelopes.find((e) => e.origin === "incidents:similar")!;
+    expect(similar.body).toContain(`#${other.id} `);
+    expect(similar.body).not.toContain(`#${inc.id} `);
+    // Without an incident: no postmortem guidance, and the memory guidance routes failures to the log.
+    expect(reviewSystemPrompt()).not.toContain(POSTMORTEM_GUIDANCE);
+    expect(reviewSystemPrompt()).toContain("go to the incident log, not to memory. A failure seen twice is not transient");
+    expect(reviewSystemPrompt()).not.toContain("Do not record: environment-dependent failures");
+    expect(reviewSystemPrompt({ postmortem: true })).toContain(POSTMORTEM_GUIDANCE);
+    const plain = new ScriptedReviewer([{ text: "nothing", toolCalls: [] }]);
+    await runReview({ goal: "g", transcript: "t", workspace: "/tmp/pm", home, backend: plain });
+    expect(plain.seen[0].system).not.toContain(POSTMORTEM_GUIDANCE);
+    expect(plain.seen[0].envelopes.map((e) => e.origin)).not.toContain("incident:current");
+  });
+
+  test("incident tool: reviewer-only (gate + executor), cause ≤120 chars, resolve, merge, unknown ids", async () => {
+    const home = await makeWorkspace("postmortem-tool-");
+    const a = await recordIncident({ goal: "g", harness: "grok", symptom: "grok ended on stopReason=max_turns" }, { home });
+    const b = await recordIncident({ goal: "g", harness: "grok", symptom: "grok stopped: max_turns after 8 turns" }, { home });
+    const orch = new Orchestrator();
+    orch.submitGoal("learn things");
+    const gate = orch.proposeTool({ id: "x", tool: "incident", args: { action: "classify", id: a.id, cause: "c" }, proposedBy: "worker_a" }, [], ["incident"]);
+    expect(gate.allowed).toBe(false);
+    expect(gate.reason).toBe("reviewer_only");
+    const worker = await executeTool({ id: "w", tool: "incident", args: { action: "classify", id: a.id, cause: "sneaky" }, proposedBy: "worker_a" }, { workspace: "/tmp", agentikHome: home });
+    expect(worker.ok).toBe(false);
+    expect(worker.output).toContain("reviewer-only");
+    const noHome = await executeTool({ id: "h", tool: "incident", args: { action: "classify", id: a.id, cause: "sneaky" }, proposedBy: "reviewer" }, { workspace: "/tmp" });
+    expect(noHome.ok).toBe(false);
+    expect((await getIncident(a.id, { home }))?.cause).toBe("");
+    const host = { workspace: "/tmp", agentikHome: home };
+    const long = await executeTool({ id: "1", tool: "incident", args: { action: "classify", id: a.id, cause: "x".repeat(121) }, proposedBy: "reviewer" }, host);
+    expect(long.ok).toBe(false);
+    expect(long.output).toContain("max 120");
+    const missing = await executeTool({ id: "2", tool: "incident", args: { action: "classify", id: 999, cause: "c" }, proposedBy: "reviewer" }, host);
+    expect(missing.ok).toBe(false);
+    const bad = await executeTool({ id: "3", tool: "incident", args: { action: "delete", id: a.id }, proposedBy: "reviewer" }, host);
+    expect(bad.ok).toBe(false);
+    const merged = await executeTool({ id: "4", tool: "incident", args: { action: "merge", into: a.id, from: b.id }, proposedBy: "reviewer" }, host);
+    expect(merged.ok).toBe(true);
+    expect(merged.output).toContain("seen 2×");
+    expect(await getIncident(b.id, { home })).toBeNull();
+    const resolved = await executeTool({ id: "5", tool: "incident", args: { action: "resolve", id: String(a.id), fix: "pass --max-turns 20 to grok" }, proposedBy: "reviewer" }, host);
+    expect(resolved.ok).toBe(true);
+    const rec = await getIncident(a.id, { home });
+    expect(rec?.fix).toBe("pass --max-turns 20 to grok");
+    expect(rec?.resolvedAt).not.toBeNull();
+    expect(await listIncidents({ home })).toEqual([]);
+  });
+
+  test("agentik review --incident ID (CLI): runs the postmortem; exclusive with --transcript/--session; unknown id exits 2", async () => {
+    const home = await makeWorkspace("postmortem-cli-");
+    const ws = await makeWorkspace("postmortem-cli-ws-");
+    const inc = await recordIncident({ goal: "deploy umami", workspace: ws, harness: "codex", symptom: "codex exited 1" }, { home });
+    expect(await main(["review", "--incident", String(inc.id), "--agentik-home", home, "--backend", "mock"])).toBe(0);
+    expect(await main(["review", "--incident", String(inc.id), "--transcript", "/tmp/nope.md", "--agentik-home", home, "--backend", "mock"])).toBe(2);
+    expect(await main(["review", "--incident", String(inc.id), "--session", "1", "--agentik-home", home, "--backend", "mock"])).toBe(2);
+    expect(await main(["review", "--incident", "42", "--agentik-home", home, "--backend", "mock"])).toBe(2);
+    expect(await main(["review", "--incident", "abc", "--agentik-home", home, "--backend", "mock"])).toBe(2);
+    expect(existsSync(join(home, "memory/MEMORY.md"))).toBe(false);
   });
 });

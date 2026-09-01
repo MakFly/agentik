@@ -32,8 +32,8 @@ import { defaultFetchImpl } from "./tools.ts";
 import { retainNote, readHot } from "./memory.ts";
 import { formatSessionHit, searchSessions } from "./sessions.ts";
 import { buildContext } from "./context.ts";
-import { recordIncident } from "./incidents.ts";
-import { formatReviewOutcome, runReview, type ReviewOutcome } from "./reviewer.ts";
+import { getIncident, recordIncident, type IncidentRecord } from "./incidents.ts";
+import { formatIncidentForReview, formatReviewOutcome, runReview, type ReviewOutcome } from "./reviewer.ts";
 import { getSession, latestSession } from "./sessions.ts";
 import { readFile } from "node:fs/promises";
 import { recallBeforeRun, reviewAfterRun, type SessionStatus } from "./review.ts";
@@ -97,12 +97,15 @@ Commands:
                                · 124 killed by --timeout, the task did NOT finish
                                · 125 the harness ended without doing the work.
   agentik context [--workspace DIR] [--profile P] ["<goal>"]
-  agentik review ["<goal>"] [--transcript FILE | --session ID] [--backend sonnet|codex|claude]
+  agentik review ["<goal>"] [--transcript FILE | --session ID | --incident ID] [--backend sonnet|codex|claude]
                                Background review: a model reads what happened and decides what
                                to remember (MEMORY.md / USER.md) or which skill to patch/create.
                                Bounded: 16 iterations, 1 skill create, cap forces consolidation.
                                run does this automatically on live runs (--no-review to skip);
                                harvest --transcript FILE chains into it.
+                               --incident ID is the postmortem: one question — why, and what
+                               prevents it — answered with incident classify|resolve|merge,
+                               a memory fact, or a skill Pitfalls patch (seen ≥2).
                                The block /ak reads before work: USER profile, MEMORY (durable
                                facts), the skills index (name: description) and the top-6
                                sessions related to the goal, filtered on the workspace.
@@ -321,9 +324,25 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 async function reviewCmd(args: string[]): Promise<number> {
   const { goal, flags } = parseRun(args);
   const home = homeFor(flags);
-  const workspace = resolve(flags.workspace ?? process.cwd());
+  let workspace = resolve(flags.workspace ?? process.cwd());
   let transcript = "";
   let reviewGoal = goal;
+  let incident: IncidentRecord | undefined;
+  if (flags.incident) {
+    if (flags.transcript || flags.session) {
+      console.error("agentik review: --incident cannot be combined with --transcript or --session");
+      return 2;
+    }
+    const id = Number(flags.incident);
+    incident = (Number.isInteger(id) && (await getIncident(id, { home }))) || undefined;
+    if (!incident) {
+      console.error(`agentik review: no incident #${flags.incident} (agentik postmortem lists them)`);
+      return 2;
+    }
+    reviewGoal = reviewGoal || incident.goal;
+    if (!flags.workspace && incident.workspace) workspace = incident.workspace;
+    transcript = formatIncidentForReview(incident);
+  }
   if (flags.transcript) {
     try {
       transcript = await readFile(flags.transcript, "utf8");
@@ -332,7 +351,7 @@ async function reviewCmd(args: string[]): Promise<number> {
       return 2;
     }
   }
-  if (!transcript) {
+  if (!transcript && !incident) {
     const session = flags.session
       ? await getSession(Number(flags.session), { home })
       : await latestSession({ home, workspace });
@@ -369,6 +388,7 @@ async function reviewCmd(args: string[]): Promise<number> {
     home,
     backend,
     maxIterations: flags.maxIterations,
+    incident,
   });
   if (flags.json) console.log(JSON.stringify(outcome, null, 2));
   else {
@@ -376,7 +396,7 @@ async function reviewCmd(args: string[]): Promise<number> {
     await printPendingHint(home);
   }
   // A backend that dies after the writes landed ended the review early, it did not undo it.
-  const landed = outcome.memoryOps + outcome.userOps + outcome.skillOps > 0;
+  const landed = outcome.memoryOps + outcome.userOps + outcome.skillOps + outcome.incidentOps > 0;
   return outcome.stoppedBecause === "backend_error" && !landed ? 1 : 0;
 }
 
@@ -671,6 +691,7 @@ export function parseRun(args: string[]): {
     rollback?: string;
     status?: string;
     cause?: string;
+    incident?: string;
   };
 } {
   const flags: Record<string, string | boolean> = {};
@@ -771,6 +792,7 @@ export function parseRun(args: string[]): {
       rollback: str(flags.rollback),
       status: str(flags.status),
       cause: str(flags.cause),
+      incident: str(flags.incident),
     },
   };
 }

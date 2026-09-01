@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { readConfig } from "./config.ts";
+import { classifyIncident, mergeIncidents, resolveIncident } from "./incidents.ts";
 import { detectInjection } from "./injection.ts";
 import { memoryApply, type MemoryOperation, type MemoryTarget } from "./memory-store.ts";
 import { newPendingId, stagePending, type PendingSkillOp } from "./pending.ts";
@@ -60,10 +61,18 @@ export const TOOL_CATALOG: ToolSpec[] = [
     blastRadius: "medium",
     description: "Reviewer only. view/patch/create a skill; create and patch require a prior view of that skill",
   },
+  {
+    name: "incident",
+    blastRadius: "low",
+    description: "Reviewer only. classify {id, cause} / resolve {id, fix} / merge {into, from} an incident of the failure log",
+  },
 ];
 
-/** Tools that write the agent's own memory. Never for a worker, only for the review fork. */
-export const REVIEWER_ONLY_TOOLS = new Set(["memory", "skill_manage"]);
+/** Tools that write the agent's own memory (and its failure log). Never for a worker, only for the review fork. */
+export const REVIEWER_ONLY_TOOLS = new Set(["memory", "skill_manage", "incident"]);
+
+/** A postmortem cause is a sentence, not a transcript. */
+export const INCIDENT_CAUSE_MAX = 120;
 
 const HIGH_CMD =
   /\b(rm\s+-[a-zA-Z]*f|sudo|mkfs|dd\s+if=|shutdown|reboot|drop\s+database|chmod\s+777|curl[^\n]*\|\s*(ba)?sh|wipe|mkfs\.\w+)\b/i;
@@ -130,6 +139,8 @@ export async function executeTool(call: ToolCall, host: ToolHost): Promise<ToolR
       return memoryTool(call, host);
     case "skill_manage":
       return skillManageTool(call, host);
+    case "incident":
+      return incidentTool(call, host);
     case "fs_destructive":
     case "credential_use":
       return {
@@ -352,6 +363,46 @@ async function skillManageTool(call: ToolCall, host: ToolHost): Promise<ToolResu
     : await applySkillCreate(name, args, { home, by: "reviewer" });
   if (res.ok && action === "create") state.skillsCreated += 1;
   return { callId: call.id, ok: res.ok, output: res.output, artifact: res.artifact };
+}
+
+/** The postmortem's pen: it writes cause and fix on the incident log, never the log itself. */
+async function incidentTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {
+  const denied = reviewerOnly(call, host);
+  if (denied) return denied;
+  const home = host.agentikHome;
+  const action = String(call.args.action ?? "");
+  const num = (v: unknown): number => (typeof v === "number" ? v : Number(String(v ?? "")));
+  if (action === "classify" || action === "resolve") {
+    const id = num(call.args.id);
+    if (!Number.isInteger(id) || id <= 0) return { callId: call.id, ok: false, output: `incident ${action}: id is required` };
+    const field = action === "classify" ? "cause" : "fix";
+    const text = String(call.args[field] ?? "").replace(/\s+/g, " ").trim();
+    if (!text) return { callId: call.id, ok: false, output: `incident ${action}: ${field} is required` };
+    if ([...text].length > INCIDENT_CAUSE_MAX) {
+      return { callId: call.id, ok: false, output: `incident ${action}: ${field} is ${[...text].length} chars, max ${INCIDENT_CAUSE_MAX} — name the root cause, do not retell the run` };
+    }
+    const rec = action === "classify" ? await classifyIncident(id, text, { home }) : await resolveIncident(id, text, { home });
+    if (!rec) return { callId: call.id, ok: false, output: `incident ${action}: no incident #${id}` };
+    return {
+      callId: call.id,
+      ok: true,
+      output: action === "classify"
+        ? `ok: incident #${rec.id} cause = ${rec.cause}`
+        : `ok: incident #${rec.id} resolved — fix: ${rec.fix}`,
+      artifact: `incident:${rec.id}`,
+    };
+  }
+  if (action === "merge") {
+    const into = num(call.args.into);
+    const from = num(call.args.from);
+    if (!Number.isInteger(into) || !Number.isInteger(from) || into <= 0 || from <= 0) {
+      return { callId: call.id, ok: false, output: "incident merge: into and from ids are required" };
+    }
+    const rec = await mergeIncidents(into, from, { home });
+    if (!rec) return { callId: call.id, ok: false, output: `incident merge: cannot merge #${from} into #${into} (missing, or the same id)` };
+    return { callId: call.id, ok: true, output: `ok: incident #${from} merged into #${rec.id} (seen ${rec.seen}×)`, artifact: `incident:${rec.id}` };
+  }
+  return { callId: call.id, ok: false, output: `incident: unknown action "${action}" (classify | resolve | merge)` };
 }
 
 async function listShallow(dir: string): Promise<string[]> {
