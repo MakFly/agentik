@@ -95,11 +95,13 @@ describe("CLI envelope unwrap (shipped decodeGrokStdout / decodeClaudeStdout)", 
   });
 
   test("Codex CLI args match cc (codex --yolo exec) and keep JSON schema", () => {
-    const args = codexCliArgs("trusted goal", "/proj/.agentik/worker-schema.json", "/proj");
+    const args = codexCliArgs("trusted goal", "/proj");
     expect(args[0]).toBe("exec");
     expect(args).toContain("--yolo");
     expect(args).toContain("--json");
-    expect(args).toContain("--output-schema");
+    // Never --output-schema: opencodex's responses adapter dies (adapter_eof) on structured output.
+    expect(args).not.toContain("--output-schema");
+    expect(args).toContain("--json");
     expect(args).toContain("--cd");
     expect(args[args.length - 1]).toBe("trusted goal");
   });

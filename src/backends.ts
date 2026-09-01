@@ -344,17 +344,18 @@ export function foreignWorkerArgs(
   return { bin: "claude", args };
 }
 
-/** Same posture as alias `cc` (`codex --yolo`) in non-interactive exec. */
-export function codexCliArgs(prompt: string, schemaPath: string, cwd?: string): string[] {
-  const args = [
-    "exec",
-    "--yolo",
-    "--skip-git-repo-check",
-    "--ephemeral",
-    "--json",
-    "--output-schema",
-    schemaPath,
-  ];
+/**
+ * Same posture as alias `cc` (`codex --yolo`) in non-interactive exec.
+ *
+ * No `--output-schema`: on this machine codex goes through opencodex
+ * (`~/.codex/config.toml` → `http://127.0.0.1:10100/v1`), whose `openai-responses` adapter
+ * cannot serve codex's structured output — the request ends in `adapter_eof` after five
+ * reconnects, whatever the prompt size, while the same prompt without a schema completes.
+ * The JSON shape is already demanded by the system prompt and `unwrapCodex` extracts the
+ * object from the agent message, so the schema bought nothing but a broken backend.
+ */
+export function codexCliArgs(prompt: string, cwd?: string): string[] {
+  const args = ["exec", "--yolo", "--skip-git-repo-check", "--ephemeral", "--json"];
   if (cwd) args.push("--cd", cwd);
   args.push(prompt);
   return args;
@@ -660,23 +661,37 @@ export class CodexBackend implements Backend {
 
   async complete(request: CompleteRequest): Promise<WorkerMessage> {
     const prompt = renderCompletePrompt(request);
-    const schemaPath = await writeWorkerSchema(request.workspace);
-    const args = codexCliArgs(prompt, schemaPath, request.workspace);
+    const args = codexCliArgs(prompt, request.workspace);
     const res = await spawnCapture("codex", args, this.timeoutMs, request.workspace);
-    const err = classifyExit(this.id, "codex exec --yolo", res, this.timeoutMs);
+    // codex's real failure reason is a JSONL `error` / `turn.failed` line on stdout; stderr
+    // is MCP and transport noise ("Reading additional input from stdin...").
+    const err = classifyExit(
+      this.id,
+      "codex exec --yolo",
+      { ...res, stderr: codexFailureSummary(res.stdout) || res.stderr },
+      this.timeoutMs,
+    );
     if (err) throw err;
     return decodeCodexStdout(res.stdout);
   }
 }
 
-async function writeWorkerSchema(workspace?: string): Promise<string> {
-  const dir = workspace
-    ? `${workspace.replace(/\/$/, "")}/.agentik`
-    : `${process.cwd()}/.agentik`;
-  await mkdir(dir, { recursive: true });
-  const path = `${dir}/worker-schema.json`;
-  await writeFile(path, JSON.stringify(WORKER_JSON_SCHEMA, null, 2), "utf8");
-  return path;
+/** Last `turn.failed` / `error` message from a codex JSONL stream, if any. */
+export function codexFailureSummary(stdout: string): string {
+  let last = "";
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.startsWith("{")) continue;
+    try {
+      const obj = JSON.parse(line) as Record<string, unknown>;
+      if (obj.type === "turn.failed" || obj.type === "error") {
+        const err = obj.error as Record<string, unknown> | undefined;
+        last = String(obj.message ?? err?.message ?? "");
+      }
+    } catch {
+      /* not json */
+    }
+  }
+  return last;
 }
 
 export interface SpawnResult {
