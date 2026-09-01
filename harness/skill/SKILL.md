@@ -38,7 +38,9 @@ agentik spawn --harness grok|codex|claude --workspace "$PWD" --role Korben "<bou
 ```
 
 No TUI. Cap 5. `--no-subagents` / deny Agent so they do not fan out. Grok additionally gets
-`--no-plan`, which keeps it out of an approval-gated plan mode with no headless approver.
+`--no-plan`, which keeps it out of an approval-gated plan mode with no headless approver. Each
+spawned worker gets the `agentik context` block of that workspace (USER, MEMORY, PROJECT MEMORY,
+skills, sessions, KNOWN FAILURES) in front of its task as DATA, capped at 6000 chars (`--no-context` to skip).
 
 Run `agentik probe --json` before routing: a harness that is `present but not authenticated`
 cannot work, and `agentik spawn` refuses it with exit 2. Add `--require-tools` on any slot that

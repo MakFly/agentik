@@ -33,6 +33,7 @@ import { retainNote, readHot } from "./memory.ts";
 import { memoryFileLabel, memoryFilePath, memoryRemoveEntry, type MemoryTarget } from "./memory-store.ts";
 import { formatSessionHit, searchSessions } from "./sessions.ts";
 import { buildContext } from "./context.ts";
+import { renderEnvelope, wrapUntrusted } from "./trust.ts";
 import {
   classifyIncident,
   formatIncidentLine,
@@ -98,6 +99,10 @@ Commands:
                                  grok   -> grok --yolo --single … --no-subagents --no-plan
                                  codex  -> codex exec --yolo --skip-git-repo-check --ephemeral
                                  claude -> claude -p --dangerously-skip-permissions --effort high
+                               The worker gets the same block "agentik context" prints (USER,
+                               MEMORY, PROJECT MEMORY of that workspace, skills index, related
+                               sessions, KNOWN FAILURES) as DATA in front of the task, capped
+                               at 6000 chars; --no-context leaves it out.
                                Output streams live and agentik reads the harness's own event
                                stream, so it reports what the worker actually did (turns, tool
                                calls, stop reason) instead of trusting the exit code. The
@@ -190,6 +195,7 @@ Options:
   --expect-artifact PATH       spawn: this workspace path must be created, modified or
                                removed by the run, else exit 125. Repeatable.
   --raw                        spawn: the harness's own output, no verdict
+  --no-context                 spawn: do not prepend the agentik context block (DATA) to the task
   --approve-high-blast         Explicit high-blast approval without --yolo
   --reject-high-blast          Reject pending high-blast tools
   --override stop|redirect     Stop or redirect the run
@@ -617,6 +623,27 @@ export function exitCodeFor(report: RunReport): number {
   return 0;
 }
 
+/** The context block a spawned worker gets in front of its task; longer than this is cut. */
+export const SPAWN_CONTEXT_CAP = 6000;
+export const SPAWN_CONTEXT_ORIGIN = "agentik:context";
+
+/**
+ * `agentik context` for this goal and workspace, rendered as an UNTRUSTED envelope ("DATA ONLY",
+ * same renderer as the reviewer's inputs), capped at SPAWN_CONTEXT_CAP chars. A context that
+ * cannot be built is reported on stderr and left out: the task still runs.
+ */
+export async function spawnContextBlock(goal: string, workspace: string, home: string): Promise<string | undefined> {
+  let block: string;
+  try {
+    block = await buildContext({ goal, workspace, home });
+  } catch (err) {
+    console.error(`agentik spawn: could not build context: ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
+  }
+  const body = block.length > SPAWN_CONTEXT_CAP ? `${block.slice(0, SPAWN_CONTEXT_CAP)}…[truncated]` : block;
+  return renderEnvelope(wrapUntrusted(body, SPAWN_CONTEXT_ORIGIN, "retrieved"));
+}
+
 async function spawnForeign(args: string[]): Promise<number> {
   const { goal, flags } = parseRun(args);
   const harnessRaw = (flags.harness ?? flags.backend ?? "").toLowerCase();
@@ -649,7 +676,11 @@ async function spawnForeign(args: string[]): Promise<number> {
 
   const workspace = resolve(flags.workspace ?? process.cwd());
   const role = flags.role ? `You are ${flags.role}. ` : "";
-  const prompt = `${role}Bounded task (no nested subagents, stay in ${workspace}):\n${goal}`;
+  const bounded = `${role}Bounded task (no nested subagents, stay in ${workspace}):\n${goal}`;
+  // The worker sees what the conductor sees — memory, this workspace's project memory, skills,
+  // related sessions, known failures — as DATA in front of the task, never as instructions.
+  const context = flags.noContext ? undefined : await spawnContextBlock(goal, workspace, homeFor(flags));
+  const prompt = context ? `${context}\n\n${bounded}` : bounded;
   const expected = flags.expectArtifacts ?? [];
   // Murphy: a failure that is not written down happens again. Every non-zero exit leaves an
   // incident (same symptom on the same harness and workspace -> seen+1). Recording never
@@ -799,6 +830,7 @@ export function parseRun(args: string[]): {
     strictBackend?: boolean;
     requireTools?: boolean;
     raw?: boolean;
+    noContext?: boolean;
     expectArtifacts?: string[];
     linkHarness?: boolean;
     description?: string;
@@ -845,6 +877,7 @@ export function parseRun(args: string[]): {
     else if (a === "--strict-backend") flags.strictBackend = true;
     else if (a === "--require-tools") flags.requireTools = true;
     else if (a === "--raw") flags.raw = true;
+    else if (a === "--no-context") flags.noContext = true;
     else if (a === "--link-harness") flags.linkHarness = true;
     else if (a === "--no-review") flags.noReview = true;
     else if (a === "--max-iterations") {
@@ -899,6 +932,7 @@ export function parseRun(args: string[]): {
       strictBackend: Boolean(flags.strictBackend),
       requireTools: Boolean(flags.requireTools),
       raw: Boolean(flags.raw),
+      noContext: Boolean(flags.noContext),
       expectArtifacts,
       linkHarness: Boolean(flags.linkHarness),
       description: str(flags.description),

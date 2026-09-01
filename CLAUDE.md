@@ -29,7 +29,9 @@ the README and this file disagree; this file wins for agents.
      │      basename-sha10, .workspace = abs path;       │
      │      same masking/dedup/cap; the reviewer         │
      │      chooses the level (target project); shown    │
-     │      in context only when non-empty               │
+     │      in context only when non-empty; agentik      │
+     │      spawn puts this whole block in front of the  │
+     │      task as DATA (≤6000 chars, --no-context off) │
      ├─ SKILLS index  ← skills/*/SKILL.md frontmatter    │     FTS5 unicode61 remove_diacritics 2
      │      "name: description≤57…", pinned first        │     + FTS5 trigram  (clôturer=cloturer,
      │      body loaded on demand: agentik skills view   │       migrat→migration, drawr→drawer)
@@ -143,6 +145,10 @@ Invariants (tests enforce them):
   skipped after one failure; change the routing and it re-learns. Override:
   `AGENTIK_CODEX_OUTPUT_SCHEMA=always|never|auto`. The WebSocket 426 on `/v1/responses` is a probe
   with HTTPS fallback (noise); the notion MCP OAuth errors at codex startup are user-config noise.
+- `agentik spawn` prepends the `agentik context` block (USER, MEMORY, PROJECT MEMORY of that workspace,
+  skills index, related sessions, KNOWN FAILURES) to the bounded task as an UNTRUSTED envelope
+  (`origin=agentik:context`, "DATA ONLY"), capped at 6000 chars (`…[truncated]`); `--no-context` leaves
+  it out, `--raw` keeps it. A context that cannot be built is one stderr line, the task still runs.
 - `agentik spawn --harness X` reads the harness event stream (verdict): exit `0` done · `1` CLI
   failed · `2` unusable harness · `124` timeout (default 1800 s) · `125` finished without doing the
   work (`--require-tools`, `--expect-artifact PATH`).

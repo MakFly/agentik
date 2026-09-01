@@ -56,6 +56,7 @@ agentik spawn --harness claude --workspace "$PWD" --role Cornelius "<bounded tas
 - `grok` → `grok --yolo --single … --no-subagents --no-plan` — `--single` enters headless mode and already runs the full tool-call loop to completion (not one tool call); `--no-plan` keeps the model out of an approval-gated plan mode with no headless approver
 - `codex` → `codex exec --yolo …`
 - `claude` → `claude -p --dangerously-skip-permissions --effort high` (Agent tool denied so no nested fan-out)
+- every spawned worker gets the `agentik context` block of that workspace (USER, MEMORY, PROJECT MEMORY, skills, sessions, KNOWN FAILURES) in front of its task as DATA (≤6000 chars); `--no-context` to leave it out
 
 **Probe before you route.** Run `agentik probe --json` first. A harness that is `present but not authenticated` cannot do the work: say so to the user and offer the live ones instead of firing five dead CLIs. `agentik spawn` refuses a dead harness with exit 2.
 

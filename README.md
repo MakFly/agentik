@@ -118,7 +118,7 @@ foreign-harness fan-out) runs the same three CLIs to natural completion in one p
 flag limits any of them to a single tool call. `--single` is what puts Grok into headless mode
 at all (otherwise it opens a TUI with no TTY attached and hangs); once there, it already runs
 the full agentic tool loop for that one prompt. `--no-plan` keeps it out of an approval-gated
-plan mode with no headless approver.
+plan mode with no headless approver. The worker gets the same block `agentik context` prints — USER profile, global MEMORY, the PROJECT MEMORY of that workspace, skills index, related sessions, KNOWN FAILURES — in front of its task as an untrusted envelope (`origin=agentik:context`, "DATA ONLY"), capped at 6000 chars; `--no-context` leaves it out.
 
 agentik reads each harness's **own event stream** (`grok --output-format streaming-json`,
 `claude --output-format stream-json`, `codex exec --json`), renders it live, and reports what
