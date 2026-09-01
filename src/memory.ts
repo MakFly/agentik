@@ -1,12 +1,17 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { agentikHome, memoryPaths } from "./home.ts";
+import {
+  MEMORY_CAP,
+  memoryAdd,
+  memoryContentProblem,
+  readEntries,
+  USER_CAP as STORE_USER_CAP,
+} from "./memory-store.ts";
 import { formatSessionHit, migrateLegacyMemory, searchSessions } from "./sessions.ts";
 
 /** Hermes-like caps: always-loaded HOT notes stay small. */
-export const HOT_CAP = 2200;
-export const USER_CAP = 1375;
-
-const SECRET = /\b(api[_-]?key|secret|token|password|bearer)\b/i;
+export const HOT_CAP = MEMORY_CAP;
+export const USER_CAP = STORE_USER_CAP;
 
 export interface MemoryNote {
   kind: "fact" | "session" | "lesson";
@@ -21,13 +26,14 @@ export interface RetainResult {
 }
 
 export function looksLikeSecret(text: string): boolean {
-  return SECRET.test(text);
+  return memoryContentProblem(text)?.startsWith("looks like a secret") ?? false;
 }
 
 /**
- * Write a durable fact to HOT. Only HOT: there is no overflow store any more. A note that does
- * not fit is refused with the cap in the reason, so the caller consolidates (replace / remove)
- * instead of the note silently landing somewhere nobody reads.
+ * Write a durable fact to HOT through the store: one `§`-separated entry, exact-deduplicated,
+ * scanned, and refused with the cap in the reason when it does not fit — the caller
+ * consolidates (replace / remove) instead of the note silently landing somewhere nobody reads.
+ * `kind` is kept for the CLI's sake; the store does not label entries.
  */
 export async function retainNote(
   body: string,
@@ -35,36 +41,29 @@ export async function retainNote(
 ): Promise<RetainResult> {
   const text = body.replace(/\s+/g, " ").trim();
   if (!text) return { layer: "rejected", path: "", reason: "empty note" };
-  if (looksLikeSecret(text)) return { layer: "rejected", path: "secret", reason: "looks like a secret" };
   const home = agentikHome(opts?.home);
   await migrateLegacyMemory({ home });
   const paths = memoryPaths(home);
-  await mkdir(paths.memoryDir, { recursive: true });
-  const kind = opts?.kind ?? "fact";
-  const line = `- (${kind}) ${text}`;
-  const hot = await readOptional(paths.hot);
-  const next = hot ? `${hot.trimEnd()}\n${line}\n` : `# MEMORY\n\n${line}\n`;
-  if (next.length > HOT_CAP) {
+  const res = await memoryAdd("memory", text, { home });
+  if (!res.ok) {
     return {
       layer: "rejected",
-      path: paths.hot,
-      reason: `MEMORY.md at ${hot.length}/${HOT_CAP} chars — consolidate (replace/remove) before adding`,
+      path: res.blocked ? "secret" : paths.hot,
+      reason: res.overCap
+        ? `MEMORY.md at ${res.usage.used}/${res.usage.cap} chars — consolidate (replace/remove) before adding`
+        : res.message,
     };
   }
-  await writeFile(paths.hot, next, "utf8");
   return { layer: "hot", path: paths.hot };
 }
 
-/** HOT lines whose text contains the query (case-insensitive), `- ` prefix stripped. */
+/** HOT entries whose text contains the query (case-insensitive). */
 export async function recallHot(query: string, opts?: { home?: string; limit?: number }): Promise<string[]> {
-  const hot = await readHot(opts);
+  const home = agentikHome(opts?.home);
+  await migrateLegacyMemory({ home });
   const q = query.toLowerCase();
-  const hits: string[] = [];
-  for (const line of hot.split("\n")) {
-    if (!line.startsWith("- ")) continue;
-    if (line.toLowerCase().includes(q)) hits.push(line.replace(/^- /, "").trim());
-  }
-  return hits.slice(0, opts?.limit ?? 8);
+  const entries = await readEntries("memory", home);
+  return entries.filter((e) => e.toLowerCase().includes(q)).slice(0, opts?.limit ?? 8);
 }
 
 /** HOT matches first, then session hits (`[date] goal — summary`). */

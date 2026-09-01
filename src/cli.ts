@@ -32,6 +32,9 @@ import { defaultFetchImpl } from "./tools.ts";
 import { retainNote, readHot } from "./memory.ts";
 import { formatSessionHit, searchSessions } from "./sessions.ts";
 import { buildContext } from "./context.ts";
+import { formatReviewOutcome, runReview, type ReviewOutcome } from "./reviewer.ts";
+import { getSession, latestSession } from "./sessions.ts";
+import { readFile } from "node:fs/promises";
 import { recallBeforeRun, reviewAfterRun } from "./review.ts";
 import {
   approveSkill,
@@ -87,6 +90,12 @@ Commands:
                                · 124 killed by --timeout, the task did NOT finish
                                · 125 the harness ended without doing the work.
   agentik context [--workspace DIR] [--profile P] ["<goal>"]
+  agentik review ["<goal>"] [--transcript FILE | --session ID] [--backend sonnet|codex|claude]
+                               Background review: a model reads what happened and decides what
+                               to remember (MEMORY.md / USER.md) or which skill to patch/create.
+                               Bounded: 16 iterations, 1 skill create, cap forces consolidation.
+                               run does this automatically on live runs (--no-review to skip);
+                               harvest --transcript FILE chains into it.
                                The block /ak reads before work: USER profile, MEMORY (durable
                                facts), the skills index (name: description) and the top-6
                                sessions related to the goal, filtered on the workspace.
@@ -148,6 +157,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (cmd === "skill" || cmd === "skills") return skillCmd(argv.slice(1));
   if (cmd === "harvest") return harvestCmd(argv.slice(1));
   if (cmd === "context") return contextCmd(argv.slice(1));
+  if (cmd === "review") return reviewCmd(argv.slice(1));
 
   const runArgv = cmd === "run" ? argv.slice(1) : argv;
   const { goal, flags } = parseRun(runArgv);
@@ -254,7 +264,94 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   });
   if (!flags.json) console.log(`memory: ${harvested.memoryLayer} #${harvested.sessionId}`);
 
+  // Background review: a model decides what this run taught us. Live runs only — a mock run
+  // has nothing to learn from — and skippable with --no-review.
+  if (live && !flags.noReview) {
+    const outcome = await runReview({
+      goal,
+      transcript: `${formatReport(report)}\n\nsynthesis:\n${report.synthesis}`,
+      workspace,
+      home,
+      backend: workers.find((w) => !w.id.startsWith("mock")) ?? workerA,
+      maxIterations: flags.maxIterations,
+    });
+    if (!flags.json) console.log(formatReviewOutcome(outcome));
+  }
+
   return exitCodeFor(report);
+}
+
+/**
+ * `agentik review "<goal>" [--transcript FILE | --session ID] [--backend …]`
+ * Runs the background review on its own — the `/ak` conductor calls this after work, with a
+ * transcript file of what happened, in place of the old code-side skill harvest.
+ */
+async function reviewCmd(args: string[]): Promise<number> {
+  const { goal, flags } = parseRun(args);
+  const home = homeFor(flags);
+  const workspace = resolve(flags.workspace ?? process.cwd());
+  let transcript = "";
+  let reviewGoal = goal;
+  if (flags.transcript) {
+    try {
+      transcript = await readFile(flags.transcript, "utf8");
+    } catch (err) {
+      console.error(`agentik review: cannot read --transcript ${flags.transcript}: ${err instanceof Error ? err.message : String(err)}`);
+      return 2;
+    }
+  }
+  if (!transcript) {
+    const session = flags.session
+      ? await getSession(Number(flags.session), { home })
+      : await latestSession({ home, workspace });
+    if (!session) {
+      console.error("agentik review: nothing to review — pass --transcript FILE, --session ID, or run something first");
+      return 2;
+    }
+    reviewGoal = reviewGoal || session.goal;
+    transcript = [
+      `session #${session.id} [${session.createdAt}]`,
+      `goal: ${session.goal}`,
+      `workspace: ${session.workspace || "(unknown)"}`,
+      `status: ${session.status}`,
+      `summary: ${session.summary}`,
+      `artifacts: ${session.artifacts.join(", ") || "none"}`,
+      session.verdict ? `verdict: ${JSON.stringify(session.verdict)}` : "",
+    ].filter(Boolean).join("\n");
+  }
+  if (!reviewGoal) {
+    console.error("agentik review: a goal is required");
+    return 2;
+  }
+  let backend;
+  try {
+    backend = await pickReviewBackend(flags.backend, home, flags.stepTimeout);
+  } catch (err) {
+    console.error(`agentik review: ${err instanceof Error ? err.message : String(err)}`);
+    return 2;
+  }
+  const outcome: ReviewOutcome = await runReview({
+    goal: reviewGoal,
+    transcript,
+    workspace,
+    home,
+    backend,
+    maxIterations: flags.maxIterations,
+  });
+  if (flags.json) console.log(JSON.stringify(outcome, null, 2));
+  else console.log(formatReviewOutcome(outcome));
+  return outcome.stoppedBecause === "backend_error" ? 1 : 0;
+}
+
+/** Cheapest authenticated harness first; `mock` is for tests and reviews nothing. */
+async function pickReviewBackend(spec: string | undefined, home: string | undefined, stepTimeoutS?: number) {
+  const timeoutMs = stepTimeoutS === undefined ? undefined : stepTimeoutS * 1000;
+  if (spec) return resolveBackends(spec, undefined, undefined, { count: 1, timeoutMs }).workerA;
+  const availability = await loadAvailability({ home });
+  if (availability.claude.loggedIn) return resolveBackends("sonnet", undefined, undefined, { count: 1, timeoutMs }).workerA;
+  if (availability.codex.loggedIn) return resolveBackends("codex", undefined, undefined, { count: 1, timeoutMs }).workerA;
+  if (availability.grok.loggedIn) return resolveBackends("grok", undefined, undefined, { count: 1, timeoutMs }).workerA;
+  throw new Error("no authenticated harness for the review — run `agentik probe`");
 }
 
 /**
@@ -430,6 +527,10 @@ export function parseRun(args: string[]): {
     linkHarness?: boolean;
     description?: string;
     profile?: string;
+    transcript?: string;
+    session?: string;
+    noReview?: boolean;
+    maxIterations?: number;
     all?: boolean;
     limit?: number;
   };
@@ -460,6 +561,11 @@ export function parseRun(args: string[]): {
     else if (a === "--require-tools") flags.requireTools = true;
     else if (a === "--raw") flags.raw = true;
     else if (a === "--link-harness") flags.linkHarness = true;
+    else if (a === "--no-review") flags.noReview = true;
+    else if (a === "--max-iterations") {
+      flags.maxIterations = args[i + 1];
+      i++;
+    }
     else if (a === "--all") flags.all = true;
     else if (a === "--expect-artifact" && args[i + 1]) {
       expectArtifacts.push(args[++i]);
@@ -511,6 +617,13 @@ export function parseRun(args: string[]): {
       linkHarness: Boolean(flags.linkHarness),
       description: str(flags.description),
       profile: str(flags.profile),
+      transcript: str(flags.transcript),
+      session: str(flags.session),
+      noReview: Boolean(flags.noReview),
+      maxIterations:
+        Number.isFinite(Number(flags.maxIterations)) && Number(flags.maxIterations) > 0
+          ? Number(flags.maxIterations)
+          : undefined,
       all: Boolean(flags.all),
       limit: positive(flags.limit),
     },
@@ -564,7 +677,20 @@ async function harvestCmd(args: string[]): Promise<number> {
     profile: flags.profile,
   });
   console.log(`memory: ${harvested.memoryLayer} #${harvested.sessionId}`);
-  console.log("skill: none — code no longer writes skills; that is the model's call");
+  if (flags.transcript && !flags.noReview) {
+    // The conductor wrote down what happened; hand it to the reviewer in the same call.
+    return reviewCmd([
+      harvestGoal,
+      "--transcript",
+      flags.transcript,
+      "--workspace",
+      flags.workspace ?? process.cwd(),
+      ...(flags.agentikHome ? ["--agentik-home", flags.agentikHome] : []),
+      ...(flags.profile ? ["--profile", flags.profile] : []),
+      ...(flags.backend ? ["--backend", flags.backend] : []),
+    ]);
+  }
+  console.log("skill: none here — the model-driven review decides (agentik review, or harvest --transcript FILE)");
   return 0;
 }
 

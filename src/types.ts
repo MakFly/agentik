@@ -7,7 +7,8 @@ export const SUBAGENT_ROLES = [
   "worker_e",
 ] as const;
 export type WorkerRole = (typeof SUBAGENT_ROLES)[number];
-export type Role = "orchestrator" | WorkerRole;
+/** `reviewer` is the background review fork — the only role allowed to write memory or skills. */
+export type Role = "orchestrator" | "reviewer" | WorkerRole;
 
 /** Auto-run steps per bounded task. Four was never enough for real work. */
 export const DEFAULT_MAX_STEPS = 8;

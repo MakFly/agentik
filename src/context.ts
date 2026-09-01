@@ -1,7 +1,8 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { agentikHome, memoryPaths } from "./home.ts";
-import { HOT_CAP, readHot, readUser, USER_CAP } from "./memory.ts";
+import { readHot } from "./memory.ts";
+import { memorySnapshot } from "./memory-store.ts";
 import { formatSessionHit, searchSessions } from "./sessions.ts";
 
 /**
@@ -58,20 +59,22 @@ export async function buildContext(opts: {
   goal?: string;
 }): Promise<string> {
   const home = agentikHome(opts.home);
-  const [user, hot, skills] = await Promise.all([
-    readUser({ home }),
-    readHot({ home }),
+  await readHot({ home }); // runs the legacy migration once before the snapshots are taken
+  const [user, memory, skills] = await Promise.all([
+    memorySnapshot("user", home),
+    memorySnapshot("memory", home),
     skillIndex({ home }),
   ]);
   const goal = opts.goal?.trim();
   const sessions = goal ? await searchSessions(goal, { home, workspace: opts.workspace, limit: 6 }) : [];
 
+  // Snapshots are frozen here, once; the caller decides when to take a new one.
   const out: string[] = [];
-  out.push(`USER PROFILE (who the user is) ${usage(user.length, USER_CAP)}`);
-  out.push(user.trim() || "(empty)");
+  out.push(user.header);
+  out.push(user.body);
   out.push("");
-  out.push(`MEMORY (durable facts) ${usage(hot.length, HOT_CAP)}`);
-  out.push(hot.trim() || "(empty)");
+  out.push(memory.header);
+  out.push(memory.body);
   out.push("");
   out.push("SKILLS (load a body only when relevant)");
   if (skills.length) {
@@ -85,10 +88,6 @@ export async function buildContext(opts: {
   else if (!sessions.length) out.push("(none)");
   else for (const s of sessions) out.push(`- ${formatSessionHit(s)}`);
   return `${out.join("\n")}\n`;
-}
-
-function usage(n: number, cap: number): string {
-  return `[${Math.min(100, Math.round((n / cap) * 100))}% — ${n}/${cap} chars]`;
 }
 
 /** `name:` and `description:` from a YAML frontmatter; folded (`>`) / literal (`|`) blocks are joined. */

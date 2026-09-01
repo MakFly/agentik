@@ -143,6 +143,41 @@ export function formatSessionHit(hit: Pick<SessionRecord, "createdAt" | "goal" |
   return `[${hit.createdAt.slice(0, 10)}] ${hit.goal} — ${hit.summary}`;
 }
 
+export async function getSession(id: number, opts?: { home?: string }): Promise<SessionRecord | null> {
+  if (!Number.isFinite(id)) return null;
+  const home = agentikHome(opts?.home);
+  await migrateLegacyMemory({ home });
+  if (!existsSync(memoryPaths(home).sessionsDb)) return null;
+  const db = await openSessions(home);
+  try {
+    const row = db.query<Row, [number]>("SELECT * FROM sessions WHERE id = ?").get(id);
+    return row ? toRecord(row) : null;
+  } finally {
+    db.close();
+  }
+}
+
+/** Most recent session for a workspace (unknown-workspace rows count), else the most recent. */
+export async function latestSession(opts?: { home?: string; workspace?: string }): Promise<SessionRecord | null> {
+  const home = agentikHome(opts?.home);
+  await migrateLegacyMemory({ home });
+  if (!existsSync(memoryPaths(home).sessionsDb)) return null;
+  const db = await openSessions(home);
+  try {
+    const ws = opts?.workspace ? resolve(opts.workspace) : "";
+    const row = ws
+      ? db
+          .query<Row, [string]>(
+            "SELECT * FROM sessions WHERE workspace = ? OR workspace = '' ORDER BY created_at DESC, id DESC LIMIT 1",
+          )
+          .get(ws)
+      : db.query<Row, []>("SELECT * FROM sessions ORDER BY created_at DESC, id DESC LIMIT 1").get();
+    return row ? toRecord(row) : null;
+  } finally {
+    db.close();
+  }
+}
+
 export async function listSessions(opts?: { home?: string; limit?: number }): Promise<SessionRecord[]> {
   const home = agentikHome(opts?.home);
   await migrateLegacyMemory({ home });

@@ -175,7 +175,7 @@ describe("CLI entry (shipped src/cli.ts main)", () => {
     expect(lines[0]).toBe("USER PROFILE (who the user is) [0% — 0/1375 chars]");
     expect(lines[1]).toBe("(empty)");
     expect(lines.some((l) => /^MEMORY \(durable facts\) \[\d+% — \d+\/2200 chars\]$/.test(l))).toBe(true);
-    expect(out).toContain("- (fact) this repo uses bun test");
+    expect(out).toContain("\nthis repo uses bun test\n"); // store entries are bare facts, no (kind) label
     const skillsAt = lines.indexOf("SKILLS (load a body only when relevant)");
     expect(skillsAt).toBeGreaterThan(0);
     expect(lines[skillsAt + 1]).toBe(`- nextjs-ram-autopsy: ${longDesc.slice(0, 57).trimEnd()}…`);

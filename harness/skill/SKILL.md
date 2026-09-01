@@ -56,10 +56,11 @@ deliverable — it proves that file moved, not merely that some tool ran. Read t
 
 ## Memory + skill (automatic, Hermes-style)
 
-Skills are not written by code. `agentik harvest` retains a session note only; a skill is a
-class of work with a ≤60-char description, created or patched by the model-driven review or
-by the human (`agentik skill draft <name> --description "…"`). Linking into a harness is opt-in
-(`agentik skills pin <name>` then `agentik skills link <name>`).
+Skills and memory are not written by code, and not by workers. After a run, `agentik harvest … --transcript FILE`
+(or `agentik review`) runs the **background review**: a bounded model pass with three tools — `memory`
+(MEMORY.md / USER.md, cap-forced consolidation), `skill_manage` (view/patch/create, one create max,
+class-level names, read-before-write) and `read_file`. `USER.md` only ever holds what the user said
+explicitly. Linking a skill into a harness stays opt-in (`agentik skills pin` + `link`).
 
 Closed learning loop. Do it yourself. **Do not wait** for the user to say learn / harvest / approve. **Do not ask.**
 

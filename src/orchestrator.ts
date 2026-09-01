@@ -1,5 +1,5 @@
 import { detectInjection, isGoalHijack } from "./injection.ts";
-import { blastForCall, specFor } from "./tools.ts";
+import { blastForCall, REVIEWER_ONLY_TOOLS, specFor } from "./tools.ts";
 import { wrapTrusted } from "./trust.ts";
 import type {
   ApprovalRequest,
@@ -108,6 +108,11 @@ export class Orchestrator {
     if (!spec) {
       this.emit("tool_blocked", { tool: call.tool, reason: "unknown_tool" });
       return { allowed: false, pendingApproval: false, reason: "unknown_tool", findings };
+    }
+    // Workers and subagents never write the agent's own memory; only the review fork does.
+    if (REVIEWER_ONLY_TOOLS.has(call.tool) && call.proposedBy !== "reviewer") {
+      this.emit("tool_blocked", { tool: call.tool, reason: "reviewer_only" });
+      return { allowed: false, pendingApproval: false, reason: "reviewer_only", findings };
     }
 
     const injected = findings.some((f) => f.detected);

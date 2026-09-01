@@ -1,6 +1,10 @@
+import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { detectInjection } from "./injection.ts";
+import { memoryApply, type MemoryOperation, type MemoryTarget } from "./memory-store.ts";
+import { skillDescriptionProblem, skillNameProblem, upsertSkill } from "./skill-factory.ts";
+import { agentikHome, memoryPaths } from "./home.ts";
 import { wrapUntrusted } from "./trust.ts";
 import type {
   BlastRadius,
@@ -43,7 +47,21 @@ export const TOOL_CATALOG: ToolSpec[] = [
     blastRadius: "high",
     description: "Use or export credentials",
   },
+  {
+    name: "memory",
+    blastRadius: "low",
+    description:
+      "Reviewer only. add/replace/remove an entry in MEMORY.md (target memory) or USER.md (target user); batch via operations[]",
+  },
+  {
+    name: "skill_manage",
+    blastRadius: "medium",
+    description: "Reviewer only. view/patch/create a skill; create and patch require a prior view of that skill",
+  },
 ];
+
+/** Tools that write the agent's own memory. Never for a worker, only for the review fork. */
+export const REVIEWER_ONLY_TOOLS = new Set(["memory", "skill_manage"]);
 
 const HIGH_CMD =
   /\b(rm\s+-[a-zA-Z]*f|sudo|mkfs|dd\s+if=|shutdown|reboot|drop\s+database|chmod\s+777|curl[^\n]*\|\s*(ba)?sh|wipe|mkfs\.\w+)\b/i;
@@ -72,10 +90,24 @@ export function resolveSafe(workspace: string, rel: string): string {
   return full;
 }
 
+/** Per-review state the skill tool needs: read-before-write and the one-create budget. */
+export interface ReviewState {
+  viewedSkills: Set<string>;
+  skillsCreated: number;
+  maxSkillCreates: number;
+}
+
 export interface ToolHost {
   workspace: string;
   fetchImpl?: FetchImpl;
   onRetrieved?: (url: string, body: string) => void;
+  /** Home for memory/skills. Only set by the reviewer; its absence blocks the memory tools. */
+  agentikHome?: string;
+  reviewState?: ReviewState;
+}
+
+export function newReviewState(maxSkillCreates = 1): ReviewState {
+  return { viewedSkills: new Set(), skillsCreated: 0, maxSkillCreates };
 }
 
 export async function executeTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {
@@ -92,6 +124,10 @@ export async function executeTool(call: ToolCall, host: ToolHost): Promise<ToolR
       return researchFetchTool(call, host);
     case "server_admin":
       return serverAdminTool(call, host);
+    case "memory":
+      return memoryTool(call, host);
+    case "skill_manage":
+      return skillManageTool(call, host);
     case "fs_destructive":
     case "credential_use":
       return {
@@ -227,6 +263,99 @@ async function serverAdminTool(call: ToolCall, host: ToolHost): Promise<ToolResu
     output: "sandbox admin receipt written (no remote mutation)",
     artifact: rel,
   };
+}
+
+function reviewerOnly(call: ToolCall, host: ToolHost): ToolResult | undefined {
+  if (call.proposedBy !== "reviewer" || !host.agentikHome) {
+    return {
+      callId: call.id,
+      ok: false,
+      output: `${call.tool} is reviewer-only: workers and subagents never write memory or skills`,
+    };
+  }
+  return undefined;
+}
+
+async function memoryTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {
+  const denied = reviewerOnly(call, host);
+  if (denied) return denied;
+  const target = call.args.target === "user" ? "user" : ("memory" as MemoryTarget);
+  const ops: MemoryOperation[] = Array.isArray(call.args.operations)
+    ? (call.args.operations as MemoryOperation[])
+    : [
+        {
+          action: String(call.args.action ?? "add") as MemoryOperation["action"],
+          content: typeof call.args.content === "string" ? call.args.content : undefined,
+          old: typeof call.args.old === "string" ? call.args.old : undefined,
+          new: typeof call.args.new === "string" ? call.args.new : undefined,
+        },
+      ];
+  const res = await memoryApply(target, ops, { home: host.agentikHome });
+  const lines = [`${res.ok ? "ok" : "refused"}: ${res.message}`, `usage: ${res.usage.used}/${res.usage.cap} chars`];
+  if (res.overCap && res.entries) {
+    lines.push("current entries:");
+    for (const e of res.entries) lines.push(`  § ${e}`);
+  }
+  return { callId: call.id, ok: res.ok, output: lines.join("\n"), artifact: res.ok ? `${target}.md` : undefined };
+}
+
+async function skillManageTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {
+  const denied = reviewerOnly(call, host);
+  if (denied) return denied;
+  const state = host.reviewState ?? newReviewState();
+  const action = String(call.args.action ?? "view");
+  const name = String(call.args.name ?? "").trim();
+  const nameProblem = skillNameProblem(name);
+  if (nameProblem) {
+    return { callId: call.id, ok: false, output: `invalid skill name "${name}": ${nameProblem} — names are class-level (pwa-drawer-swipe), never session titles` };
+  }
+  const skillsDir = memoryPaths(agentikHome(host.agentikHome)).skills;
+  const file = join(skillsDir, name, "SKILL.md");
+
+  if (action === "view") {
+    state.viewedSkills.add(name);
+    try {
+      const body = await readFile(file, "utf8");
+      return { callId: call.id, ok: true, output: body };
+    } catch {
+      return { callId: call.id, ok: true, output: `(no skill named ${name} yet — you may create it)` };
+    }
+  }
+  if (!state.viewedSkills.has(name)) {
+    return { callId: call.id, ok: false, output: `read before write: call skill_manage view "${name}" first` };
+  }
+  if (action === "patch") {
+    const oldStr = String(call.args.old_string ?? "");
+    const newStr = String(call.args.new_string ?? "");
+    if (!oldStr) return { callId: call.id, ok: false, output: "patch: old_string is required" };
+    let body: string;
+    try {
+      body = await readFile(file, "utf8");
+    } catch {
+      return { callId: call.id, ok: false, output: `patch: no skill named ${name}` };
+    }
+    const n = body.split(oldStr).length - 1;
+    if (n !== 1) return { callId: call.id, ok: false, output: `patch: old_string must match exactly once (matched ${n})` };
+    await writeFile(file, body.replace(oldStr, newStr), "utf8");
+    return { callId: call.id, ok: true, output: `patched ${name}`, artifact: `skills/${name}/SKILL.md` };
+  }
+  if (action === "create") {
+    if (existsSync(file)) return { callId: call.id, ok: false, output: `create: ${name} exists — patch it instead` };
+    if (state.skillsCreated >= state.maxSkillCreates) {
+      return { callId: call.id, ok: false, output: `create: this review may create at most ${state.maxSkillCreates} skill; patch an existing one instead` };
+    }
+    const description = String(call.args.description ?? "");
+    const dp = skillDescriptionProblem(description);
+    if (dp) return { callId: call.id, ok: false, output: `create: ${dp}` };
+    const body = String(call.args.body ?? "").trim();
+    if (body.length < 80) return { callId: call.id, ok: false, output: "create: body must be a real procedure (When to use / Procedure / Pitfalls / Verification), not a session log" };
+    if (body.length > 100_000) return { callId: call.id, ok: false, output: "create: body over 100k chars" };
+    await upsertSkill({ name, description, steps: [], home: host.agentikHome });
+    await writeFile(file, `---\nname: ${name}\ndescription: ${description.trim()}\n---\n\n${body}\n`, "utf8");
+    state.skillsCreated += 1;
+    return { callId: call.id, ok: true, output: `created ${name}`, artifact: `skills/${name}/SKILL.md` };
+  }
+  return { callId: call.id, ok: false, output: `skill_manage: unknown action ${action}` };
 }
 
 async function listShallow(dir: string): Promise<string[]> {

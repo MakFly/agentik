@@ -70,7 +70,8 @@ describe("Hermes-style automatic reviewAfterRun", () => {
       workspace: "/tmp/ws-b",
     });
     const hits = await recallBeforeRun({ goal: "bun test runner", home, workspace: "/tmp/ws-a" });
-    expect(hits[0]).toBe("(fact) this repo uses bun test not jest");
+    // HOT entries are bare facts now (no `(kind)` label): the store does not label entries.
+    expect(hits[0]).toBe("this repo uses bun test not jest");
     expect(hits.some((h) => /^\[\d{4}-\d{2}-\d{2}\] make the bun test runner discover Makefile targets — completed/.test(h))).toBe(true);
     expect(hits.some((h) => h.includes("flakiness elsewhere"))).toBe(false);
     const all = await recallBeforeRun({ goal: "bun test runner", home });
