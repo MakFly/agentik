@@ -56,6 +56,11 @@ deliverable — it proves that file moved, not merely that some tool ran. Read t
 
 ## Memory + skill (automatic, Hermes-style)
 
+Skills are not written by code. `agentik harvest` retains a session note only; a skill is a
+class of work with a ≤60-char description, created or patched by the model-driven review or
+by the human (`agentik skill draft <name> --description "…"`). Linking into a harness is opt-in
+(`agentik skills pin <name>` then `agentik skills link <name>`).
+
 Closed learning loop. Do it yourself. **Do not wait** for the user to say learn / harvest / approve. **Do not ask.**
 
 Before work:

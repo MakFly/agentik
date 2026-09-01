@@ -1,13 +1,9 @@
-import { join } from "node:path";
-import { homedir } from "node:os";
 import { agentikHome } from "./home.ts";
 import { recall, retainNote } from "./memory.ts";
-import { shouldDraftSkill, slugifySkillName, upsertSkill } from "./skill-factory.ts";
 import type { RunReport } from "./types.ts";
 
 export interface ReviewResult {
   memoryLayer: "hot" | "warm" | "rejected";
-  skill?: { action: "created" | "updated"; name: string; path: string };
 }
 
 export function keywordsFromGoal(goal: string): string {
@@ -40,7 +36,14 @@ export async function recallBeforeRun(opts: {
   return hits;
 }
 
-/** Hermes-style turn finalizer: always retain; auto-write/update skill on non-trivial runs. */
+/**
+ * Turn finalizer. Retains a session note and nothing else.
+ *
+ * It used to also write a skill whenever a run had 2+ artifacts or 5+ tool calls, named after
+ * the goal. Code cannot know what class of work a run belongs to, so every run became its own
+ * skill — 28 of them in a day, linked into three harnesses. Skill creation is a judgment call
+ * and belongs to the model-driven review (`agentik review`), not to this function.
+ */
 export async function reviewAfterRun(opts: {
   goal: string;
   report: Pick<RunReport, "status" | "executedTools" | "artifacts">;
@@ -49,21 +52,5 @@ export async function reviewAfterRun(opts: {
   const home = agentikHome(opts.home);
   const session = `session: ${opts.goal} [${opts.report.status}] artifacts=${opts.report.artifacts.join(",") || "none"}`;
   const mem = await retainNote(session, { home, kind: "session" });
-  const result: ReviewResult = { memoryLayer: mem.layer };
-  if (!shouldDraftSkill(opts.report)) return result;
-
-  const name = slugifySkillName(opts.goal);
-  const steps = opts.report.executedTools.map(
-    (t) => `${t.tool}${t.artifact ? " -> " + t.artifact : ""}`,
-  );
-  const shipped = await upsertSkill({
-    name,
-    goal: opts.goal,
-    steps: steps.length ? steps : ["Completed the trusted goal."],
-    artifacts: opts.report.artifacts,
-    home,
-    linkHarness: home === join(homedir(), ".agentik"),
-  });
-  result.skill = { action: shipped.action, name: shipped.name, path: shipped.path };
-  return result;
+  return { memoryLayer: mem.layer };
 }

@@ -66,7 +66,9 @@ Auto-run is in-process for that one goal — not a daemon. After each tool resul
 
 A step that produces nothing is not a finished task. A refused tool call is fed back to the worker as untrusted `tool_output` so it can correct itself, and an empty or truncated reply is reprompted once before the task is recorded in `stalledTasks` — which makes the run exit **5**, never 0.
 
-Memory is Hermes-style and **automatic**: HOT `~/.agentik/memory/MEMORY.md` (small, always-on), WARM SQLite FTS5, skills as procedural memory. Every completed `agentik` run harvests a session note; non-trivial runs (2+ artifacts or 5+ tools) create or update a skill in `~/.agentik/skills/` and link it into claude/grok/codex. No `--learn`. No approve. `/ak` recalls before work and runs `agentik harvest` after, without asking.
+Memory is Hermes-style and **automatic**: HOT `~/.agentik/memory/MEMORY.md` (small, always-on), WARM SQLite FTS5, skills as procedural memory. Every completed `agentik` run harvests a session note. `/ak` recalls before work and runs `agentik harvest` after, without asking.
+
+**Code never writes a skill.** It used to, whenever a run had 2+ artifacts: the goal sentence became the skill name, cut at 64 characters, and got linked into three harnesses — 28 such skills in a day. A skill is a class of work (`pwa-drawer-swipe`), named and described (≤60 chars) by a model or a human, never derived from a session title. `agentik skills unlink` and `agentik skills archive` undo the old behaviour without deleting anything; `agentik skills pin <name>` + `link <name>` make a chosen skill visible in the harnesses.
 
 Worker processes are spawned with your real flags, but their **native file and shell tools stay
 disabled** so they cannot skip the orchestrator gate. Grok's deny list uses its *internal* tool

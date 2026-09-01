@@ -88,7 +88,7 @@ describe("CLI entry (shipped src/cli.ts main)", () => {
     expect(await Bun.file(join(workspace, "src/greet.txt")).text()).toContain("AGENTIK_OK");
   });
 
-  test("harvest auto-ships a skill without --learn or approve", async () => {
+  test("harvest retains a session note and does not write a skill", async () => {
     const home = await makeWorkspace("cli-harvest-");
     const code = await main([
       "harvest",
@@ -104,6 +104,7 @@ describe("CLI entry (shipped src/cli.ts main)", () => {
     ]);
     expect(code).toBe(0);
     expect(existsSync(join(home, "memory/MEMORY.md"))).toBe(true);
-    expect(existsSync(join(home, "skills/export-csv-on-the-leads-list/SKILL.md"))).toBe(true);
+    expect(existsSync(join(home, "skills/export-csv-on-the-leads-list/SKILL.md"))).toBe(false);
+    expect(existsSync(join(home, "skills"))).toBe(false);
   });
 });
