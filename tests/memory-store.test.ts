@@ -114,6 +114,9 @@ describe("memory store: safety at write and at load", () => {
     expect(memoryContentProblem("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")).toBe("looks like a secret (github_token)");
     // An unknown label between `sk-` and a long alnum run is not a reason to accept the token.
     expect(memoryContentProblem("sk-foo-abcdefghijklmnopqrstuvwxyz0123")).toBe("looks like a secret (openai_or_stripe_key)");
+    // Real OpenAI project keys mix `_` and `-` in the body.
+    expect(memoryContentProblem("sk-proj-abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789T3BlbkFJabcdefghijklmnop")).toBe("looks like a secret (openai_or_stripe_key)");
+    expect(memoryContentProblem("sk-proj-abcdefghijkl-mnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")).toBe("looks like a secret (openai_or_stripe_key)");
     // Ordinary prose and short strings are fine.
     expect(memoryContentProblem("sk-ant is a prefix")).toBeUndefined();
     expect(memoryContentProblem("sk-ant-abc")).toBeUndefined();

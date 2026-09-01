@@ -64,9 +64,11 @@ const SECRET_PATTERNS: Array<{ id: string; re: RegExp }> = [
   // Anthropic: `sk-ant-api03-…`, `sk-ant-…` — the body is base64url, so `-` and `_` are part
   // of the run; checked before the openai shape, which would stop at the first `-`.
   { id: "anthropic_key", re: /\bsk-ant-[A-Za-z0-9_-]{20,}/ },
-  // OpenAI / Stripe and any other `sk-<label>-<20+ alnum>` shape: an unknown label is not a
-  // reason to accept the token.
-  { id: "openai_or_stripe_key", re: /\b[sp]k[-_](?:[A-Za-z0-9]{1,16}[-_])?[A-Za-z0-9]{20,}\b/ },
+  // OpenAI / Stripe and any other `sk-<label>-<20+>` shape: an unknown label is not a reason
+  // to accept the token. Current OpenAI project keys mix `_` and `-` inside the body
+  // (`sk-proj-…T3BlbkFJ…`), so the body admits them and there is no trailing \b (it cannot sit
+  // between an alnum and `_`).
+  { id: "openai_or_stripe_key", re: /\b[sp]k[-_](?:[A-Za-z0-9]{1,16}[-_])?[A-Za-z0-9_-]{20,}/ },
   { id: "github_token", re: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/ },
   { id: "slack_token", re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/ },
   { id: "aws_access_key", re: /\bAKIA[0-9A-Z]{16}\b/ },

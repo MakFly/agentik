@@ -143,15 +143,13 @@ describe("claude stream-json", () => {
     expect(fold("claude", [{ type: "error", error: "plain" }]).errors).toEqual(["plain"]);
   });
 
-  test("system/error events and is_error content blocks are recorded too", () => {
+  test("system/error events are recorded; a failed tool_result is the worker's problem, not a harness error", () => {
     const v = fold("claude", [
       { type: "system", subtype: "error", message: "hook failed" },
-      { type: "assistant", message: { content: [{ type: "tool_result", is_error: true, content: "ENOENT" }] } },
+      { type: "user", message: { content: [{ type: "tool_result", is_error: true, content: "ENOENT" }] } },
       { type: "result", subtype: "success", is_error: false, num_turns: 1 },
     ]);
-    expect(v.errors).toHaveLength(2);
-    expect(v.errors[0]).toBe("hook failed");
-    expect(v.errors[1]).toContain("ENOENT");
+    expect(v.errors).toEqual(["hook failed"]);
     expect(v.completed).toBe(true);
   });
 

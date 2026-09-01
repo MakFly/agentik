@@ -104,8 +104,6 @@ export function consumeVerdictLine(v: HarnessVerdict, line: string, hooks?: Rend
           if (p.type === "tool_use") {
             record(v, String(p.name ?? "tool"), describeArgs(p.input), hooks);
           }
-          // A content block flagged is_error is the harness's own error line; keep it.
-          if (p.is_error === true) v.errors.push(claudeErrorMessage(p));
         }
       }
     } else if (type === "error" || (type === "system" && obj.subtype === "error")) {
