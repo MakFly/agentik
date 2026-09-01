@@ -1,0 +1,6 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "result": "{\"text\":\"implementing greet.txt\",\"toolCalls\":[{\"tool\":\"write_file\",\"args\":{\"path\":\"src/greet.txt\",\"content\":\"AGENTIK_OK\"}}],\"tasks\":[{\"assignee\":\"worker_a\",\"instruction\":\"write the file\",\"allowedTools\":[\"write_file\",\"read_file\"]}]}"
+}

@@ -1,0 +1,22 @@
+{
+  "name": "agentik",
+  "version": "0.1.0",
+  "description": "3-role agentic development system: human supreme orchestrator + two AI workers, with prompt-injection detection and sourced research.",
+  "type": "module",
+  "bin": {
+    "agentik": "./src/cli.ts"
+  },
+  "scripts": {
+    "agentik": "bun run src/cli.ts",
+    "start": "bun run src/cli.ts",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}

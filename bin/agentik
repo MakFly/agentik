@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# PATH entry: ~/.local/bin/agentik → this file (resolve the symlink).
+set -euo pipefail
+SELF="$(readlink -f "$0")"
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+BUN="${BUN:-$HOME/.bun/bin/bun}"
+if [[ ! -x "$BUN" ]]; then
+  BUN="$(command -v bun)"
+fi
+exec "$BUN" "$ROOT/src/cli.ts" "$@"
