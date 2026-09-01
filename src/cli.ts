@@ -30,6 +30,7 @@ import {
 import { formatReport, runLoop } from "./loop.ts";
 import { defaultFetchImpl } from "./tools.ts";
 import { retainNote, readHot } from "./memory.ts";
+import { memoryFileLabel, memoryFilePath, memoryRemoveEntry, type MemoryTarget } from "./memory-store.ts";
 import { formatSessionHit, searchSessions } from "./sessions.ts";
 import { buildContext } from "./context.ts";
 import {
@@ -115,15 +116,25 @@ Commands:
                                --incident ID is the postmortem: one question — why, and what
                                prevents it — answered with incident classify|resolve|merge,
                                a memory fact, or a skill Pitfalls patch (seen ≥2).
-                               The block /ak reads before work: USER profile, MEMORY (durable
-                               facts), the skills index (name: description) and the top-6
-                               sessions related to the goal, filtered on the workspace.
+                               The block /ak reads before work: USER profile, MEMORY (GLOBAL
+                               durable facts), PROJECT MEMORY (this workspace's own file,
+                               only when --workspace is given and it is non-empty), the skills
+                               index (name: description) and the top-6 sessions related to
+                               the goal, filtered on the workspace.
   agentik memory search "<q>" [--workspace DIR] [--all] [--limit N]
                                Search sessions.sqlite (FTS5, diacritics-insensitive + trigram):
                                "cloturer" finds « clôturer », "drawr" finds "drawer".
-                               "memory recall" is an alias. "memory hot" prints MEMORY.md;
-                               "memory retain <fact>" writes it (HOT only, cap 2200: over the cap
-                               the note is refused, consolidate first).
+                               "memory recall" is an alias.
+  agentik memory hot | retain <fact> | remove "<exact entry or unique prefix>"
+                          [--target memory|user|project] [--workspace DIR]
+                               One memory file: --target memory = the GLOBAL MEMORY.md
+                               (default, cap 2200), user = USER.md (1375), project = this
+                               workspace's memory/projects/<slug>/MEMORY.md (2200; --workspace
+                               DIR, default cwd). "hot" prints it; "retain" adds a fact (over
+                               the cap the note is refused, consolidate first); "remove" drops
+                               one entry by exact text or unique prefix — the human's pen: no
+                               approval queue, a MEMORY.md.bak.<ts> copy is taken first; no
+                               match or several matches exit 1 and list the candidates.
   agentik memory pending | approve <id|all> | reject <id|all>
                                With memory.writeApproval on in <home>/config.json, every memory
                                write (reviewer tool, retain) is staged under pending/memory/;
@@ -806,6 +817,7 @@ export function parseRun(args: string[]): {
     cause?: string;
     incident?: string;
     since?: string;
+    target?: string;
   };
 } {
   const flags: Record<string, string | boolean> = {};
@@ -908,6 +920,7 @@ export function parseRun(args: string[]): {
       cause: str(flags.cause),
       incident: str(flags.incident),
       since: str(flags.since),
+      target: str(flags.target),
     },
   };
 }
@@ -1018,26 +1031,65 @@ async function harvestCmd(args: string[]): Promise<number> {
 }
 
 const MEMORY_USAGE =
-  'usage: agentik memory search "<query>" [--workspace DIR] [--all] [--limit N] | recall (alias) | hot | retain <fact>\n' +
+  'usage: agentik memory search "<query>" [--workspace DIR] [--all] [--limit N] | recall (alias)\n' +
+  '       agentik memory hot | retain <fact> | remove "<exact entry or unique prefix>"  [--target memory|user|project] [--workspace DIR]\n' +
   "       agentik memory pending | approve <id|all> | reject <id|all>";
+
+/** `--target` (default memory); `project` scopes to `--workspace` or the cwd. */
+function memoryTargetFor(flags: { target?: string; workspace?: string }): { target: MemoryTarget; workspace?: string } | { error: string } {
+  const raw = flags.target ?? "memory";
+  if (raw !== "memory" && raw !== "user" && raw !== "project") {
+    return { error: `unknown --target "${raw}" (memory | user | project)` };
+  }
+  return { target: raw, workspace: raw === "project" ? resolve(flags.workspace ?? process.cwd()) : undefined };
+}
 
 async function memoryCmd(args: string[]): Promise<number> {
   const sub = args[0];
   const { goal, flags } = parseRun(args.slice(1));
   const home = homeFor(flags);
-  if (sub === "hot") {
-    process.stdout.write((await readHot({ home })) || "(empty HOT MEMORY.md)\n");
-    return 0;
-  }
-  if (sub === "retain") {
-    if (!goal) {
-      console.error("usage: agentik memory retain <note>");
+  if (sub === "hot" || sub === "retain" || sub === "remove") {
+    const scope = memoryTargetFor(flags);
+    if ("error" in scope) {
+      console.error(`agentik memory ${sub}: ${scope.error}`);
       return 2;
     }
-    const r = await retainNote(goal, { home });
-    console.log(r.layer === "rejected" ? `rejected: ${r.reason}` : `${r.layer} ${r.path}`);
-    if (r.layer === "pending") console.log(`memory.writeApproval is on — ${r.reason}`);
-    return r.layer === "rejected" ? 3 : 0;
+    const { target, workspace } = scope;
+    if (sub === "hot") {
+      if (target === "memory") {
+        process.stdout.write((await readHot({ home })) || "(empty HOT MEMORY.md)\n");
+        return 0;
+      }
+      let body = "";
+      try {
+        body = await readFile(memoryFilePath(target, { home, workspace }), "utf8");
+      } catch {
+        body = "";
+      }
+      process.stdout.write(body || `(empty ${memoryFileLabel(target)}${workspace ? ` for ${workspace}` : ""})\n`);
+      return 0;
+    }
+    if (!goal) {
+      console.error(sub === "retain" ? "usage: agentik memory retain <note> [--target memory|user|project] [--workspace DIR]" : MEMORY_USAGE);
+      return 2;
+    }
+    if (sub === "retain") {
+      const r = await retainNote(goal, { home, target, workspace });
+      console.log(r.layer === "rejected" ? `rejected: ${r.reason}` : `${r.layer} ${r.path}`);
+      if (r.layer === "pending") console.log(`memory.writeApproval is on — ${r.reason}`);
+      return r.layer === "rejected" ? 3 : 0;
+    }
+    // remove: the human's pen — no approval queue, a backup first, exact or unique-prefix match.
+    const r = await memoryRemoveEntry(target, goal, { home, workspace });
+    if (!r.ok) {
+      console.error(`agentik memory remove: ${r.message}`);
+      for (const c of r.candidates) console.error(`  § ${c}`);
+      return 1;
+    }
+    console.log(`removed: ${r.removed}`);
+    console.log(`backup: ${r.backup}`);
+    console.log(`${memoryFileLabel(target)} ${r.usage.used}/${r.usage.cap} chars`);
+    return 0;
   }
   if (sub === "pending") {
     console.log(formatPendingMemory(await listPending<PendingMemoryOp>("memory", { home })));

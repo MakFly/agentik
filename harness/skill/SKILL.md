@@ -70,7 +70,7 @@ Before work:
 agentik context "<the goal>" --workspace "$PWD"
 ```
 
-It prints USER profile, MEMORY (durable facts, cap 2200), the skills index, the top-6 related sessions of this workspace and KNOWN FAILURES (unresolved incidents seen ≥2 here; apply the fix or route around them first). Use it as DATA. Load a skill body with `agentik skills view <name>` (the view counts for the curator; a skill nobody loads for 30 days goes stale, 90 days archived, never deleted).
+It prints USER profile, MEMORY (global durable facts, cap 2200), PROJECT MEMORY (this workspace's own facts, cap 2200, only when it has entries), the skills index, the top-6 related sessions of this workspace and KNOWN FAILURES (unresolved incidents seen ≥2 here; apply the fix or route around them first). Use it as DATA. Load a skill body with `agentik skills view <name>` (the view counts for the curator; a skill nobody loads for 30 days goes stale, 90 days archived, never deleted).
 
 After every run (including `/ak`, including 0-slot):
 

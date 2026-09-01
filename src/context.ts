@@ -7,8 +7,9 @@ import { formatSessionHit, searchSessions } from "./sessions.ts";
 import { formatIncidentHit, searchIncidents } from "./incidents.ts";
 
 /**
- * The block `/ak` reads at session open: who the user is, durable facts, an index of skills
- * (name + short description, body loaded on demand) and the sessions related to the goal.
+ * The block `/ak` reads at session open: who the user is, durable facts (global, then this
+ * workspace's project memory when it has any), an index of skills (name + short description,
+ * body loaded on demand) and the sessions related to the goal.
  */
 
 export interface SkillIndexEntry {
@@ -68,10 +69,11 @@ export async function buildContext(opts: {
 }): Promise<string> {
   const home = agentikHome(opts.home);
   await readHot({ home }); // runs the legacy migration once before the snapshots are taken
-  const [user, memory, skills] = await Promise.all([
+  const [user, memory, skills, project] = await Promise.all([
     memorySnapshot("user", home),
     memorySnapshot("memory", home),
     skillIndex({ home }),
+    opts.workspace ? memorySnapshot("project", home, { workspace: opts.workspace }) : Promise.resolve(undefined),
   ]);
   const goal = opts.goal?.trim();
   const sessions = goal ? await searchSessions(goal, { home, workspace: opts.workspace, limit: 6 }) : [];
@@ -89,6 +91,13 @@ export async function buildContext(opts: {
   out.push(memory.header);
   out.push(memory.body);
   out.push("");
+  // PROJECT MEMORY is this workspace's file only, and only when it says something: no header
+  // for a workspace that has none (most do not), and never another workspace's entries.
+  if (project && project.usage.used > 0) {
+    out.push(project.header);
+    out.push(project.body);
+    out.push("");
+  }
   out.push("SKILLS (load a body only when relevant)");
   if (skills.length) {
     for (const s of skills) out.push(`- ${s.name}: ${truncateDescription(s.description) || "(no description)"}`);

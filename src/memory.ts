@@ -4,8 +4,11 @@ import {
   MEMORY_CAP,
   memoryAdd,
   memoryContentProblem,
+  memoryFileLabel,
+  memoryFilePath,
   readEntries,
   USER_CAP as STORE_USER_CAP,
+  type MemoryTarget,
 } from "./memory-store.ts";
 import { formatSessionHit, migrateLegacyMemory, searchSessions } from "./sessions.ts";
 
@@ -31,34 +34,37 @@ export function looksLikeSecret(text: string): boolean {
 }
 
 /**
- * Write a durable fact to HOT through the store: one `§`-separated entry, exact-deduplicated,
+ * Write a durable fact through the store: one `§`-separated entry, exact-deduplicated,
  * scanned, and refused with the cap in the reason when it does not fit — the caller
  * consolidates (replace / remove) instead of the note silently landing somewhere nobody reads.
- * `kind` is kept for the CLI's sake; the store does not label entries.
+ * `target` defaults to the global MEMORY.md; `project` needs `workspace`. `kind` is kept for
+ * the CLI's sake; the store does not label entries.
  */
 export async function retainNote(
   body: string,
-  opts?: { kind?: MemoryNote["kind"]; home?: string },
+  opts?: { kind?: MemoryNote["kind"]; home?: string; target?: MemoryTarget; workspace?: string },
 ): Promise<RetainResult> {
   const text = body.replace(/\s+/g, " ").trim();
   if (!text) return { layer: "rejected", path: "", reason: "empty note" };
   const home = agentikHome(opts?.home);
+  const target = opts?.target ?? "memory";
   await migrateLegacyMemory({ home });
   const paths = memoryPaths(home);
-  const res = await memoryAdd("memory", text, { home });
+  const file = memoryFilePath(target, { home, workspace: opts?.workspace });
+  const res = await memoryAdd(target, text, { home, workspace: opts?.workspace });
   if (!res.ok) {
     return {
       layer: "rejected",
-      path: res.blocked ? "secret" : paths.hot,
+      path: res.blocked ? "secret" : file,
       reason: res.overCap
-        ? `MEMORY.md at ${res.usage.used}/${res.usage.cap} chars — consolidate (replace/remove) before adding`
+        ? `${memoryFileLabel(target)} at ${res.usage.used}/${res.usage.cap} chars — consolidate (replace/remove) before adding`
         : res.message,
     };
   }
   if (res.staged) {
     return { layer: "pending", path: `${paths.pendingMemoryOps}/${res.staged}.json`, reason: res.message };
   }
-  return { layer: "hot", path: paths.hot };
+  return { layer: "hot", path: file };
 }
 
 /** HOT entries whose text contains the query (case-insensitive). */

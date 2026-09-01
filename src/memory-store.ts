@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { readConfig } from "./config.ts";
 import { agentikHome, memoryPaths, projectMemoryPath } from "./home.ts";
@@ -333,6 +334,41 @@ export const memoryReplace = (target: MemoryTarget, old: string, next: string, o
   memoryApply(target, [{ action: "replace", old, new: next }], opts);
 export const memoryRemove = (target: MemoryTarget, old: string, opts?: MemoryStoreOpts) =>
   memoryApply(target, [{ action: "remove", old }], opts);
+
+export type RemoveEntryResult =
+  | { ok: true; removed: string; backup: string; usage: MemoryUsage }
+  | { ok: false; message: string; candidates: string[] };
+
+/**
+ * The human's pen: `agentik memory remove`. Matches one entry by exact text, else by unique
+ * prefix; zero or several matches is a refusal that names the candidates. No approval queue
+ * (the human IS the approver), but a `<file>.bak.<ts>` copy is taken first, like the legacy
+ * sweep does.
+ */
+export async function memoryRemoveEntry(
+  target: MemoryTarget,
+  needle: string,
+  opts?: MemoryStoreOpts,
+): Promise<RemoveEntryResult> {
+  const workspace = target === "project" ? opts?.workspace : undefined;
+  const { file } = pathFor(target, opts?.home, workspace);
+  const entries = await readEntries(target, opts?.home, { workspace });
+  const n = normalize(needle);
+  const exact = n ? entries.filter((e) => normalize(e) === n) : [];
+  const matches = exact.length ? exact : n ? entries.filter((e) => normalize(e).startsWith(n)) : [];
+  const shown = needle.replace(/\s+/g, " ").trim().slice(0, 60);
+  if (matches.length === 0) return { ok: false, message: `no entry matches "${shown}"`, candidates: [] };
+  if (matches.length > 1) {
+    return { ok: false, message: `"${shown}" matches ${matches.length} entries — quote one exactly`, candidates: matches };
+  }
+  const stamp = `${file}.bak.${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  let backup = stamp;
+  for (let n = 2; existsSync(backup); n++) backup = `${stamp}-${n}`; // two removals in the same ms keep both states
+  await copyFile(file, backup);
+  const res = await memoryApply(target, [{ action: "remove", old: matches[0] }], { ...opts, bypassApproval: true });
+  if (!res.ok) return { ok: false, message: res.message, candidates: [] };
+  return { ok: true, removed: matches[0], backup, usage: res.usage };
+}
 
 // ------------------------------------------------------------------------------------------
 // Snapshot: what goes into a prompt. Frozen at the moment it is taken; the caller decides when.
