@@ -58,7 +58,7 @@ deliverable — it proves that file moved, not merely that some tool ran. Read t
 
 Skills and memory are not written by code, and not by workers. After a run, `agentik harvest … --transcript FILE`
 (or `agentik review`) runs the **background review**: a bounded model pass with four tools — `memory`
-(MEMORY.md / USER.md, cap-forced consolidation), `skill_manage` (view/patch/create, one create max,
+(global MEMORY.md / this workspace's PROJECT memory / USER.md — the reviewer chooses the level, cap-forced consolidation), `skill_manage` (view/patch/create, one create max,
 class-level names, read-before-write), `incident` (classify/resolve/merge the failure log) and `read_file`. `USER.md` only ever holds what the user said
 explicitly. Linking a skill into a harness stays opt-in (`agentik skills pin` + `link`).
 

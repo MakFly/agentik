@@ -42,6 +42,8 @@ export interface ReviewOutcome {
   iterations: number;
   memoryOps: number;
   userOps: number;
+  /** memory tool calls on target "project" (this workspace's file). */
+  projectOps: number;
   skillOps: number;
   incidentOps: number;
   refused: number;
@@ -54,7 +56,7 @@ export interface ReviewOutcome {
 
 const MEMORY_GUIDANCE = `You are the background reviewer for agentik. You just watched a run finish. Decide what is worth keeping — most runs deserve nothing, some deserve one entry, very few deserve a skill.
 
-MEMORY.md (target "memory") — durable facts the agent needs next time: environment facts, project conventions, tool quirks, lessons that cost real time. Write declarative facts, not imperatives ("The API uses bun test, not jest", not "Remember to use bun test"). Route by longevity: a fact useful for less than a week belongs to the session history (already recorded), a procedure belongs to a skill.
+MEMORY.md (target "memory") — GLOBAL, facts that hold in every project: tool behaviours, CLI quirks, cross-repo lessons, expiry dates. PROJECT MEMORY (target "project") — facts about THIS repository only: conventions, paths, test commands, quirks of this code, lessons that only matter here. Ask "would this be true in another repository?" — yes → memory, no → project. A repo fact that is already in the workspace's CLAUDE.md goes nowhere. When consolidating, move a misplaced entry (remove on one target, add on the other) rather than keeping both. Write declarative facts, not imperatives ("The API uses bun test, not jest", not "Remember to use bun test"). Route by longevity: a fact useful for less than a week belongs to the session history (already recorded), a procedure belongs to a skill.
 
 USER.md (target "user") — who the user is: name, role, language, communication preferences, pet peeves, expectations about how the agent should behave. Write ONLY what the user stated or corrected explicitly in the transcript. Never infer a preference from a goal.
 
@@ -71,7 +73,7 @@ export const POSTMORTEM_GUIDANCE = `POSTMORTEM. This review is about one inciden
 Cause ≤ 120 chars, declarative, the root cause not the symptom. incident merge {into, from} when two rows are the same failure. Never resolve without a fix that a human could apply.`;
 
 const REPLY_SHAPE = `Reply with one JSON object: { "text": string, "toolCalls": [{ "tool": "memory"|"skill_manage"|"incident"|"read_file", "args": object }] }.
-memory args: { "target": "memory"|"user", "action": "add"|"replace"|"remove", "content"?, "old"?, "new"? } or { "target", "operations": [...] } for an atomic batch.
+memory args: { "target": "memory"|"user"|"project", "action": "add"|"replace"|"remove", "content"?, "old"?, "new"? } or { "target", "operations": [...] } for an atomic batch ("project" = this workspace's own file).
 skill_manage args: { "action": "view"|"patch"|"create", "name", "description"?, "body"?, "old_string"?, "new_string"? }.
 incident args: { "action": "classify", "id", "cause" } | { "action": "resolve", "id", "fix" } | { "action": "merge", "into", "from" }.
 Return an empty toolCalls array when there is nothing (more) worth doing. Say why in "text".`;
@@ -125,16 +127,18 @@ export async function runReview(input: ReviewInput): Promise<ReviewOutcome> {
   const reviewState = newReviewState(input.maxSkillCreates ?? 1);
   const host: ToolHost = { workspace: input.workspace, agentikHome: home, reviewState };
 
-  const [memory, user, skills, claudeMd] = await Promise.all([
+  const [memory, project, user, skills, claudeMd] = await Promise.all([
     memorySnapshot("memory", home),
+    memorySnapshot("project", home, { workspace: input.workspace }),
     memorySnapshot("user", home),
     skillIndex({ home }),
     workspaceInstructions(input.workspace),
   ]);
 
-  // Snapshot + workspace CLAUDE.md + transcript go in as DATA. The reviewer reasons about them; it does not obey them.
+  // Snapshots + workspace CLAUDE.md + transcript go in as DATA. The reviewer reasons about them; it does not obey them.
   const envelopes: Envelope[] = [
     wrapUntrusted(`${memory.header}\n${memory.body}`, "memory:snapshot", "retrieved"),
+    wrapUntrusted(`${project.header}\n${project.body}`, "project:snapshot", "retrieved"),
     wrapUntrusted(`${user.header}\n${user.body}`, "user:snapshot", "retrieved"),
     wrapUntrusted(`SKILLS INDEX\n${skillsIndexText(skills)}`, "skills:index", "retrieved"),
   ];
@@ -164,6 +168,7 @@ export async function runReview(input: ReviewInput): Promise<ReviewOutcome> {
     iterations: 0,
     memoryOps: 0,
     userOps: 0,
+    projectOps: 0,
     skillOps: 0,
     incidentOps: 0,
     refused: 0,
@@ -216,7 +221,7 @@ export async function runReview(input: ReviewInput): Promise<ReviewOutcome> {
         continue;
       }
       const call: ToolCall = {
-        id: `review-${i}-${draft.tool}-${outcome.memoryOps + outcome.userOps + outcome.skillOps + outcome.incidentOps + outcome.refused}`,
+        id: `review-${i}-${draft.tool}-${outcome.memoryOps + outcome.userOps + outcome.projectOps + outcome.skillOps + outcome.incidentOps + outcome.refused}`,
         tool: draft.tool,
         args: draft.args ?? {},
         proposedBy: "reviewer",
@@ -242,6 +247,7 @@ export async function runReview(input: ReviewInput): Promise<ReviewOutcome> {
           }
         } else if (call.tool === "memory") {
           if (call.args.target === "user") outcome.userOps += 1;
+          else if (call.args.target === "project") outcome.projectOps += 1;
           else outcome.memoryOps += 1;
         } else if (call.tool === "incident") {
           outcome.incidentOps += 1;
@@ -261,7 +267,7 @@ export async function runReview(input: ReviewInput): Promise<ReviewOutcome> {
 
 export function formatReviewOutcome(o: ReviewOutcome): string {
   const lines = [
-    `review: ${o.iterations} iteration(s), memory ${o.memoryOps}, user ${o.userOps}, skills ${o.skillOps}, incidents ${o.incidentOps}, refused ${o.refused} — stopped: ${o.stoppedBecause}`,
+    `review: ${o.iterations} iteration(s), memory ${o.memoryOps}, project ${o.projectOps}, user ${o.userOps}, skills ${o.skillOps}, incidents ${o.incidentOps}, refused ${o.refused} — stopped: ${o.stoppedBecause}`,
   ];
   for (const e of o.events) lines.push(`  - ${e}`);
   if (o.summary) lines.push(`  reviewer: ${o.summary.slice(0, 300)}`);

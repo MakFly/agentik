@@ -433,7 +433,7 @@ async function reviewCmd(args: string[]): Promise<number> {
     await printPendingHint(home);
   }
   // A backend that dies after the writes landed ended the review early, it did not undo it.
-  const landed = outcome.memoryOps + outcome.userOps + outcome.skillOps + outcome.incidentOps > 0;
+  const landed = outcome.memoryOps + outcome.projectOps + outcome.userOps + outcome.skillOps + outcome.incidentOps > 0;
   return outcome.stoppedBecause === "backend_error" && !landed ? 1 : 0;
 }
 

@@ -54,7 +54,7 @@ export const TOOL_CATALOG: ToolSpec[] = [
     name: "memory",
     blastRadius: "low",
     description:
-      "Reviewer only. add/replace/remove an entry in MEMORY.md (target memory) or USER.md (target user); batch via operations[]",
+      "Reviewer only. add/replace/remove an entry in the GLOBAL MEMORY.md (target memory), USER.md (target user) or this workspace's PROJECT memory (target project); batch via operations[]",
   },
   {
     name: "skill_manage",
@@ -292,7 +292,7 @@ function reviewerOnly(call: ToolCall, host: ToolHost): ToolResult | undefined {
 async function memoryTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {
   const denied = reviewerOnly(call, host);
   if (denied) return denied;
-  const target = call.args.target === "user" ? "user" : ("memory" as MemoryTarget);
+  const target: MemoryTarget = call.args.target === "user" ? "user" : call.args.target === "project" ? "project" : "memory";
   const ops: MemoryOperation[] = Array.isArray(call.args.operations)
     ? (call.args.operations as MemoryOperation[])
     : [
@@ -303,13 +303,14 @@ async function memoryTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {
           new: typeof call.args.new === "string" ? call.args.new : undefined,
         },
       ];
-  const res = await memoryApply(target, ops, { home: host.agentikHome });
+  // The project file is the host workspace's: the reviewer chooses the level, never the path.
+  const res = await memoryApply(target, ops, { home: host.agentikHome, workspace: host.workspace });
   const lines = [`${res.ok ? "ok" : "refused"}: ${res.message}`, `usage: ${res.usage.used}/${res.usage.cap} chars`];
   if (res.overCap && res.entries) {
     lines.push("current entries:");
     for (const e of res.entries) lines.push(`  § ${e}`);
   }
-  return { callId: call.id, ok: res.ok, output: lines.join("\n"), artifact: res.ok ? `${target}.md` : undefined };
+  return { callId: call.id, ok: res.ok, output: lines.join("\n"), artifact: res.ok ? (target === "project" ? "project/MEMORY.md" : `${target}.md`) : undefined };
 }
 
 async function skillManageTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {

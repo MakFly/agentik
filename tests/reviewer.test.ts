@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { memoryAdd, MEMORY_CAP, readEntries } from "../src/memory-store.ts";
 import { Orchestrator } from "../src/orchestrator.ts";
-import { POSTMORTEM_GUIDANCE, reviewSystemPrompt, runReview, WORKSPACE_INSTRUCTIONS_CAP, workspaceInstructions } from "../src/reviewer.ts";
+import { formatReviewOutcome, POSTMORTEM_GUIDANCE, reviewSystemPrompt, runReview, WORKSPACE_INSTRUCTIONS_CAP, workspaceInstructions } from "../src/reviewer.ts";
 import { getIncident, listIncidents, recordIncident } from "../src/incidents.ts";
 import { executeTool, newReviewState } from "../src/tools.ts";
 import { makeWorkspace } from "./helpers.ts";
@@ -147,7 +147,7 @@ describe("runReview: bounded, judged, honest about what it did", () => {
     await runReview({ goal: "g", transcript: "t", workspace: ws, home, backend });
     const req = backend.seen[0];
     const origins = req.envelopes.map((e) => e.origin);
-    expect(origins).toEqual(["memory:snapshot", "user:snapshot", "skills:index", "workspace:claude-md", "run:transcript"]);
+    expect(origins).toEqual(["memory:snapshot", "project:snapshot", "user:snapshot", "skills:index", "workspace:claude-md", "run:transcript"]);
     const env = req.envelopes.find((e) => e.origin === "workspace:claude-md")!;
     expect(env.body).toBe("# project\nTests: `bun test`. Typecheck: `bunx tsc --noEmit`.");
     expect(env.trust).toBe("untrusted");
@@ -160,7 +160,53 @@ describe("runReview: bounded, judged, honest about what it did", () => {
     const backend2 = new ScriptedReviewer([{ text: "nothing", toolCalls: [] }]);
     await runReview({ goal: "g", transcript: "t", workspace: bare, home, backend: backend2 });
     expect(backend2.seen[0].envelopes.map((e) => e.origin)).not.toContain("workspace:claude-md");
-    expect(backend2.seen[0].envelopes.map((e) => e.origin)).toEqual(["memory:snapshot", "user:snapshot", "skills:index", "run:transcript"]);
+    expect(backend2.seen[0].envelopes.map((e) => e.origin)).toEqual(["memory:snapshot", "project:snapshot", "user:snapshot", "skills:index", "run:transcript"]);
+  });
+
+  test("the reviewer routes a repo fact to target project: it lands in the workspace's file, not MEMORY.md; the project snapshot is DATA", async () => {
+    const home = await makeWorkspace("review-project-home-");
+    const ws = await makeWorkspace("review-project-ws-");
+    const other = await makeWorkspace("review-project-other-");
+    await memoryAdd("project", "Only the other checkout uses make test.", { home, workspace: other });
+    await memoryAdd("project", "Old: this checkout used jest.", { home, workspace: ws });
+    const backend = new ScriptedReviewer([
+      {
+        text: "one repo fact, one global fact",
+        toolCalls: [
+          { tool: "memory", args: { target: "project", action: "replace", old: "used jest", new: "This checkout runs bun test; tests/harness.test.ts fails from a worktree." } },
+          { tool: "memory", args: { target: "memory", action: "add", content: "claude -p rejects --dangerously-skip-permissions together with --restricted." } },
+        ],
+      },
+      { text: "done", toolCalls: [] },
+    ]);
+    const out = await runReview({ goal: "fix the tests", transcript: "t", workspace: ws, home, backend });
+    expect(out.projectOps).toBe(1);
+    expect(out.memoryOps).toBe(1);
+    expect(out.userOps).toBe(0);
+    expect(out.refused).toBe(0);
+    expect(await readEntries("project", home, { workspace: ws })).toEqual(["This checkout runs bun test; tests/harness.test.ts fails from a worktree."]);
+    expect(await readEntries("memory", home)).toEqual(["claude -p rejects --dangerously-skip-permissions together with --restricted."]);
+    expect(await readEntries("project", home, { workspace: other })).toEqual(["Only the other checkout uses make test."]);
+    expect(formatReviewOutcome(out)).toContain("memory 1, project 1, user 0");
+    // The project snapshot is this workspace's, right after the global one, as DATA.
+    const req = backend.seen[0];
+    const origins = req.envelopes.map((e) => e.origin);
+    expect(origins.slice(0, 3)).toEqual(["memory:snapshot", "project:snapshot", "user:snapshot"]);
+    const env = req.envelopes.find((e) => e.origin === "project:snapshot")!;
+    expect(env.trust).toBe("untrusted");
+    expect(env.channel).toBe("retrieved");
+    expect(env.body).toStartWith("PROJECT MEMORY (this workspace) [");
+    expect(env.body).toContain("Old: this checkout used jest.");
+    expect(env.body).not.toContain("make test");
+    // The guidance routes by "would this be true in another repository?".
+    expect(req.system).toContain('PROJECT MEMORY (target "project") — facts about THIS repository only');
+    expect(req.system).toContain('Ask "would this be true in another repository?" — yes → memory, no → project.');
+    expect(req.system).toContain('"target": "memory"|"user"|"project"');
+    // A worker asking for target project is refused like any other memory write.
+    const r = await executeTool({ id: "w", tool: "memory", args: { target: "project", action: "add", content: "sneaky" }, proposedBy: "worker_a" }, { workspace: ws, agentikHome: home });
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain("reviewer-only");
+    expect(await readEntries("project", home, { workspace: ws })).toHaveLength(1);
   });
 
   test("a long CLAUDE.md is capped at 6000 chars with a truncation marker; a missing one reads as undefined", async () => {
