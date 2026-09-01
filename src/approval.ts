@@ -37,7 +37,7 @@ export async function approveMemory(selector: string, opts?: { home?: string }):
   for (const id of ids) {
     const entry = await readPending<PendingMemoryOp>("memory", id, { home: opts?.home });
     if (!entry) continue;
-    const res = await memoryApply(entry.target, entry.ops, { home: opts?.home, bypassApproval: true });
+    const res = await memoryApply(entry.target, entry.ops, { home: opts?.home, workspace: entry.workspace, bypassApproval: true });
     if (res.ok) await removePending("memory", id, { home: opts?.home });
     out.push({ id, ok: res.ok, message: res.ok ? `${res.message} (${res.usage.used}/${res.usage.cap} chars)` : `${res.message} — still pending` });
   }
@@ -76,7 +76,7 @@ export async function rejectPending(kind: PendingKind, selector: string, opts?: 
 
 export function formatPendingMemory(list: PendingMemoryOp[]): string {
   if (!list.length) return "(no pending memory ops)";
-  return list.map((p) => `#${p.id}  ${p.target}  ${p.at}\n    ${p.preview}`).join("\n");
+  return list.map((p) => `#${p.id}  ${p.target}${p.workspace ? ` (${p.workspace})` : ""}  ${p.at}\n    ${p.preview}`).join("\n");
 }
 
 export function formatPendingSkills(list: PendingSkillOp[]): string {

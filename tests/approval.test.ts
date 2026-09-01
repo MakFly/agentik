@@ -94,6 +94,23 @@ describe("memory.writeApproval: staged, never written until approved", () => {
     expect((await captureStdout(() => main(["memory", "approve", "all", "--agentik-home", home]))).out).toContain("nothing pending");
   });
 
+  test("a project add is staged with its workspace and approved into that workspace's file only", async () => {
+    const home = await homeWith({ memory: { writeApproval: true } }, "approval-project-");
+    const ws = await makeWorkspace("approval-project-ws-");
+    const res = await memoryAdd("project", "This checkout runs bun test.", { home, workspace: ws });
+    expect(res.ok).toBe(true);
+    expect(res.staged).toBeDefined();
+    const [op] = await listPending<PendingMemoryOp>("memory", { home });
+    expect(op.target).toBe("project");
+    expect(op.workspace).toBe(ws);
+    expect(await readEntries("project", home, { workspace: ws })).toEqual([]);
+    const out = await approveMemory(op.id, { home });
+    expect("error" in out).toBe(false);
+    expect(await readEntries("project", home, { workspace: ws })).toEqual(["This checkout runs bun test."]);
+    expect(await readEntries("memory", home)).toEqual([]);
+    expect(existsSync(join(home, "memory/MEMORY.md"))).toBe(false);
+  });
+
   test("the cap applies at approval: an add that no longer fits is refused and stays pending", async () => {
     const home = await makeWorkspace("approval-cap-");
     await writeFile(join(home, "config.json"), JSON.stringify({ memory: { writeApproval: true } }), "utf8");

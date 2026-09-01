@@ -4,11 +4,11 @@ import { agentikHome, memoryPaths } from "./home.ts";
 import type { MemoryOperation, MemoryTarget } from "./memory-store.ts";
 
 /**
- * Staged writes. When `writeApproval` is on, nothing reaches MEMORY.md / USER.md / a skill
- * until a human approves it; the write is a JSON file here instead. The reviewer sees a
- * success (it did its job: it decided), the human sees a queue.
+ * Staged writes. When `writeApproval` is on, nothing reaches MEMORY.md / USER.md / a project
+ * MEMORY.md / a skill until a human approves it; the write is a JSON file here instead. The
+ * reviewer sees a success (it did its job: it decided), the human sees a queue.
  *
- *   pending/memory/<id>.json      { id, target, ops, at, preview }
+ *   pending/memory/<id>.json      { id, target, ops, at, preview, workspace? }
  *   pending/skills-ops/<id>.json  { id, action, name, args, at }
  *
  * `pending/skills/<name>/SKILL.md` is a different thing: a human draft (`agentik skill draft`).
@@ -21,6 +21,8 @@ export interface PendingMemoryOp {
   ops: MemoryOperation[];
   at: string;
   preview: string;
+  /** Absolute workspace path, only for target `project` (its file is per workspace). */
+  workspace?: string;
 }
 
 export interface PendingSkillOp {

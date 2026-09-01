@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 const PROFILE_NAME = /^[a-z0-9][a-z0-9._-]*$/i;
 
@@ -29,6 +30,8 @@ export function memoryPaths(home: string) {
     memoryDir: join(home, "memory"),
     hot: join(home, "memory", "MEMORY.md"),
     user: join(home, "memory", "USER.md"),
+    /** One MEMORY.md per workspace, under `<slug>/` (see projectMemoryPath). */
+    projectDir: join(home, "memory", "projects"),
     /** Legacy WARM store (read-only now; kept on disk after migration). */
     db: join(home, "memory", "notes.sqlite"),
     /** Searchable session log: one row per run, FTS5 unicode61 + trigram. */
@@ -46,4 +49,21 @@ export function memoryPaths(home: string) {
     curatorLedger: join(home, "skills", ".curator-ledger.json"),
     config: join(home, "config.json"),
   };
+}
+
+/**
+ * Project memory directory name for a workspace: readable AND collision-free. The basename is
+ * lowercased and sanitized (`[^a-z0-9._-]` → `-`), then joined with the first 10 hex chars of
+ * sha256 of the absolute path, e.g. `agentik-3f2a9c1b7e`. Two checkouts with the same basename
+ * never share a file; the `.workspace` file next to it holds the full path for humans.
+ */
+export function projectSlug(workspace: string): string {
+  const abs = resolve(workspace);
+  const base = basename(abs).toLowerCase().replace(/[^a-z0-9._-]/g, "-") || "root";
+  const hash = createHash("sha256").update(abs).digest("hex").slice(0, 10);
+  return `${base}-${hash}`;
+}
+
+export function projectMemoryPath(home: string, workspace: string): string {
+  return join(memoryPaths(home).projectDir, projectSlug(workspace), "MEMORY.md");
 }

@@ -1,25 +1,44 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { readConfig } from "./config.ts";
-import { agentikHome, memoryPaths } from "./home.ts";
+import { agentikHome, memoryPaths, projectMemoryPath } from "./home.ts";
 import { detectInjection } from "./injection.ts";
 import { newPendingId, stagePending, type PendingMemoryOp } from "./pending.ts";
 
 /**
- * The two always-loaded memory files, written by a model through the `memory` tool.
+ * The always-loaded memory files, written by a model through the `memory` tool.
  *
- * MEMORY.md holds durable facts the agent learned (environment, conventions, tool quirks,
- * lessons). USER.md holds who the user is (preferences, corrections, style). Both are capped in
- * characters, and the cap is not a limit that overflows somewhere else: an `add` that would
- * exceed it fails and tells the caller to consolidate first, in the same turn. That single
- * rule is what keeps the file worth loading — Hermes's memory_tool works the same way.
+ * MEMORY.md (target `memory`) holds GLOBAL durable facts — true in every project: tool
+ * behaviours, CLI quirks, cross-repo lessons. USER.md (target `user`) holds who the user is
+ * (preferences, corrections, style). `memory/projects/<slug>/MEMORY.md` (target `project`)
+ * holds what is true of ONE workspace only — conventions, paths, test commands — and is never
+ * loaded into another workspace's context. All three are capped in characters, and the cap is
+ * not a limit that overflows somewhere else: an `add` that would exceed it fails and tells the
+ * caller to consolidate first, in the same turn. That single rule is what keeps the file worth
+ * loading — Hermes's memory_tool works the same way.
  *
  * Entries are separated by `\n§\n` (section sign), may span lines, and are exact-deduplicated.
+ * The same masking / dedup / cap / consolidation logic serves every target; only the path differs.
  */
-export type MemoryTarget = "memory" | "user";
+export type MemoryTarget = "memory" | "user" | "project";
 
 export const MEMORY_CAP = 2200;
 export const USER_CAP = 1375;
-export const CAPS: Record<MemoryTarget, number> = { memory: MEMORY_CAP, user: USER_CAP };
+export const PROJECT_CAP = 2200;
+export const CAPS: Record<MemoryTarget, number> = { memory: MEMORY_CAP, user: USER_CAP, project: PROJECT_CAP };
+
+/** `workspace` is required for target `project` (its file is per workspace) and ignored otherwise. */
+export interface MemoryStoreOpts {
+  home?: string;
+  workspace?: string;
+}
+
+export const PROJECT_NEEDS_WORKSPACE = "project memory needs a workspace";
+
+/** The file's human name in messages. */
+export function memoryFileLabel(target: MemoryTarget): string {
+  return target === "memory" ? "MEMORY.md" : target === "user" ? "USER.md" : "project MEMORY.md";
+}
 export const ENTRY_SEPARATOR = "\n§\n";
 
 /** Consolidation attempts a single review gets before it is told to stop retrying. */
@@ -97,9 +116,19 @@ export function memoryContentProblem(text: string): string | undefined {
 // File format
 // ------------------------------------------------------------------------------------------
 
-function pathFor(target: MemoryTarget, home?: string): { file: string; dir: string } {
+function pathFor(target: MemoryTarget, home?: string, workspace?: string): { file: string; dir: string } {
   const paths = memoryPaths(agentikHome(home));
+  if (target === "project") {
+    if (!workspace) throw new Error(PROJECT_NEEDS_WORKSPACE);
+    const file = projectMemoryPath(paths.root, workspace);
+    return { file, dir: dirname(file) };
+  }
   return { file: target === "memory" ? paths.hot : paths.user, dir: paths.memoryDir };
+}
+
+/** Absolute path of the file behind a target (throws for `project` without a workspace). */
+export function memoryFilePath(target: MemoryTarget, opts?: MemoryStoreOpts): string {
+  return pathFor(target, opts?.home, opts?.workspace).file;
 }
 
 /**
@@ -122,8 +151,8 @@ export function usageOf(entries: string[], target: MemoryTarget): MemoryUsage {
   return { used, cap, percent: Math.round((used / cap) * 100) };
 }
 
-export async function readEntries(target: MemoryTarget, home?: string): Promise<string[]> {
-  const { file } = pathFor(target, home);
+export async function readEntries(target: MemoryTarget, home?: string, opts?: { workspace?: string }): Promise<string[]> {
+  const { file } = pathFor(target, home, opts?.workspace);
   try {
     return parseEntries(await readFile(file, "utf8"));
   } catch {
@@ -131,9 +160,13 @@ export async function readEntries(target: MemoryTarget, home?: string): Promise<
   }
 }
 
-async function writeEntries(target: MemoryTarget, entries: string[], home?: string): Promise<void> {
-  const { file, dir } = pathFor(target, home);
+async function writeEntries(target: MemoryTarget, entries: string[], home?: string, workspace?: string): Promise<void> {
+  const { file, dir } = pathFor(target, home, workspace);
   await mkdir(dir, { recursive: true });
+  if (target === "project" && workspace) {
+    // A human browsing memory/projects/ can tell which checkout a slug belongs to.
+    await writeFile(join(dir, ".workspace"), `${resolve(workspace)}\n`, "utf8");
+  }
   await writeFile(file, entries.length ? `${entries.join(ENTRY_SEPARATOR)}\n` : "", "utf8");
 }
 
@@ -160,7 +193,7 @@ function locate(entries: string[], needle: string): { index: number } | { error:
 
 function overCapMessage(target: MemoryTarget, usage: MemoryUsage, attempted: number): string {
   return (
-    `${target === "memory" ? "MEMORY.md" : "USER.md"} at ${usage.used}/${usage.cap} chars; ` +
+    `${memoryFileLabel(target)} at ${usage.used}/${usage.cap} chars; ` +
     `adding ${attempted} chars would exceed the cap. Consolidate now: use 'replace' to merge ` +
     `related entries or 'remove' to drop stale ones, then retry this add — all in this turn.`
   );
@@ -222,7 +255,7 @@ export function previewOps(ops: MemoryOperation[]): string {
  * Apply one or more operations atomically. The cap is checked on the *result*, so a remove +
  * add in one batch is the intended way to make room. Nothing is written on any error.
  *
- * This is the single write path for MEMORY.md and USER.md — the reviewer's `memory` tool,
+ * This is the single write path for MEMORY.md, USER.md and the project files — the reviewer's `memory` tool,
  * `retainNote`, and the CLI all end here — which is why write approval is enforced here and
  * nowhere else. With `memory.writeApproval` on, a batch that *would* apply cleanly (content
  * scan, targets found, under the cap) is staged and reported as a success: the reviewer
@@ -232,10 +265,11 @@ export function previewOps(ops: MemoryOperation[]): string {
 export async function memoryApply(
   target: MemoryTarget,
   ops: MemoryOperation[],
-  opts?: { home?: string; bypassApproval?: boolean },
+  opts?: MemoryStoreOpts & { bypassApproval?: boolean },
 ): Promise<MemoryOpResult> {
   const action = ops.length === 1 ? ops[0].action : "batch";
-  const before = await readEntries(target, opts?.home);
+  const workspace = target === "project" ? opts?.workspace : undefined;
+  const before = await readEntries(target, opts?.home, { workspace });
   const usageBefore = usageOf(before, target);
   if (ops.length === 0) {
     return { ok: false, target, action, message: "no operations", usage: usageBefore };
@@ -271,6 +305,7 @@ export async function memoryApply(
       ops,
       at: now.toISOString(),
       preview: previewOps(ops),
+      ...(workspace ? { workspace: resolve(workspace) } : {}),
     };
     await stagePending("memory", entry, { home: opts?.home });
     return {
@@ -282,7 +317,7 @@ export async function memoryApply(
       staged: entry.id,
     };
   }
-  await writeEntries(target, applied.entries, opts?.home);
+  await writeEntries(target, applied.entries, opts?.home, workspace);
   return {
     ok: true,
     target,
@@ -292,11 +327,11 @@ export async function memoryApply(
   };
 }
 
-export const memoryAdd = (target: MemoryTarget, content: string, opts?: { home?: string }) =>
+export const memoryAdd = (target: MemoryTarget, content: string, opts?: MemoryStoreOpts) =>
   memoryApply(target, [{ action: "add", content }], opts);
-export const memoryReplace = (target: MemoryTarget, old: string, next: string, opts?: { home?: string }) =>
+export const memoryReplace = (target: MemoryTarget, old: string, next: string, opts?: MemoryStoreOpts) =>
   memoryApply(target, [{ action: "replace", old, new: next }], opts);
-export const memoryRemove = (target: MemoryTarget, old: string, opts?: { home?: string }) =>
+export const memoryRemove = (target: MemoryTarget, old: string, opts?: MemoryStoreOpts) =>
   memoryApply(target, [{ action: "remove", old }], opts);
 
 // ------------------------------------------------------------------------------------------
@@ -312,8 +347,8 @@ export interface MemorySnapshot {
   blockedCount: number;
 }
 
-export async function memorySnapshot(target: MemoryTarget, home?: string): Promise<MemorySnapshot> {
-  const entries = await readEntries(target, home);
+export async function memorySnapshot(target: MemoryTarget, home?: string, opts?: { workspace?: string }): Promise<MemorySnapshot> {
+  const entries = await readEntries(target, home, { workspace: opts?.workspace });
   const usage = usageOf(entries, target);
   let blockedCount = 0;
   const shown = entries.map((e) => {
@@ -322,7 +357,12 @@ export async function memorySnapshot(target: MemoryTarget, home?: string): Promi
     blockedCount += 1;
     return `[BLOCKED: ${problem}]`;
   });
-  const title = target === "memory" ? "MEMORY (durable facts)" : "USER PROFILE (who the user is)";
+  const title =
+    target === "memory"
+      ? "MEMORY (durable facts)"
+      : target === "user"
+        ? "USER PROFILE (who the user is)"
+        : "PROJECT MEMORY (this workspace)";
   const header = `${title} [${Math.min(100, usage.percent)}% — ${usage.used}/${usage.cap} chars]`;
   return { target, header, body: shown.length ? shown.join("\n§\n") : "(empty)", usage, blockedCount };
 }
