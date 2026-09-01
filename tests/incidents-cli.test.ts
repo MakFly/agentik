@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AvailabilityMap, HarnessName } from "../src/availability.ts";
-import { main, recordRunIncidents } from "../src/cli.ts";
-import { listIncidents } from "../src/incidents.ts";
+import { main, parseSince, recordRunIncidents } from "../src/cli.ts";
+import { formatIncidentLine, getIncident, listIncidents, recordIncident, resolveIncident } from "../src/incidents.ts";
 import { listSessions } from "../src/sessions.ts";
 import { makeWorkspace } from "./helpers.ts";
 
@@ -194,5 +194,128 @@ describe("run: stalled tasks, backend switches and a blocked/rejected run are in
     expect(
       await recordRunIncidents({ goal: "g", report: { status: "awaiting_approval", stalledTasks: [], backendSwitches: [], blockedTools: [] }, home, workspace: "/tmp/run", quiet: true }),
     ).toEqual([]);
+  });
+});
+
+async function captureStdout(run: () => Promise<number>): Promise<{ code: number; out: string }> {
+  let out = "";
+  const origWrite = process.stdout.write.bind(process.stdout);
+  const origLog = console.log;
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    out += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+    return true;
+  }) as typeof process.stdout.write;
+  console.log = (...a: unknown[]) => {
+    out += `${a.join(" ")}\n`;
+  };
+  try {
+    const code = await run();
+    return { code, out };
+  } finally {
+    process.stdout.write = origWrite;
+    console.log = origLog;
+  }
+}
+
+describe("context: KNOWN FAILURES only for unresolved incidents seen ≥2 on this workspace", () => {
+  test("seen once prints nothing; a second occurrence adds the section; resolving it removes it", async () => {
+    const home = await makeWorkspace("inc-context-");
+    const argv = ["context", "deploy umami drawer", "--workspace", "/tmp/ctx", "--agentik-home", home];
+    const rec = await recordIncident({ goal: "deploy umami on the VPS", workspace: "/tmp/ctx", harness: "codex", symptom: "codex exited 1 on docker compose" }, { home });
+    const once = await captureStdout(() => main(argv));
+    expect(once.code).toBe(0);
+    expect(once.out).not.toContain("KNOWN FAILURES");
+    await recordIncident({ goal: "deploy umami on the VPS", workspace: "/tmp/ctx", harness: "codex", symptom: "codex exited 1 on docker compose" }, { home });
+    // Seen twice, but on another workspace: hidden by the filter.
+    await recordIncident({ goal: "deploy umami elsewhere", workspace: "/tmp/other", harness: "grok", symptom: "grok died" }, { home });
+    await recordIncident({ goal: "deploy umami elsewhere", workspace: "/tmp/other", harness: "grok", symptom: "grok died" }, { home });
+    const twice = await captureStdout(() => main(argv));
+    const lines = twice.out.split("\n");
+    const at = lines.indexOf("KNOWN FAILURES (unresolved, seen ≥2, this workspace)");
+    expect(at).toBeGreaterThan(lines.indexOf("RELATED SESSIONS (workspace-filtered, top 6)"));
+    expect(lines[at + 1]).toMatch(/^- #1 ⚠ codex · codex exited 1 on docker compose · seen 2× · last \d{4}-\d{2}-\d{2}$/);
+    expect(lines[at + 1].length).toBeLessThanOrEqual(100);
+    expect(twice.out).not.toContain("grok died");
+    // No goal: no search, no section. Resolved: gone.
+    expect((await captureStdout(() => main(["context", "--workspace", "/tmp/ctx", "--agentik-home", home]))).out).not.toContain("KNOWN FAILURES");
+    await resolveIncident(rec.id, "free port 3000 first", { home });
+    expect((await captureStdout(() => main(argv))).out).not.toContain("KNOWN FAILURES");
+  });
+
+  test("a long symptom is cut to 100 chars with … so the section stays under ~300 chars", async () => {
+    const home = await makeWorkspace("inc-context-long-");
+    const symptom = `codex ${"very ".repeat(40)}long failure`;
+    for (let i = 0; i < 2; i++) await recordIncident({ goal: "build the site", workspace: "/tmp/ctx", harness: "codex", symptom }, { home });
+    const { out } = await captureStdout(() => main(["context", "build the site", "--workspace", "/tmp/ctx", "--agentik-home", home]));
+    const line = out.split("\n").find((l) => l.startsWith("- #1 ⚠"))!;
+    expect(line).toBeDefined();
+    expect([...line].length).toBeLessThanOrEqual(100);
+    expect([...line].length).toBeGreaterThan(90);
+    expect(line.endsWith("…")).toBe(true);
+  });
+});
+
+describe("agentik postmortem (CLI)", () => {
+  test("list groups by cause with uncategorised last; --since, --all, --json; classify / resolve / review", async () => {
+    const home = await makeWorkspace("inc-pm-");
+    const a = await recordIncident({ goal: "wire codex", workspace: "/tmp/pm", harness: "codex", backend: "opencodex", symptom: "adapter_eof on --output-schema" }, { home });
+    await recordIncident({ goal: "wire codex", workspace: "/tmp/pm", harness: "codex", backend: "opencodex", symptom: "adapter_eof on --output-schema" }, { home });
+    const b = await recordIncident({ goal: "grok task", workspace: "/tmp/pm", harness: "grok", symptom: "grok ended on stopReason=max_turns" }, { home });
+    const c = await recordIncident({ goal: "hand harvest", workspace: "/tmp/elsewhere", symptom: "declared failed by the conductor" }, { home });
+
+    const emptyHome = await makeWorkspace("inc-pm-empty-");
+    const empty = await captureStdout(() => main(["postmortem", "--agentik-home", emptyHome]));
+    expect(empty.code).toBe(0);
+    expect(empty.out.trim()).toBe("(no incidents)");
+
+    const classified = await captureStdout(() => main(["postmortem", "classify", String(a.id), "opencodex responses adapter rejects --output-schema", "--agentik-home", home]));
+    expect(classified.code).toBe(0);
+    expect(classified.out).toContain(`classified #${a.id} · codex@opencodex · adapter_eof on --output-schema · seen 2×`);
+    expect(classified.out).toContain("cause: opencodex responses adapter rejects --output-schema");
+
+    const list = await captureStdout(() => main(["postmortem", "--agentik-home", home]));
+    expect(list.code).toBe(0);
+    const lines = list.out.trimEnd().split("\n");
+    expect(lines[0]).toBe("cause: opencodex responses adapter rejects --output-schema");
+    expect(lines[1]).toMatch(new RegExp(`^  #${a.id} · codex@opencodex · adapter_eof on --output-schema · seen 2× · \\d{4}-\\d{2}-\\d{2}→\\d{4}-\\d{2}-\\d{2}$`));
+    expect(lines[2]).toBe("uncategorised");
+    expect(lines.slice(3).map((l) => l.trim().split(" · ")[0]).sort()).toEqual([`#${b.id}`, `#${c.id}`].sort());
+    expect(lines.some((l) => l.includes("declared failed by the conductor"))).toBe(true);
+
+    const ws = await captureStdout(() => main(["postmortem", "--workspace", "/tmp/pm", "--agentik-home", home]));
+    expect(ws.out).not.toContain("declared failed by the conductor");
+    expect(ws.out).toContain("adapter_eof");
+
+    const resolved = await captureStdout(() => main(["postmortem", "resolve", String(b.id), "pass", "--max-turns", "20", "--agentik-home", home]));
+    expect(resolved.code).toBe(0);
+    expect((await getIncident(b.id, { home }))?.resolvedAt).not.toBeNull();
+    const afterResolve = await captureStdout(() => main(["postmortem", "--agentik-home", home]));
+    expect(afterResolve.out).not.toContain("max_turns");
+    const all = await captureStdout(() => main(["postmortem", "--all", "--agentik-home", home]));
+    expect(all.out).toContain(`#${b.id} · grok · grok ended on stopReason=max_turns · seen 1×`);
+    expect(all.out).toContain("· resolved");
+
+    const json = await captureStdout(() => main(["postmortem", "--json", "--all", "--agentik-home", home]));
+    const parsed = JSON.parse(json.out) as Array<{ id: number; cause: string; resolvedAt: string | null }>;
+    expect(parsed.map((r) => r.id).sort()).toEqual([a.id, b.id, c.id].sort());
+    expect(parsed.find((r) => r.id === a.id)?.cause).toBe("opencodex responses adapter rejects --output-schema");
+
+    expect((await captureStdout(() => main(["postmortem", "--since", "1d", "--agentik-home", home]))).out).toContain("adapter_eof");
+    expect((await captureStdout(() => main(["postmortem", "--since", "2999-01-01", "--agentik-home", home]))).out.trim()).toBe("(no incidents)");
+    expect(await main(["postmortem", "--since", "yesterday", "--agentik-home", home])).toBe(2);
+    expect(parseSince("7d", 7 * 86_400_000)).toBe("1970-01-01T00:00:00.000Z");
+    expect(parseSince("2h", 2 * 3_600_000)).toBe("1970-01-01T00:00:00.000Z");
+    expect(parseSince("nope")).toBeUndefined();
+
+    // Usage errors and unknown ids.
+    expect(await main(["postmortem", "classify", "--agentik-home", home])).toBe(2);
+    expect(await main(["postmortem", "resolve", String(a.id), "--agentik-home", home])).toBe(2);
+    expect(await main(["postmortem", "resolve", "999", "fix", "--agentik-home", home])).toBe(1);
+    expect(await main(["postmortem", "bogus", "--agentik-home", home])).toBe(2);
+    expect(await main(["postmortem", "review", "--agentik-home", home])).toBe(2);
+    // review <id> is the postmortem review (mock backend writes nothing, exits 0).
+    expect(await main(["postmortem", "review", String(a.id), "--backend", "mock", "--agentik-home", home])).toBe(0);
+    expect(await main(["postmortem", "review", "999", "--backend", "mock", "--agentik-home", home])).toBe(2);
+    expect(formatIncidentLine({ ...a, harness: "", backend: "", fix: "" })).toMatch(/^#\d+ · adapter_eof on --output-schema · seen 1× · \d{4}-\d{2}-\d{2}→\d{4}-\d{2}-\d{2}$/);
   });
 });

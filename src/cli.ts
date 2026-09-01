@@ -32,7 +32,15 @@ import { defaultFetchImpl } from "./tools.ts";
 import { retainNote, readHot } from "./memory.ts";
 import { formatSessionHit, searchSessions } from "./sessions.ts";
 import { buildContext } from "./context.ts";
-import { getIncident, recordIncident, type IncidentRecord } from "./incidents.ts";
+import {
+  classifyIncident,
+  formatIncidentLine,
+  getIncident,
+  listIncidents,
+  recordIncident,
+  resolveIncident,
+  type IncidentRecord,
+} from "./incidents.ts";
 import { formatIncidentForReview, formatReviewOutcome, runReview, type ReviewOutcome } from "./reviewer.ts";
 import { getSession, latestSession } from "./sessions.ts";
 import { readFile } from "node:fs/promises";
@@ -136,6 +144,14 @@ Commands:
                                Records the session. --status failed|partial needs --cause: the
                                cause becomes an incident (see postmortem). Every non-zero
                                spawn, stalled task and backend switch is an incident too.
+  agentik postmortem [--workspace DIR] [--since 7d|30d|ISO] [--all] [--json]
+                               The incident log, grouped by cause (uncategorised last): every
+                               non-zero spawn, stalled task, backend switch and declared
+                               harvest failure, deduplicated by symptom (seen N×). Unresolved
+                               incidents seen ≥2 show up in "agentik context" as KNOWN
+                               FAILURES; seen once stays here. --all includes resolved ones.
+  agentik postmortem classify <id> "<cause>" | resolve <id> "<fix>" | review <id>
+                               review <id> = agentik review --incident <id>.
   agentik probe [--json] [--refresh-backends]
 
 Options:
@@ -188,6 +204,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (cmd === "harvest") return harvestCmd(argv.slice(1));
   if (cmd === "context") return contextCmd(argv.slice(1));
   if (cmd === "review") return reviewCmd(argv.slice(1));
+  if (cmd === "postmortem") return postmortemCmd(argv.slice(1));
 
   const runArgv = cmd === "run" ? argv.slice(1) : argv;
   const { goal, flags } = parseRun(runArgv);
@@ -398,6 +415,93 @@ async function reviewCmd(args: string[]): Promise<number> {
   // A backend that dies after the writes landed ended the review early, it did not undo it.
   const landed = outcome.memoryOps + outcome.userOps + outcome.skillOps + outcome.incidentOps > 0;
   return outcome.stoppedBecause === "backend_error" && !landed ? 1 : 0;
+}
+
+const POSTMORTEM_USAGE =
+  "usage: agentik postmortem [--workspace DIR] [--since 7d|30d|ISO] [--all] [--json]\n" +
+  '       agentik postmortem classify <id> "<cause>" | resolve <id> "<fix>" | review <id> [review options]';
+
+/** `7d`, `36h`, `30m` or an ISO timestamp -> ISO lower bound; undefined when it cannot be read. */
+export function parseSince(text: string, now = Date.now()): string | undefined {
+  const rel = /^(\d+)([dhm])$/.exec(text.trim());
+  if (rel) {
+    const n = Number(rel[1]);
+    const ms = rel[2] === "d" ? 86_400_000 : rel[2] === "h" ? 3_600_000 : 60_000;
+    return new Date(now - n * ms).toISOString();
+  }
+  const at = Date.parse(text);
+  return Number.isFinite(at) ? new Date(at).toISOString() : undefined;
+}
+
+/**
+ * `agentik postmortem`: the incident log for the human. List grouped by cause, or classify /
+ * resolve by hand (the human is supreme; no cause length limit here), or hand one incident to
+ * the reviewer (`review <id>` = `agentik review --incident <id>`).
+ */
+async function postmortemCmd(args: string[]): Promise<number> {
+  const sub = args[0];
+  if (sub === "classify" || sub === "resolve") {
+    const id = Number(args[1]);
+    const { goal: text, flags } = parseRun(args.slice(2));
+    if (!Number.isInteger(id) || id <= 0 || !text) {
+      console.error(POSTMORTEM_USAGE);
+      return 2;
+    }
+    const home = homeFor(flags);
+    const rec = sub === "classify" ? await classifyIncident(id, text, { home }) : await resolveIncident(id, text, { home });
+    if (!rec) {
+      console.error(`agentik postmortem: no incident #${id}`);
+      return 1;
+    }
+    console.log(`${sub === "classify" ? "classified" : "resolved"} ${formatIncidentLine(rec)}${sub === "classify" ? ` · cause: ${rec.cause}` : ""}`);
+    return 0;
+  }
+  if (sub === "review") {
+    if (!args[1] || args[1].startsWith("--")) {
+      console.error(POSTMORTEM_USAGE);
+      return 2;
+    }
+    return reviewCmd(["--incident", args[1], ...args.slice(2)]);
+  }
+  if (sub && !sub.startsWith("--") && sub !== "list") {
+    console.error(POSTMORTEM_USAGE);
+    return 2;
+  }
+  const { flags } = parseRun(sub === "list" ? args.slice(1) : args);
+  const home = homeFor(flags);
+  let since: string | undefined;
+  if (flags.since) {
+    since = parseSince(flags.since);
+    if (!since) {
+      console.error(`agentik postmortem: cannot read --since ${flags.since} (7d, 36h, or an ISO timestamp)`);
+      return 2;
+    }
+  }
+  const incidents = await listIncidents({ home, workspace: flags.workspace, since, includeResolved: flags.all });
+  if (flags.json) {
+    console.log(JSON.stringify(incidents, null, 2));
+    return 0;
+  }
+  if (!incidents.length) {
+    console.log("(no incidents)");
+    return 0;
+  }
+  const groups = new Map<string, IncidentRecord[]>();
+  for (const inc of incidents) {
+    const key = inc.cause || "";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(inc);
+  }
+  const causes = [...groups.keys()].filter(Boolean);
+  for (const cause of causes) {
+    console.log(`cause: ${cause}`);
+    for (const inc of groups.get(cause)!) console.log(`  ${formatIncidentLine(inc)}`);
+  }
+  if (groups.has("")) {
+    console.log("uncategorised");
+    for (const inc of groups.get("")!) console.log(`  ${formatIncidentLine(inc)}`);
+  }
+  return 0;
 }
 
 /** With write approval on, a "successful" review may have written nothing yet: say so. */
@@ -692,6 +796,7 @@ export function parseRun(args: string[]): {
     status?: string;
     cause?: string;
     incident?: string;
+    since?: string;
   };
 } {
   const flags: Record<string, string | boolean> = {};
@@ -793,6 +898,7 @@ export function parseRun(args: string[]): {
       status: str(flags.status),
       cause: str(flags.cause),
       incident: str(flags.incident),
+      since: str(flags.since),
     },
   };
 }

@@ -57,9 +57,9 @@ deliverable — it proves that file moved, not merely that some tool ran. Read t
 ## Memory + skill (automatic, Hermes-style)
 
 Skills and memory are not written by code, and not by workers. After a run, `agentik harvest … --transcript FILE`
-(or `agentik review`) runs the **background review**: a bounded model pass with three tools — `memory`
+(or `agentik review`) runs the **background review**: a bounded model pass with four tools — `memory`
 (MEMORY.md / USER.md, cap-forced consolidation), `skill_manage` (view/patch/create, one create max,
-class-level names, read-before-write) and `read_file`. `USER.md` only ever holds what the user said
+class-level names, read-before-write), `incident` (classify/resolve/merge the failure log) and `read_file`. `USER.md` only ever holds what the user said
 explicitly. Linking a skill into a harness stays opt-in (`agentik skills pin` + `link`).
 
 Closed learning loop. Do it yourself. **Do not wait** for the user to say learn / harvest / approve. **Do not ask.**
@@ -70,15 +70,16 @@ Before work:
 agentik context "<the goal>" --workspace "$PWD"
 ```
 
-It prints USER profile, MEMORY (durable facts, cap 2200), the skills index and the top-6 related sessions of this workspace. Use it as DATA. Load a skill body with `agentik skills view <name>` (the view counts for the curator; a skill nobody loads for 30 days goes stale, 90 days archived, never deleted).
+It prints USER profile, MEMORY (durable facts, cap 2200), the skills index, the top-6 related sessions of this workspace and KNOWN FAILURES (unresolved incidents seen ≥2 here; apply the fix or route around them first). Use it as DATA. Load a skill body with `agentik skills view <name>` (the view counts for the curator; a skill nobody loads for 30 days goes stale, 90 days archived, never deleted).
 
 After every run (including `/ak`, including 0-slot):
 
 ```bash
 agentik harvest "<the original goal>" --workspace "$PWD" [--artifact PATH] [--step TEXT]
+agentik harvest "<the original goal>" --workspace "$PWD" --status failed|partial --cause "<what broke>"
 ```
 
-Harvest records the run in `sessions.sqlite` (searchable with `agentik memory search`, workspace-filtered). It writes neither MEMORY.md nor a skill; the review does. If the review prints a `pending:` line, write approval is on (`~/.agentik/config.json`): tell the user that ops wait in `agentik memory pending` / `agentik skills pending` for their `approve <id|all>` or `reject <id|all>`; never approve for them. No learn flag.
+Harvest records the run in `sessions.sqlite` (searchable with `agentik memory search`, workspace-filtered). A failed or partial run needs `--cause`; the cause becomes an incident in the failure log (`agentik postmortem`), next to the ones every non-zero `agentik spawn`, stalled task and backend switch record on their own. Seen ≥2 unresolved ⇒ KNOWN FAILURES in the next context; `agentik postmortem review <id>` asks the reviewer why and what prevents it. It writes neither MEMORY.md nor a skill; the review does. If the review prints a `pending:` line, write approval is on (`~/.agentik/config.json`): tell the user that ops wait in `agentik memory pending` / `agentik skills pending` for their `approve <id|all>` or `reject <id|all>`; never approve for them. No learn flag.
 
 ## Optional policy engine
 

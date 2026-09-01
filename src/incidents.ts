@@ -335,6 +335,19 @@ export function formatIncidentHit(rec: Pick<IncidentRecord, "harness" | "backend
   return `⚠ ${parts.filter(Boolean).join(" · ")}`;
 }
 
+/** `#3 · codex@opencodex · adapter_eof … · seen 4× · 2026-08-30→2026-09-01 · fix: …` — the postmortem list line. */
+export function formatIncidentLine(rec: IncidentRecord): string {
+  const who = rec.harness
+    ? rec.backend && rec.backend !== rec.harness
+      ? `${rec.harness}@${rec.backend}`
+      : rec.harness
+    : rec.backend;
+  const parts = [`#${rec.id}`, who, rec.symptom, `seen ${rec.seen}×`, `${rec.firstAt.slice(0, 10)}→${rec.lastAt.slice(0, 10)}`];
+  if (rec.fix) parts.push(`fix: ${rec.fix}`);
+  if (rec.resolvedAt) parts.push("resolved");
+  return parts.filter(Boolean).join(" · ");
+}
+
 // ---------------------------------------------------------------------------------------------
 
 async function updateIncident(

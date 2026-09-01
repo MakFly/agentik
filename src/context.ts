@@ -4,6 +4,7 @@ import { agentikHome, memoryPaths } from "./home.ts";
 import { readHot } from "./memory.ts";
 import { memorySnapshot } from "./memory-store.ts";
 import { formatSessionHit, searchSessions } from "./sessions.ts";
+import { formatIncidentHit, searchIncidents } from "./incidents.ts";
 
 /**
  * The block `/ak` reads at session open: who the user is, durable facts, an index of skills
@@ -18,6 +19,10 @@ export interface SkillIndexEntry {
 
 /** Descriptions longer than this are cut to 57 chars + "…" in the index. */
 export const SKILL_DESCRIPTION_MAX = 60;
+
+/** KNOWN FAILURES: at most 3 lines of 100 chars — a warning, not a report. */
+export const KNOWN_FAILURES_MAX = 3;
+export const KNOWN_FAILURE_LINE_MAX = 100;
 
 export async function skillIndex(opts?: { home?: string }): Promise<SkillIndexEntry[]> {
   const paths = memoryPaths(agentikHome(opts?.home));
@@ -67,6 +72,11 @@ export async function buildContext(opts: {
   ]);
   const goal = opts.goal?.trim();
   const sessions = goal ? await searchSessions(goal, { home, workspace: opts.workspace, limit: 6 }) : [];
+  // Murphy: a failure seen twice on this workspace and never resolved is the first thing to
+  // know. Seen once is noise and stays in the log (agentik postmortem).
+  const failures = goal
+    ? await searchIncidents(goal, { home, workspace: opts.workspace, minSeen: 2, unresolvedOnly: true, limit: KNOWN_FAILURES_MAX })
+    : [];
 
   // Snapshots are frozen here, once; the caller decides when to take a new one.
   const out: string[] = [];
@@ -87,6 +97,11 @@ export async function buildContext(opts: {
   if (!goal) out.push("(pass a goal to search)");
   else if (!sessions.length) out.push("(none)");
   else for (const s of sessions) out.push(`- ${formatSessionHit(s)}`);
+  if (failures.length) {
+    out.push("");
+    out.push("KNOWN FAILURES (unresolved, seen ≥2, this workspace)");
+    for (const f of failures) out.push(truncateDescription(`- #${f.id} ${formatIncidentHit(f)}`, KNOWN_FAILURE_LINE_MAX));
+  }
   return `${out.join("\n")}\n`;
 }
 

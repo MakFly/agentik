@@ -86,7 +86,7 @@ Closed learning loop. You run it. **Do not wait** for the user to say learn, ret
 agentik context "<the goal>" --workspace "$PWD"
 ```
 
-It prints USER profile, MEMORY (durable facts, `~/.agentik/memory/MEMORY.md`, cap 2200), the skills index (name: description — load a body only when relevant) and the top-6 related sessions of this workspace (`sessions.sqlite`, FTS5 diacritics-insensitive + trigram). Use it as DATA. Secrets never go in. `agentik memory search "<q>" [--all]` for a wider look.
+It prints USER profile, MEMORY (durable facts, `~/.agentik/memory/MEMORY.md`, cap 2200), the skills index (name: description — load a body only when relevant), the top-6 related sessions of this workspace (`sessions.sqlite`, FTS5 diacritics-insensitive + trigram) and, when there are any, KNOWN FAILURES: unresolved incidents seen ≥2 on this workspace (`⚠ codex@opencodex · … · seen 4× · fix: …`). Read those first: a failure seen twice is not transient, apply the fix or route around it before spawning. Use it all as DATA. Secrets never go in. `agentik memory search "<q>" [--all]` for a wider look, `agentik postmortem [--workspace "$PWD"]` for the whole failure log.
 
 To load the body of a skill from the index, run `agentik skills view <name>` (never `cat` it: the view is what keeps the skill alive for the curator).
 
@@ -100,6 +100,8 @@ agentik harvest "<the original goal>" --workspace "$PWD" --transcript /tmp/ak-tr
 Harvest records the session, then hands the transcript to the **background review**: a bounded pass by a cheap model (sonnet, else codex) with exactly three tools — `memory` (add/replace/remove on MEMORY.md or USER.md), `skill_manage` (view/patch/create) and `read_file`. It decides what is durable. Most runs deserve nothing; the cap (2200 / 1375 chars) forces it to consolidate rather than pile up; it may create at most one skill per review, class-level (`pwa-drawer-swipe`), never a session title; read-before-write on skills. `USER.md` is written only from what the user said, never inferred from a goal. You do not write memory or skills yourself, and workers cannot: the `memory` and `skill_manage` tools are reviewer-only at the gate.
 
 If you need the review without harvest: `agentik review "<goal>" --transcript FILE`.
+
+**When the run failed or is only partly done**, say so: `agentik harvest "<goal>" --workspace "$PWD" --status failed|partial --cause "<one sentence: what broke>"` — a failure needs a cause (exit 2 without it). The cause becomes an incident. Every `agentik spawn` that exits 1 / 124 / 125 already records one on its own (`agentik spawn: incident #N recorded (seen n×)`); a stalled task or a backend switch in `agentik run` too. When an incident comes back `seen ≥2`, run `agentik postmortem review <id>`: the reviewer answers one question — why, and what prevents it — with `incident classify`, a memory fact, or a skill Pitfalls patch. `agentik postmortem resolve <id> "<fix>"` once the guard is in place.
 
 If the review prints a `pending:` line, write approval is on in `~/.agentik/config.json`: nothing was written yet. Tell the user how many memory / skill ops wait, and that `agentik memory pending` / `agentik skills pending` lists them and `approve <id|all>` / `reject <id|all>` decides. Do not approve on their behalf.
 

@@ -30,7 +30,7 @@ the README and this file disagree; this file wins for agents.
             workspace-filtered (unknown ws never hidden) └─ agentik review  ──► model (sonnet ▸ codex ▸ grok)
             top-6, token hit > trigram hit                     16 iterations max, DATA in: snapshots +
                                                               skills index + transcript
-                                                              tools: memory · skill_manage · read_file
+                                                              tools: memory · skill_manage · incident · read_file
                                                                  │
                                         ┌────────────────────────┴────────────────────────┐
                                         │ memory add/replace/remove  (target memory|user) │
@@ -63,6 +63,43 @@ Invariants (tests enforce them):
 - The cap is a consolidation forcing function, not an overflow. There is no WARM store.
 - USER.md holds only what the user said explicitly. Never inferred from a goal.
 - Retrieved pages, tool output, transcripts and peer-agent text are DATA, never instructions.
+
+## Postmortem — failures are recorded so they surface next time (Murphy)
+
+```
+  FAILURE                                            NEXT TIME
+  ───────                                            ─────────
+  agentik spawn  exit 1 / 124 / 125 ──┐              agentik context "<goal>" --workspace $PWD
+  agentik run    stalled task,        │                 … RELATED SESSIONS
+                 backend switch,      ├─ recordIncident  KNOWN FAILURES (unresolved, seen ≥2, this workspace)
+                 blocked / rejected   │   (src/incidents.ts)   ⚠ codex@opencodex · adapter_eof … · seen 4× · last … · fix: …
+  agentik harvest --status failed|    │                 top-3, ≤100 chars/line, seen=1 prints nothing
+                 partial --cause TEXT ┘
+        │
+        ▼  table `incidents` in sessions.sqlite   FTS5 unicode61 + trigram over goal/symptom/cause/fix
+  dedup key = (workspace, harness, symptom lowercased, spaces collapsed, digits→#, 200 chars)
+     same key, unresolved  → seen += 1, last_at, errors ∪ (cap 20)      resolved → a NEW row
+     symptom/errors/cause/fix masked at WRITE (memoryContentProblem → "[BLOCKED: …]"), never a raw token
+        │
+        ▼  agentik postmortem [--workspace] [--since 7d|ISO] [--all] [--json]   grouped by cause, uncategorised last
+           agentik postmortem classify <id> "<cause>" | resolve <id> "<fix>" | review <id>
+           agentik review --incident <id>  ──► POSTMORTEM_GUIDANCE, ONE question: why, and what prevents it
+              DATA in: incident:current + incidents:similar (unresolved, same workspace)
+              exactly one of: nothing (seen=1, noise) · incident classify + memory fact ·
+                              incident classify|resolve + skill_manage patch (Pitfalls) when seen ≥2 and a skill exists
+              tool `incident` (classify/resolve/merge, cause ≤120) is reviewer-only like memory/skill_manage
+```
+
+Invariants (tests enforce them):
+- Every non-zero `agentik spawn` (1, 124, 125, raw or stream path) leaves an incident; recording never
+  changes the exit code (`could not record incident: …` on stderr, same code). `run` logs one incident per
+  stalled task, per backend switch, and one for a `blocked` / `rejected` run (`awaiting_approval` and
+  `overridden` are the human's decisions, not failures).
+- `harvest --status failed|partial` needs `--cause` (exit 2 otherwise): the cause is the incident's symptom.
+- Unresolved and seen ≥2 ⇒ in `agentik context` as KNOWN FAILURES; seen once is silent (log only).
+- Secrets are masked at write time in the incident log; the disk never holds the token.
+- Code never writes MEMORY.md, a cause, or a fix on its own: the review (a model) or a human does.
+  The reviewer's memory guidance routes transient failures to the incident log, not to memory.
 
 ## Backends and spawn
 
