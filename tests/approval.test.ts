@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { approveMemory, approveSkillOps, rejectPending } from "../src/approval.ts";
 import { main } from "../src/cli.ts";
@@ -224,4 +224,26 @@ describe("skills.writeApproval: skill_manage patch/create are staged", () => {
     // `skills approve <name>` still means "approve a human draft".
     expect(await main(["skills", "approve", "csv-export", "--agentik-home", home])).toBe(1);
   });
+});
+
+test("approve all keeps going past a project op that lost its workspace: it stays pending, the next op lands", async () => {
+  const home = await makeWorkspace("approval-broken-");
+  const dir = join(home, "pending", "memory");
+  await mkdir(dir, { recursive: true });
+  const broken = { id: "20260101T000000Z-aaaa", target: "project", ops: [{ action: "add", content: "orphan" }], at: "2026-01-01T00:00:00Z", preview: "add orphan" };
+  const good = { id: "20260101T000001Z-bbbb", target: "memory", ops: [{ action: "add", content: "global survivor" }], at: "2026-01-01T00:00:01Z", preview: "add global survivor" };
+  await writeFile(join(dir, `${broken.id}.json`), JSON.stringify(broken), "utf8");
+  await writeFile(join(dir, `${good.id}.json`), JSON.stringify(good), "utf8");
+  const out = await approveMemory("all", { home });
+  if ("error" in out) throw new Error(out.error);
+  expect(out).toHaveLength(2);
+  const brokenOut = out.find((o) => o.id === broken.id)!;
+  const goodOut = out.find((o) => o.id === good.id)!;
+  expect(brokenOut.ok).toBe(false);
+  expect(brokenOut.message).toContain("project memory needs a workspace");
+  expect(brokenOut.message).toContain("still pending");
+  expect(goodOut.ok).toBe(true);
+  expect(await Bun.file(join(dir, `${broken.id}.json`)).exists()).toBe(true);
+  expect(await Bun.file(join(dir, `${good.id}.json`)).exists()).toBe(false);
+  expect(await Bun.file(join(home, "memory", "MEMORY.md")).text()).toContain("global survivor");
 });
