@@ -269,14 +269,19 @@ export function grokCliArgs(prompt: string, cwd?: string): string[] {
   return args;
 }
 
-/** Same posture as alias `cla` (`claude --dangerously-skip-permissions --effort high`). */
+/**
+ * Gated claude worker: it proposes JSON tool calls and owns no native tool, so it runs in
+ * `--restricted` mode with the host tools denied. No `--dangerously-skip-permissions` here —
+ * claude rejects "bypassPermissions" together with `--restricted` (exit 1), and a worker with
+ * no tools has nothing to bypass. That combination shipped untested until the first real
+ * `agentik review` ran on it.
+ */
 export function claudeCliArgs(prompt: string, model: string): string[] {
   return [
     "-p",
     prompt,
     "--model",
     model,
-    "--dangerously-skip-permissions",
     "--effort",
     "high",
     "--output-format",

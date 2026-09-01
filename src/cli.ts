@@ -340,7 +340,9 @@ async function reviewCmd(args: string[]): Promise<number> {
   });
   if (flags.json) console.log(JSON.stringify(outcome, null, 2));
   else console.log(formatReviewOutcome(outcome));
-  return outcome.stoppedBecause === "backend_error" ? 1 : 0;
+  // A backend that dies after the writes landed ended the review early, it did not undo it.
+  const landed = outcome.memoryOps + outcome.userOps + outcome.skillOps > 0;
+  return outcome.stoppedBecause === "backend_error" && !landed ? 1 : 0;
 }
 
 /** Cheapest authenticated harness first; `mock` is for tests and reviews nothing. */

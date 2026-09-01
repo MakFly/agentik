@@ -84,10 +84,10 @@ describe("CLI envelope unwrap (shipped decodeGrokStdout / decodeClaudeStdout)", 
     }
   });
 
-  test("Claude CLI args match cla (skip-permissions, effort high) and still deny host tools", () => {
+  test("Claude CLI args: restricted, host tools denied, and NOT bypassPermissions (claude rejects that pair)", () => {
     const args = claudeCliArgs("trusted goal", "sonnet");
     expect(args).toContain("-p");
-    expect(args).toContain("--dangerously-skip-permissions");
+    expect(args).not.toContain("--dangerously-skip-permissions");
     expect(args).toContain("--effort");
     expect(args[args.indexOf("--effort") + 1]).toBe("high");
     expect(args).toContain("--disallowedTools");
