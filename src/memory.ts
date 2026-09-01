@@ -20,7 +20,8 @@ export interface MemoryNote {
 }
 
 export interface RetainResult {
-  layer: "hot" | "rejected";
+  /** `pending`: memory.writeApproval is on, the note waits in `pending/memory/` for approval. */
+  layer: "hot" | "pending" | "rejected";
   path: string;
   reason?: string;
 }
@@ -53,6 +54,9 @@ export async function retainNote(
         ? `MEMORY.md at ${res.usage.used}/${res.usage.cap} chars — consolidate (replace/remove) before adding`
         : res.message,
     };
+  }
+  if (res.staged) {
+    return { layer: "pending", path: `${paths.pendingMemoryOps}/${res.staged}.json`, reason: res.message };
   }
   return { layer: "hot", path: paths.hot };
 }

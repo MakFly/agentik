@@ -35,6 +35,15 @@ export function memoryPaths(home: string) {
     sessionsDb: join(home, "sessions.sqlite"),
     migratedMarker: join(home, "memory", ".migrated-v1"),
     pendingSkills: join(home, "pending", "skills"),
+    /** Staged writes awaiting `agentik memory approve` (config memory.writeApproval). */
+    pendingMemoryOps: join(home, "pending", "memory"),
+    /** Staged skill_manage patch/create awaiting `agentik skills approve` (skills.writeApproval). */
+    pendingSkillOps: join(home, "pending", "skills-ops"),
     skills: join(home, "skills"),
+    /** Per-skill usage counters the curator reads: views, patches, who created it, last use. */
+    skillUsage: join(home, "skills", ".usage.json"),
+    skillSnapshots: join(home, "skills", ".snapshots"),
+    curatorLedger: join(home, "skills", ".curator-ledger.json"),
+    config: join(home, "config.json"),
   };
 }

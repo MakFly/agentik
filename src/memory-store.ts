@@ -1,6 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readConfig } from "./config.ts";
 import { agentikHome, memoryPaths } from "./home.ts";
 import { detectInjection } from "./injection.ts";
+import { newPendingId, stagePending, type PendingMemoryOp } from "./pending.ts";
 
 /**
  * The two always-loaded memory files, written by a model through the `memory` tool.
@@ -41,6 +43,8 @@ export interface MemoryOpResult {
   blocked?: string;
   /** The add would have exceeded the cap. */
   overCap?: boolean;
+  /** `memory.writeApproval` is on: nothing was written, the batch waits under this id. */
+  staged?: string;
 }
 
 export interface MemoryOperation {
@@ -196,14 +200,32 @@ function applyOps(
   return { entries: next, notes };
 }
 
+export function previewOps(ops: MemoryOperation[]): string {
+  const cut = (t: string | undefined) => (t ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+  return ops
+    .map((op) => {
+      if (op.action === "add") return `add "${cut(op.content)}"`;
+      if (op.action === "replace") return `replace "${cut(op.old)}" -> "${cut(op.new)}"`;
+      return `remove "${cut(op.old)}"`;
+    })
+    .join("; ");
+}
+
 /**
  * Apply one or more operations atomically. The cap is checked on the *result*, so a remove +
  * add in one batch is the intended way to make room. Nothing is written on any error.
+ *
+ * This is the single write path for MEMORY.md and USER.md — the reviewer's `memory` tool,
+ * `retainNote`, and the CLI all end here — which is why write approval is enforced here and
+ * nowhere else. With `memory.writeApproval` on, a batch that *would* apply cleanly (content
+ * scan, targets found, under the cap) is staged and reported as a success: the reviewer
+ * decided, the human applies. `bypassApproval` is for `agentik memory approve`, which
+ * replays a staged batch through the same validation against the file as it is now.
  */
 export async function memoryApply(
   target: MemoryTarget,
   ops: MemoryOperation[],
-  opts?: { home?: string },
+  opts?: { home?: string; bypassApproval?: boolean },
 ): Promise<MemoryOpResult> {
   const action = ops.length === 1 ? ops[0].action : "batch";
   const before = await readEntries(target, opts?.home);
@@ -232,6 +254,25 @@ export async function memoryApply(
       message: overCapMessage(target, usageBefore, usageAfter.used - usageBefore.used),
       usage: usageBefore,
       entries: before,
+    };
+  }
+  if (!opts?.bypassApproval && (await readConfig({ home: opts?.home })).memory.writeApproval) {
+    const now = new Date();
+    const entry: PendingMemoryOp = {
+      id: newPendingId(now),
+      target,
+      ops,
+      at: now.toISOString(),
+      preview: previewOps(ops),
+    };
+    await stagePending("memory", entry, { home: opts?.home });
+    return {
+      ok: true,
+      target,
+      action,
+      message: `staged for approval (#${entry.id}) — run \`agentik memory approve ${entry.id}\``,
+      usage: usageBefore,
+      staged: entry.id,
     };
   }
   await writeEntries(target, applied.entries, opts?.home);

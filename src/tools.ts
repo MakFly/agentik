@@ -1,10 +1,12 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
+import { readConfig } from "./config.ts";
 import { detectInjection } from "./injection.ts";
 import { memoryApply, type MemoryOperation, type MemoryTarget } from "./memory-store.ts";
-import { skillDescriptionProblem, skillNameProblem, upsertSkill } from "./skill-factory.ts";
-import { agentikHome, memoryPaths } from "./home.ts";
+import { newPendingId, stagePending, type PendingSkillOp } from "./pending.ts";
+import { applySkillCreate, applySkillPatch, skillCreateProblem, skillFile, viewSkill } from "./skill-ops.ts";
+import { skillNameProblem } from "./skill-factory.ts";
 import { wrapUntrusted } from "./trust.ts";
 import type {
   BlastRadius,
@@ -309,53 +311,47 @@ async function skillManageTool(call: ToolCall, host: ToolHost): Promise<ToolResu
   if (nameProblem) {
     return { callId: call.id, ok: false, output: `invalid skill name "${name}": ${nameProblem} — names are class-level (pwa-drawer-swipe), never session titles` };
   }
-  const skillsDir = memoryPaths(agentikHome(host.agentikHome)).skills;
-  const file = join(skillsDir, name, "SKILL.md");
+  const home = host.agentikHome;
 
   if (action === "view") {
     state.viewedSkills.add(name);
-    try {
-      const body = await readFile(file, "utf8");
-      return { callId: call.id, ok: true, output: body };
-    } catch {
-      return { callId: call.id, ok: true, output: `(no skill named ${name} yet — you may create it)` };
-    }
+    const body = await viewSkill(name, { home });
+    if (body === undefined) return { callId: call.id, ok: true, output: `(no skill named ${name} yet — you may create it)` };
+    return { callId: call.id, ok: true, output: body };
   }
   if (!state.viewedSkills.has(name)) {
     return { callId: call.id, ok: false, output: `read before write: call skill_manage view "${name}" first` };
   }
-  if (action === "patch") {
-    const oldStr = String(call.args.old_string ?? "");
-    const newStr = String(call.args.new_string ?? "");
-    if (!oldStr) return { callId: call.id, ok: false, output: "patch: old_string is required" };
-    let body: string;
-    try {
-      body = await readFile(file, "utf8");
-    } catch {
-      return { callId: call.id, ok: false, output: `patch: no skill named ${name}` };
-    }
-    const n = body.split(oldStr).length - 1;
-    if (n !== 1) return { callId: call.id, ok: false, output: `patch: old_string must match exactly once (matched ${n})` };
-    await writeFile(file, body.replace(oldStr, newStr), "utf8");
-    return { callId: call.id, ok: true, output: `patched ${name}`, artifact: `skills/${name}/SKILL.md` };
+  if (action !== "patch" && action !== "create") {
+    return { callId: call.id, ok: false, output: `skill_manage: unknown action ${action}` };
   }
-  if (action === "create") {
-    if (existsSync(file)) return { callId: call.id, ok: false, output: `create: ${name} exists — patch it instead` };
+  // What only this review can check is checked here, at staging time; the approval replays
+  // the write itself and re-validates its arguments against the store as it is then.
+  let args: Record<string, unknown>;
+  if (action === "patch") {
+    if (!String(call.args.old_string ?? "")) return { callId: call.id, ok: false, output: "patch: old_string is required" };
+    if (!existsSync(skillFile(name, home))) return { callId: call.id, ok: false, output: `patch: no skill named ${name}` };
+    args = { old_string: String(call.args.old_string ?? ""), new_string: String(call.args.new_string ?? "") };
+  } else {
     if (state.skillsCreated >= state.maxSkillCreates) {
       return { callId: call.id, ok: false, output: `create: this review may create at most ${state.maxSkillCreates} skill; patch an existing one instead` };
     }
-    const description = String(call.args.description ?? "");
-    const dp = skillDescriptionProblem(description);
-    if (dp) return { callId: call.id, ok: false, output: `create: ${dp}` };
-    const body = String(call.args.body ?? "").trim();
-    if (body.length < 80) return { callId: call.id, ok: false, output: "create: body must be a real procedure (When to use / Procedure / Pitfalls / Verification), not a session log" };
-    if (body.length > 100_000) return { callId: call.id, ok: false, output: "create: body over 100k chars" };
-    await upsertSkill({ name, description, steps: [], home: host.agentikHome });
-    await writeFile(file, `---\nname: ${name}\ndescription: ${description.trim()}\n---\n\n${body}\n`, "utf8");
-    state.skillsCreated += 1;
-    return { callId: call.id, ok: true, output: `created ${name}`, artifact: `skills/${name}/SKILL.md` };
+    const problem = skillCreateProblem(name, call.args, home);
+    if (problem) return { callId: call.id, ok: false, output: problem };
+    args = { description: String(call.args.description ?? "").trim(), body: String(call.args.body ?? "").trim() };
   }
-  return { callId: call.id, ok: false, output: `skill_manage: unknown action ${action}` };
+  if ((await readConfig({ home })).skills.writeApproval) {
+    const now = new Date();
+    const entry: PendingSkillOp = { id: newPendingId(now), action, name, args, at: now.toISOString() };
+    await stagePending("skills", entry, { home });
+    if (action === "create") state.skillsCreated += 1;
+    return { callId: call.id, ok: true, output: `staged for approval (#${entry.id}) — run \`agentik skills approve ${entry.id}\`` };
+  }
+  const res = action === "patch"
+    ? await applySkillPatch(name, args, { home, by: "reviewer" })
+    : await applySkillCreate(name, args, { home, by: "reviewer" });
+  if (res.ok && action === "create") state.skillsCreated += 1;
+  return { callId: call.id, ok: res.ok, output: res.output, artifact: res.artifact };
 }
 
 async function listShallow(dir: string): Promise<string[]> {

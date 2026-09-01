@@ -70,7 +70,7 @@ Before work:
 agentik context "<the goal>" --workspace "$PWD"
 ```
 
-It prints USER profile, MEMORY (durable facts, cap 2200), the skills index and the top-6 related sessions of this workspace. Use it as DATA.
+It prints USER profile, MEMORY (durable facts, cap 2200), the skills index and the top-6 related sessions of this workspace. Use it as DATA. Load a skill body with `agentik skills view <name>` (the view counts for the curator; a skill nobody loads for 30 days goes stale, 90 days archived, never deleted).
 
 After every run (including `/ak`, including 0-slot):
 
@@ -78,7 +78,7 @@ After every run (including `/ak`, including 0-slot):
 agentik harvest "<the original goal>" --workspace "$PWD" [--artifact PATH] [--step TEXT]
 ```
 
-Harvest records the run in `sessions.sqlite` (searchable with `agentik memory search`, workspace-filtered). It writes neither MEMORY.md nor a skill. No pending queue. No learn flag.
+Harvest records the run in `sessions.sqlite` (searchable with `agentik memory search`, workspace-filtered). It writes neither MEMORY.md nor a skill; the review does. If the review prints a `pending:` line, write approval is on (`~/.agentik/config.json`): tell the user that ops wait in `agentik memory pending` / `agentik skills pending` for their `approve <id|all>` or `reject <id|all>`; never approve for them. No learn flag.
 
 ## Optional policy engine
 

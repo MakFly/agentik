@@ -227,6 +227,11 @@ async function listDirs(dir: string): Promise<string[]> {
 
 const PINNED_FILE = ".pinned";
 
+/** Names listed in `skills/.pinned`, sorted. */
+export async function readPinnedSkills(skillsDir: string): Promise<string[]> {
+  return readPinned(skillsDir);
+}
+
 async function readPinned(skillsDir: string): Promise<string[]> {
   try {
     const body = await readFile(join(skillsDir, PINNED_FILE), "utf8");

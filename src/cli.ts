@@ -49,6 +49,11 @@ import {
 } from "./skill-factory.ts";
 import { memoryPaths, agentikHome } from "./home.ts";
 import { join } from "node:path";
+import { approveMemory, approveSkillOps, formatPendingMemory, formatPendingSkills, rejectPending, type ApprovalOutcome } from "./approval.ts";
+import { curateSkills, formatCurateResult, rollbackSkills } from "./curator.ts";
+import { isPendingId, listPending, pendingCounts, readPending, type PendingMemoryOp, type PendingSkillOp } from "./pending.ts";
+import { viewSkill } from "./skill-ops.ts";
+import { describeUsage, readSkillUsage, recordSkillUsage } from "./skill-usage.ts";
 import {
   clampSubagentCount,
   MAX_SUBAGENTS,
@@ -105,7 +110,22 @@ Commands:
                                "memory recall" is an alias. "memory hot" prints MEMORY.md;
                                "memory retain <fact>" writes it (HOT only, cap 2200: over the cap
                                the note is refused, consolidate first).
-  agentik skill draft|approve|update|list ...
+  agentik memory pending | approve <id|all> | reject <id|all>
+                               With memory.writeApproval on in <home>/config.json, every memory
+                               write (reviewer tool, retain) is staged under pending/memory/;
+                               approve replays it (the cap applies then), reject drops it.
+  agentik skills list | view <name> | draft|approve|update ... | pin|unpin|link|unlink|archive
+                               "skills view <name>" prints a skill body and counts one view —
+                               this is how /ak loads a skill from the index.
+  agentik skills curate [--dry-run] [--stale-days 30] [--archive-days 90] [--rollback SNAPSHOT]
+                               Curator: a skill not loaded for 30 days is marked stale, for 90
+                               days it is moved to skills/.archive (pinned or human-made skills
+                               are never archived). Never deletes. Snapshots skills/ to
+                               skills/.snapshots/<iso>.tar.gz before changing anything and
+                               logs every action in skills/.curator-ledger.json;
+                               --rollback restores a snapshot (after taking one more).
+  agentik skills pending | approve <id|all> | reject <id|all>
+                               Same queue for skill_manage patch/create (skills.writeApproval).
   agentik harvest "<goal>" [--workspace DIR] [--artifact PATH] [--step TEXT]
   agentik probe [--json] [--refresh-backends]
 
@@ -275,7 +295,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       backend: workers.find((w) => !w.id.startsWith("mock")) ?? workerA,
       maxIterations: flags.maxIterations,
     });
-    if (!flags.json) console.log(formatReviewOutcome(outcome));
+    if (!flags.json) {
+      console.log(formatReviewOutcome(outcome));
+      await printPendingHint(home);
+    }
   }
 
   return exitCodeFor(report);
@@ -339,10 +362,33 @@ async function reviewCmd(args: string[]): Promise<number> {
     maxIterations: flags.maxIterations,
   });
   if (flags.json) console.log(JSON.stringify(outcome, null, 2));
-  else console.log(formatReviewOutcome(outcome));
+  else {
+    console.log(formatReviewOutcome(outcome));
+    await printPendingHint(home);
+  }
   // A backend that dies after the writes landed ended the review early, it did not undo it.
   const landed = outcome.memoryOps + outcome.userOps + outcome.skillOps > 0;
   return outcome.stoppedBecause === "backend_error" && !landed ? 1 : 0;
+}
+
+/** With write approval on, a "successful" review may have written nothing yet: say so. */
+async function printPendingHint(home: string): Promise<void> {
+  const counts = await pendingCounts({ home });
+  if (counts.memory) console.log(`pending: ${counts.memory} memory op(s) await \`agentik memory approve <id|all>\` (agentik memory pending)`);
+  if (counts.skills) console.log(`pending: ${counts.skills} skill op(s) await \`agentik skills approve <id|all>\` (agentik skills pending)`);
+}
+
+function printOutcomes(prefix: string, outcomes: ApprovalOutcome[]): number {
+  if (!outcomes.length) {
+    console.log(`${prefix}: nothing pending`);
+    return 0;
+  }
+  let failed = 0;
+  for (const o of outcomes) {
+    console.log(`${o.ok ? "ok" : "refused"} #${o.id}: ${o.message}`);
+    if (!o.ok) failed += 1;
+  }
+  return failed ? 1 : 0;
 }
 
 /** Cheapest authenticated harness first; `mock` is for tests and reviews nothing. */
@@ -535,6 +581,10 @@ export function parseRun(args: string[]): {
     maxIterations?: number;
     all?: boolean;
     limit?: number;
+    dryRun?: boolean;
+    staleDays?: number;
+    archiveDays?: number;
+    rollback?: string;
   };
 } {
   const flags: Record<string, string | boolean> = {};
@@ -569,6 +619,7 @@ export function parseRun(args: string[]): {
       i++;
     }
     else if (a === "--all") flags.all = true;
+    else if (a === "--dry-run") flags.dryRun = true;
     else if (a === "--expect-artifact" && args[i + 1]) {
       expectArtifacts.push(args[++i]);
     }
@@ -628,6 +679,10 @@ export function parseRun(args: string[]): {
           : undefined,
       all: Boolean(flags.all),
       limit: positive(flags.limit),
+      dryRun: Boolean(flags.dryRun),
+      staleDays: nonNegative(flags["stale-days"]),
+      archiveDays: nonNegative(flags["archive-days"]),
+      rollback: str(flags.rollback),
     },
   };
 }
@@ -697,7 +752,8 @@ async function harvestCmd(args: string[]): Promise<number> {
 }
 
 const MEMORY_USAGE =
-  'usage: agentik memory search "<query>" [--workspace DIR] [--all] [--limit N] | recall (alias) | hot | retain <fact>';
+  'usage: agentik memory search "<query>" [--workspace DIR] [--all] [--limit N] | recall (alias) | hot | retain <fact>\n' +
+  "       agentik memory pending | approve <id|all> | reject <id|all>";
 
 async function memoryCmd(args: string[]): Promise<number> {
   const sub = args[0];
@@ -714,7 +770,25 @@ async function memoryCmd(args: string[]): Promise<number> {
     }
     const r = await retainNote(goal, { home });
     console.log(r.layer === "rejected" ? `rejected: ${r.reason}` : `${r.layer} ${r.path}`);
+    if (r.layer === "pending") console.log(`memory.writeApproval is on — ${r.reason}`);
     return r.layer === "rejected" ? 3 : 0;
+  }
+  if (sub === "pending") {
+    console.log(formatPendingMemory(await listPending<PendingMemoryOp>("memory", { home })));
+    return 0;
+  }
+  if (sub === "approve" || sub === "reject") {
+    const id = args[1];
+    if (!id) {
+      console.error(MEMORY_USAGE);
+      return 2;
+    }
+    const res = sub === "approve" ? await approveMemory(id, { home }) : await rejectPending("memory", id, { home });
+    if ("error" in res) {
+      console.error(`agentik memory ${sub}: ${res.error}`);
+      return 1;
+    }
+    return printOutcomes(`memory ${sub}`, res);
   }
   if (sub === "search" || sub === "recall") {
     if (!goal) {
@@ -747,20 +821,73 @@ async function contextCmd(args: string[]): Promise<number> {
 }
 
 const SKILL_USAGE =
-  "usage: agentik skill list | draft <name> --description \"…\" <goal> | approve <name> [--link-harness] | update <name> <goal>\n" +
-  "       agentik skills unlink | archive | pin <name> | unpin <name> | link <name>";
+  "usage: agentik skill list | view <name> | draft <name> --description \"…\" <goal> | approve <name> [--link-harness] | update <name> <goal>\n" +
+  "       agentik skills unlink | archive | pin <name> | unpin <name> | link <name>\n" +
+  "       agentik skills curate [--dry-run] [--stale-days N] [--archive-days N] [--rollback SNAPSHOT]\n" +
+  "       agentik skills pending | approve <id|all> | reject <id|all>";
 
 async function skillCmd(args: string[]): Promise<number> {
   const sub = args[0];
   const { goal, flags } = parseRun(args.slice(1));
   const home = homeFor(flags);
   if (sub === "list") {
-    const { pending, approved, archived, pinned } = await listSkills({ home });
+    const [{ pending, approved, archived, pinned }, usage, counts] = await Promise.all([
+      listSkills({ home }),
+      readSkillUsage({ home }),
+      pendingCounts({ home }),
+    ]);
     console.log(`pending: ${pending.join(", ") || "(none)"}`);
-    console.log(`approved: ${approved.join(", ") || "(none)"}`);
+    console.log(approved.length ? "approved:" : "approved: (none)");
+    for (const name of approved) console.log(`  - ${name} [${describeUsage(usage[name])}]`);
     console.log(`pinned: ${pinned.join(", ") || "(none)"}`);
-    console.log(`archived: ${archived.length}`);
+    console.log(`archived: ${archived.length}${archived.length ? ` (${archived.join(", ")})` : ""}`);
+    if (counts.skills) console.log(`pending skill ops: ${counts.skills} (agentik skills pending)`);
     return 0;
+  }
+  if (sub === "view") {
+    const name = args[1];
+    if (!name) {
+      console.error(SKILL_USAGE);
+      return 2;
+    }
+    const body = await viewSkill(name, { home });
+    if (body === undefined) {
+      console.error(`agentik skills view: no skill named ${name}`);
+      return 1;
+    }
+    process.stdout.write(body.endsWith("\n") ? body : `${body}\n`);
+    return 0;
+  }
+  if (sub === "curate") {
+    if (flags.rollback) {
+      const r = await rollbackSkills(flags.rollback, { home });
+      if ("error" in r) {
+        console.error(`agentik skills curate --rollback: ${r.error}`);
+        return 1;
+      }
+      console.log(`rollback: restored ${r.restored} — safety snapshot ${r.safetySnapshot}`);
+      return 0;
+    }
+    const result = await curateSkills({ home, dryRun: flags.dryRun, staleDays: flags.staleDays, archiveDays: flags.archiveDays });
+    console.log(formatCurateResult(result));
+    return 0;
+  }
+  if (sub === "pending") {
+    console.log(formatPendingSkills(await listPending<PendingSkillOp>("skills", { home })));
+    return 0;
+  }
+  if (sub === "reject") {
+    const id = args[1];
+    if (!id) {
+      console.error(SKILL_USAGE);
+      return 2;
+    }
+    const res = await rejectPending("skills", id, { home });
+    if ("error" in res) {
+      console.error(`agentik skills reject: ${res.error}`);
+      return 1;
+    }
+    return printOutcomes("skills reject", res);
   }
   if (sub === "draft") {
     const name = args[1];
@@ -795,12 +922,22 @@ async function skillCmd(args: string[]): Promise<number> {
       console.error(SKILL_USAGE);
       return 2;
     }
+    // `approve all` / `approve <id>` is the staged-op queue; `approve <name>` a human draft.
+    if (name === "all" || (isPendingId(name) && (await readPending("skills", name, { home })))) {
+      const res = await approveSkillOps(name, { home });
+      if ("error" in res) {
+        console.error(`agentik skills approve: ${res.error}`);
+        return 1;
+      }
+      return printOutcomes("skills approve", res);
+    }
     // Linking is opt-in: a linked skill sits in every prompt of every harness, every turn.
     const ok = await approveSkill(name, { home, linkHarness: flags.linkHarness });
     if ("error" in ok) {
       console.error(ok.error);
       return 1;
     }
+    await recordSkillUsage(name, "create", { home, createdBy: "human" });
     console.log(ok.path);
     return 0;
   }
@@ -855,6 +992,7 @@ async function skillCmd(args: string[]): Promise<number> {
       console.error(ok.error);
       return 1;
     }
+    await recordSkillUsage(name, "patch", { home: parsed.flags.agentikHome ? homeFor(parsed.flags) : home });
     console.log(ok.path);
     return 0;
   }
