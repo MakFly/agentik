@@ -6,6 +6,7 @@ import {
   harnessForName,
   resolveBackends,
   spawnCapture,
+  spawnLines,
 } from "./backends.ts";
 import {
   describeStatus,
@@ -13,6 +14,13 @@ import {
   loadAvailability,
   type HarnessName,
 } from "./availability.ts";
+import {
+  consumeVerdictLine,
+  newVerdict,
+  summarizeVerdict,
+  verdictArgs,
+  verdictProblem,
+} from "./verdict.ts";
 import { formatReport, runLoop } from "./loop.ts";
 import { defaultFetchImpl } from "./tools.ts";
 import { retainNote, recall, readHot } from "./memory.ts";
@@ -56,10 +64,14 @@ Commands:
                                  grok   -> grok --yolo --single … --no-subagents --no-plan
                                  codex  -> codex exec --yolo --skip-git-repo-check --ephemeral
                                  claude -> claude -p --dangerously-skip-permissions --effort high
-                               Output streams live. The harness is probed first: a CLI that
-                               is not authenticated exits 2 instead of being launched.
+                               Output streams live and agentik reads the harness's own event
+                               stream, so it reports what the worker actually did (turns, tool
+                               calls, stop reason) instead of trusting the exit code. The
+                               harness is probed first: a CLI that is not authenticated exits 2
+                               instead of being launched.
                                Exit codes: 0 done · 1 the CLI failed · 2 unusable harness
-                               · 124 killed by --timeout, the task did NOT finish.
+                               · 124 killed by --timeout, the task did NOT finish
+                               · 125 the harness ended without doing the work.
   agentik memory retain|recall|hot [text]
   agentik skill draft|approve|update|list ...
   agentik harvest "<goal>" [--artifact PATH] [--step TEXT]
@@ -80,6 +92,9 @@ Options:
   --step-timeout SECONDS       Wall clock for one worker-CLI invocation (default 600)
   --refresh-backends           Re-probe the harnesses instead of reading the 15min cache
   --strict-backend             Fail instead of rerouting when a named harness is unusable
+  --require-tools              spawn: a run that calls no tool is a failure (exit 125).
+                               Pass it for implement/fix tasks, omit it for diagnostics.
+  --raw                        spawn: the harness's own output, no verdict
   --approve-high-blast         Explicit high-blast approval without --yolo
   --reject-high-blast          Reject pending high-blast tools
   --override stop|redirect     Stop or redirect the run
@@ -258,17 +273,52 @@ async function spawnForeign(args: string[]): Promise<number> {
   const workspace = resolve(flags.workspace ?? process.cwd());
   const role = flags.role ? `You are ${flags.role}. ` : "";
   const prompt = `${role}Bounded task (no nested subagents, stay in ${workspace}):\n${goal}`;
-  const { bin, args: spawnArgs } = foreignWorkerArgs(harness, prompt, workspace);
   const timeoutMs = (flags.timeout ?? DEFAULT_SPAWN_TIMEOUT_S) * 1000;
-  // Stream: a 30-minute agent run should not be invisible until it ends.
-  const res = await spawnCapture(bin, spawnArgs, timeoutMs, workspace, { stream: true });
+  const timedOutMsg = () =>
+    `agentik spawn: ${harness} killed after ${Math.round(timeoutMs / 1000)}s (timeout) — the task did NOT finish, partial work may be on disk`;
+
+  if (flags.raw) {
+    // Opt-out: the harness's own rendering, no verdict.
+    const { bin, args: rawArgs } = foreignWorkerArgs(harness, prompt, workspace);
+    const res = await spawnCapture(bin, rawArgs, timeoutMs, workspace, { stream: true });
+    if (res.timedOut) {
+      console.error(timedOutMsg());
+      return 124;
+    }
+    return res.exitCode === 0 ? 0 : 1;
+  }
+
+  // Read the harness's own event stream. Exit code alone cannot tell a worker that did the
+  // job from one that narrated an intention and stopped — both exit 0.
+  const { bin, args: streamArgs } = foreignWorkerArgs(harness, prompt, workspace, verdictArgs(harness));
+  const verdict = newVerdict(harness);
+  const res = await spawnLines(bin, streamArgs, timeoutMs, workspace, (line) =>
+    consumeVerdictLine(verdict, line, {
+      onText: (chunk) => process.stdout.write(chunk),
+      onTool: (name, detail) => process.stderr.write(`  ⟩ ${name}${detail ? ` ${detail}` : ""}\n`),
+    }),
+  );
+  process.stdout.write("\n");
+  console.error(`agentik spawn: ${summarizeVerdict(verdict)}`);
+  // Only an incomplete turn makes these errors; on a completed turn they are harness notes
+  // (codex, for one, emits a benign config warning on every successful run).
+  const label = verdict.completed ? "note" : "harness error";
+  for (const e of verdict.errors) console.error(`agentik spawn: ${label} — ${e}`);
+
   if (res.timedOut) {
-    console.error(
-      `agentik spawn: ${bin} killed after ${Math.round(timeoutMs / 1000)}s (timeout) — the task did NOT finish, partial work may be on disk`,
-    );
+    console.error(timedOutMsg());
     return 124;
   }
-  return res.exitCode === 0 ? 0 : 1;
+  if (res.exitCode !== 0) {
+    if (res.stderr.trim()) process.stderr.write(res.stderr);
+    return 1;
+  }
+  const problem = verdictProblem(verdict, { requireTools: flags.requireTools });
+  if (problem) {
+    console.error(`agentik spawn: ${problem} — treating this as unfinished, not as success`);
+    return 125;
+  }
+  return 0;
 }
 
 /**
@@ -318,6 +368,8 @@ export function parseRun(args: string[]): {
     stepTimeout?: number;
     refreshBackends?: boolean;
     strictBackend?: boolean;
+    requireTools?: boolean;
+    raw?: boolean;
   };
 } {
   const flags: Record<string, string | boolean> = {};
@@ -342,6 +394,8 @@ export function parseRun(args: string[]): {
     else if (a === "--reject-high-blast") flags.rejectHighBlast = true;
     else if (a === "--refresh-backends") flags.refreshBackends = true;
     else if (a === "--strict-backend") flags.strictBackend = true;
+    else if (a === "--require-tools") flags.requireTools = true;
+    else if (a === "--raw") flags.raw = true;
     else if (a.startsWith("--")) {
       const key = a.slice(2);
       const val = args[i + 1];
@@ -383,6 +437,8 @@ export function parseRun(args: string[]): {
       stepTimeout: nonNegative(flags["step-timeout"]),
       refreshBackends: Boolean(flags.refreshBackends),
       strictBackend: Boolean(flags.strictBackend),
+      requireTools: Boolean(flags.requireTools),
+      raw: Boolean(flags.raw),
     },
   };
 }

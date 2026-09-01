@@ -61,7 +61,9 @@ agentik spawn --harness claude --workspace "$PWD" --role Cornelius "<bounded tas
 
 All three run to natural completion in one process, no mid-task hand-back to a human. Wall clock is `--timeout` seconds (default 1800, `0` = unbounded), and output streams live.
 
-**Read the exit code, not the narration.** `0` done · `1` the CLI failed · `2` unusable harness · `124` killed by the timeout, **the task did NOT finish** and partial work may be on disk. On 124 the work is half-done by definition: re-issue the task (or raise `--timeout`) rather than reporting it as delivered.
+Pass **`--require-tools`** on any slot whose task must change files (implement, fix, ops). agentik then reads the harness's own event stream and fails a run that finished without calling a single tool — a worker that describes the work instead of doing it. Omit it for research/diagnostic slots, where a prose answer is the deliverable.
+
+**Read the exit code, not the narration.** `0` done · `1` the CLI failed · `2` unusable harness · `124` killed by the timeout · `125` the harness ended without doing the work. On 124 the work is half-done by definition, and on 125 nothing was done: re-issue the task (or raise `--timeout`) rather than reporting it as delivered.
 
 Per-slot: "Korben sous grok, Leeloo sous codex" → two `agentik spawn` with those harnesses. Never 6. Never two names from the same slot.
 

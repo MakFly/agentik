@@ -104,7 +104,23 @@ at all (otherwise it opens a TUI with no TTY attached and hangs); once there, it
 the full agentic tool loop for that one prompt. `--no-plan` keeps it out of an approval-gated
 plan mode with no headless approver.
 
-Output streams live, and the wall clock is `--timeout` seconds (default 1800, `0` = unbounded).
+agentik reads each harness's **own event stream** (`grok --output-format streaming-json`,
+`claude --output-format stream-json`, `codex exec --json`), renders it live, and reports what
+the worker actually did:
+
+```
+  ⟩ read_file {"target_file":"/tmp/a.txt"}
+  ⟩ write {"file_path":"/tmp/b.txt","content":"HELLO WORLD\n"}
+agentik spawn: completed · stop=end_turn · turns=4 · tools=5
+```
+
+That matters because a worker which narrates an intention and stops exits 0 exactly like one
+that finished the job. `--require-tools` turns "finished without calling a single tool" into
+**exit 125** — pass it for implement/fix tasks, omit it for diagnostics, where a prose-only
+answer is legitimate. A stop reason of `max_turns`, `refusal` or `cancelled`, or a claude
+`is_error`, is a failure regardless. `--raw` opts out and gives you the harness's own output.
+
+The wall clock is `--timeout` seconds (default 1800, `0` = unbounded).
 **A timeout exits 124**, distinct from the generic 1: the old 300s bound killed the CLI and
 returned a bare failure with nothing saying the work had been cut off mid-task. Treat 124 as
 "the task did not finish, partial work may be on disk".

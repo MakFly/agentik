@@ -216,13 +216,17 @@ export function decodeGrokStdout(stdout: string): WorkerMessage {
 
 /**
  * Grok's `--disallowed-tools` takes its *internal* tool ids, not Claude's capitalised tool
- * names: "Tool names are internal tool IDs (e.g. the shell tool is `run_terminal_cmd`, not
- * `bash`)" — ~/.grok/docs/user-guide/14-headless-mode.md. `Agent` is the one special entry
- * it also accepts (it blocks subagent spawning). Passing `Bash,Edit,Write,…` here matched
- * nothing, so the gated backend silently kept every native tool.
+ * names (14-headless-mode.md). Passing `Bash,Edit,Write,…` matched nothing, so the gated
+ * backend silently kept every native tool.
+ *
+ * These ids come from the binary itself — the `available_commands` event of
+ * `grok -p --output-format streaming-json` — not from the prose docs, which are stale here:
+ * the shell tool is `run_terminal_command` (docs say `run_terminal_cmd`) and the writer is
+ * `write` (docs say `write_file`). `Agent` is the one special entry grok also accepts, and it
+ * blocks subagent spawning.
  */
 export const GROK_DISALLOWED_TOOLS =
-  "run_terminal_cmd,search_replace,write_file,read_file,web_fetch,web_search,Agent";
+  "run_terminal_command,search_replace,write,read_file,web_fetch,web_search,Agent";
 export const CLAUDE_DISALLOWED_TOOLS = "Bash,Edit,Write,Read,WebFetch,WebSearch,Agent";
 
 /** Upper bound on agentic turns inside one gated `--single` invocation. */
@@ -308,14 +312,16 @@ export function foreignWorkerArgs(
   harness: "claude" | "grok" | "codex",
   prompt: string,
   cwd?: string,
+  /** Extra flags, placed where each CLI's parser accepts them (codex takes a trailing prompt). */
+  extra: string[] = [],
 ): { bin: string; args: string[] } {
   if (harness === "grok") {
-    const args = ["--yolo", "--single", prompt, "--no-subagents", "--no-plan"];
+    const args = ["--yolo", "--single", prompt, "--no-subagents", "--no-plan", ...extra];
     if (cwd) args.push("--cwd", cwd);
     return { bin: "grok", args };
   }
   if (harness === "codex") {
-    const args = ["exec", "--yolo", "--skip-git-repo-check", "--ephemeral"];
+    const args = ["exec", "--yolo", "--skip-git-repo-check", "--ephemeral", ...extra];
     if (cwd) args.push("--cd", cwd);
     args.push(prompt);
     return { bin: "codex", args };
@@ -328,6 +334,7 @@ export function foreignWorkerArgs(
     "high",
     "--disallowedTools",
     "Agent",
+    ...extra,
   ];
   return { bin: "claude", args };
 }
@@ -674,6 +681,53 @@ export interface SpawnResult {
   /** The timeout fired. Independent of `exitCode` — see below. */
   timedOut: boolean;
   signal: string | null;
+}
+
+/**
+ * Same bound and `timedOut` semantics as `spawnCapture`, but stdout is decoded line by line
+ * as it arrives. Needed to read a harness's NDJSON event stream live instead of waiting for a
+ * possibly-30-minute run to end before knowing anything about it.
+ */
+export async function spawnLines(
+  cmd: string,
+  args: string[],
+  timeoutMs: number,
+  cwd: string | undefined,
+  onLine: (line: string) => void,
+): Promise<SpawnResult> {
+  const proc = Bun.spawn([cmd, ...args], { stdout: "pipe", stderr: "pipe", cwd });
+  let timedOut = false;
+  let term: ReturnType<typeof setTimeout> | undefined;
+  let hard: ReturnType<typeof setTimeout> | undefined;
+  if (timeoutMs > 0) {
+    term = setTimeout(() => {
+      timedOut = true;
+      proc.kill();
+      hard = setTimeout(() => proc.kill("SIGKILL"), KILL_GRACE_MS);
+    }, timeoutMs);
+  }
+  const decoder = new TextDecoder();
+  let buffered = "";
+  const pump = (async () => {
+    for await (const chunk of proc.stdout as AsyncIterable<Uint8Array>) {
+      buffered += decoder.decode(chunk, { stream: true });
+      let nl = buffered.indexOf("\n");
+      while (nl >= 0) {
+        onLine(buffered.slice(0, nl));
+        buffered = buffered.slice(nl + 1);
+        nl = buffered.indexOf("\n");
+      }
+    }
+    if (buffered.trim()) onLine(buffered);
+  })();
+  const [stderr, exitCode] = await Promise.all([
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  await pump;
+  if (term) clearTimeout(term);
+  if (hard) clearTimeout(hard);
+  return { stdout: "", stderr, exitCode, timedOut, signal: proc.signalCode };
 }
 
 export interface SpawnOptions {

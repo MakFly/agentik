@@ -67,17 +67,20 @@ describe("CLI envelope unwrap (shipped decodeGrokStdout / decodeClaudeStdout)", 
     expect(args).toContain("--cwd");
     expect(args).toContain("--max-turns");
 
-    // Grok matches its *internal* tool ids here, not Claude's capitalised names
-    // (14-headless-mode.md: "the shell tool is `run_terminal_cmd`, not `bash`").
+    // Grok matches its *internal* tool ids here, not Claude's capitalised names, and not the
+    // ids in its own prose docs either: these come from the binary's `available_commands`
+    // event (`run_terminal_command`, not `run_terminal_cmd`; `write`, not `write_file`).
     // Claude-style names silently matched nothing, so the deny list was a no-op.
-    const deny = args[args.indexOf("--disallowed-tools") + 1];
-    for (const id of ["run_terminal_cmd", "search_replace", "write_file", "read_file", "web_fetch", "web_search"]) {
+    const deny = args[args.indexOf("--disallowed-tools") + 1].split(",");
+    for (const id of ["run_terminal_command", "search_replace", "write", "read_file", "web_fetch", "web_search"]) {
       expect(deny).toContain(id);
     }
+    expect(deny).not.toContain("run_terminal_cmd");
+    expect(deny).not.toContain("write_file");
     // `Agent` is the one special entry grok also accepts (blocks subagent spawning).
-    expect(deny.split(",")).toContain("Agent");
+    expect(deny).toContain("Agent");
     for (const claudeName of ["Bash", "Edit", "Write", "Read", "WebFetch", "WebSearch"]) {
-      expect(deny.split(",")).not.toContain(claudeName);
+      expect(deny).not.toContain(claudeName);
     }
   });
 

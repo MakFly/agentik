@@ -41,9 +41,10 @@ No TUI. Cap 5. `--no-subagents` / deny Agent so they do not fan out. Grok additi
 `--no-plan`, which keeps it out of an approval-gated plan mode with no headless approver.
 
 Run `agentik probe --json` before routing: a harness that is `present but not authenticated`
-cannot work, and `agentik spawn` refuses it with exit 2. Read the exit code, not the narration:
-`0` done · `1` the CLI failed · `2` unusable harness · `124` killed by `--timeout` (default
-1800s), meaning the task did **not** finish and partial work may be on disk.
+cannot work, and `agentik spawn` refuses it with exit 2. Add `--require-tools` on any slot that
+must change files. Read the exit code, not the narration: `0` done · `1` the CLI failed ·
+`2` unusable harness · `124` killed by `--timeout` (default 1800s), task did **not** finish ·
+`125` the harness ended without doing the work.
 
 ## Policy (non-negotiable)
 
