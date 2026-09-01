@@ -214,6 +214,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       availability: flags.strictBackend ? undefined : availability,
       notes: routingNotes,
       timeoutMs: flags.stepTimeout === undefined ? undefined : flags.stepTimeout * 1000,
+      home,
     }));
   } catch (err) {
     console.error(`agentik: ${err instanceof Error ? err.message : String(err)}`);
@@ -395,11 +396,11 @@ function printOutcomes(prefix: string, outcomes: ApprovalOutcome[]): number {
 /** Cheapest authenticated harness first; `mock` is for tests and reviews nothing. */
 async function pickReviewBackend(spec: string | undefined, home: string | undefined, stepTimeoutS?: number) {
   const timeoutMs = stepTimeoutS === undefined ? undefined : stepTimeoutS * 1000;
-  if (spec) return resolveBackends(spec, undefined, undefined, { count: 1, timeoutMs }).workerA;
+  if (spec) return resolveBackends(spec, undefined, undefined, { count: 1, timeoutMs, home }).workerA;
   const availability = await loadAvailability({ home });
-  if (availability.claude.loggedIn) return resolveBackends("sonnet", undefined, undefined, { count: 1, timeoutMs }).workerA;
-  if (availability.codex.loggedIn) return resolveBackends("codex", undefined, undefined, { count: 1, timeoutMs }).workerA;
-  if (availability.grok.loggedIn) return resolveBackends("grok", undefined, undefined, { count: 1, timeoutMs }).workerA;
+  if (availability.claude.loggedIn) return resolveBackends("sonnet", undefined, undefined, { count: 1, timeoutMs, home }).workerA;
+  if (availability.codex.loggedIn) return resolveBackends("codex", undefined, undefined, { count: 1, timeoutMs, home }).workerA;
+  if (availability.grok.loggedIn) return resolveBackends("grok", undefined, undefined, { count: 1, timeoutMs, home }).workerA;
   throw new Error("no authenticated harness for the review — run `agentik probe`");
 }
 

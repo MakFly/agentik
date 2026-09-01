@@ -932,6 +932,8 @@ export function harnessForName(name: string): HarnessName | null {
 export interface BackendOptions {
   /** Per-invocation wall-clock bound for live CLI backends. */
   timeoutMs?: number;
+  /** agentik home (profile) — where learned backend capabilities are recorded. */
+  home?: string;
 }
 
 /**
@@ -946,7 +948,7 @@ export function makeBackend(name: string, opts: BackendOptions = {}): Backend {
     return new MockBackend({ id: n === "mock" ? "mock" : n });
   }
   if (n === "grok") return new GrokBackend(t);
-  if (n === "codex" || n === "cc") return new CodexBackend(t);
+  if (n === "codex" || n === "cc") return new CodexBackend(t, { home: opts.home });
   if (n === "opus" || n === "claude-opus") return new ClaudeBackend("opus", t);
   if (
     n === "sonnet" ||
@@ -983,7 +985,7 @@ export function autoCycle(opts: ResolveOptions = {}): Backend[] {
   const usable = (bin: HarnessName) => isUsable(opts.availability, bin);
   const cycle: Backend[] = [];
   if (usable("claude")) cycle.push(new ClaudeBackend("sonnet", t));
-  if (usable("codex")) cycle.push(new CodexBackend(t));
+  if (usable("codex")) cycle.push(new CodexBackend(t, { home: opts.home }));
   if (usable("claude")) cycle.push(new ClaudeBackend("opus", t));
   if (usable("grok")) cycle.push(new GrokBackend(t));
   return cycle;
@@ -1010,7 +1012,7 @@ function backendAt(spec: string, index: number, named: string | undefined, opts:
     return index === 0 ? new ClaudeBackend("sonnet", opts.timeoutMs) : new ClaudeBackend("opus", opts.timeoutMs);
   }
   if (spec === "grok") return new GrokBackend(opts.timeoutMs);
-  if (spec === "codex" || spec === "cc") return new CodexBackend(opts.timeoutMs);
+  if (spec === "codex" || spec === "cc") return new CodexBackend(opts.timeoutMs, { home: opts.home });
   if (spec === "auto" || spec === "yolo") {
     const cycle = autoCycle(opts);
     if (cycle.length === 0) {
