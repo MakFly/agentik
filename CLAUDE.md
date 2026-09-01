@@ -74,11 +74,14 @@ Invariants (tests enforce them):
 - Gated claude worker: `--restricted --disallowedTools …`, **never** `--dangerously-skip-permissions`
   (claude rejects the pair). Gated grok worker: `--disallowed-tools` uses the ids the binary
   advertises (`run_terminal_command`, `write`, …), not the stale prose docs.
-- Codex runs through opencodex (`~/.codex/config.toml` → `http://127.0.0.1:10100/v1`). Its
-  `openai-responses` adapter cannot serve codex structured output: `--output-schema` ends in
-  `adapter_eof` after 5 reconnects, so agentik never passes it — JSON is asked for in the prompt
-  and parsed leniently. The WebSocket 426 on `/v1/responses` is a probe with HTTPS fallback (noise).
-  The notion MCP OAuth errors at codex startup are user-config noise, not agentik's.
+- Codex structured output (`--output-schema`) is **learned per routing, never assumed**
+  (`src/codex-capabilities.ts`): the backend tries the schema, and on the structured-output failure
+  signature (`adapter_eof`, `turn.failed`) retries once without it and records
+  `~/.agentik/codex-capabilities.json` keyed by the codex `openai_base_url`. Native codex
+  (api.openai.com) keeps the schema; behind opencodex (`127.0.0.1:10100`, responses adapter) it is
+  skipped after one failure; change the routing and it re-learns. Override:
+  `AGENTIK_CODEX_OUTPUT_SCHEMA=always|never|auto`. The WebSocket 426 on `/v1/responses` is a probe
+  with HTTPS fallback (noise); the notion MCP OAuth errors at codex startup are user-config noise.
 - `agentik spawn --harness X` reads the harness event stream (verdict): exit `0` done · `1` CLI
   failed · `2` unusable harness · `124` timeout (default 1800 s) · `125` finished without doing the
   work (`--require-tools`, `--expect-artifact PATH`).

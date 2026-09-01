@@ -99,9 +99,12 @@ describe("CLI envelope unwrap (shipped decodeGrokStdout / decodeClaudeStdout)", 
     expect(args[0]).toBe("exec");
     expect(args).toContain("--yolo");
     expect(args).toContain("--json");
-    // Never --output-schema: opencodex's responses adapter dies (adapter_eof) on structured output.
+    // Schema only when asked for: whether codex can take it is learned per routing.
     expect(args).not.toContain("--output-schema");
     expect(args).toContain("--json");
+    const withSchema = codexCliArgs("trusted goal", "/proj", "/proj/.agentik/worker-schema.json");
+    expect(withSchema).toContain("--output-schema");
+    expect(withSchema[withSchema.length - 1]).toBe("trusted goal");
     expect(args).toContain("--cd");
     expect(args[args.length - 1]).toBe("trusted goal");
   });

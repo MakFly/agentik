@@ -90,7 +90,7 @@ ids (`run_terminal_cmd`, `search_replace`, …), not Claude's capitalised names 
 |---|---|
 | `--backend cla` / `claude` | `claude -p --dangerously-skip-permissions --effort high --restricted --disallowedTools …` |
 | `--backend grok` | `grok --yolo --single … --disallowed-tools … --no-subagents --no-plan --max-turns` |
-| `--backend cc` / `codex` | `codex exec --yolo --json …` (no `--output-schema`: opencodex's responses adapter cannot serve structured output — `adapter_eof`) |
+| `--backend cc` / `codex` | `codex exec --yolo --json [--output-schema …]` — the schema is tried, and dropped for good on the routing where it fails (`adapter_eof` behind opencodex); learned in `~/.agentik/codex-capabilities.json`, override `AGENTIK_CODEX_OUTPUT_SCHEMA=always\|never` |
 
 ### Availability
 

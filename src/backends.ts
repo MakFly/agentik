@@ -1,5 +1,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { isUsable, type AvailabilityMap, type HarnessName } from "./availability.ts";
+import {
+  looksLikeStructuredOutputFailure,
+  readCodexBaseUrl,
+  saveCodexCapabilities,
+  shouldTryStructuredOutput,
+} from "./codex-capabilities.ts";
 import { classifyGoal, defaultAllowedTools, buildPlan } from "./plan.ts";
 import { renderEnvelopes } from "./trust.ts";
 import {
@@ -347,15 +353,13 @@ export function foreignWorkerArgs(
 /**
  * Same posture as alias `cc` (`codex --yolo`) in non-interactive exec.
  *
- * No `--output-schema`: on this machine codex goes through opencodex
- * (`~/.codex/config.toml` → `http://127.0.0.1:10100/v1`), whose `openai-responses` adapter
- * cannot serve codex's structured output — the request ends in `adapter_eof` after five
- * reconnects, whatever the prompt size, while the same prompt without a schema completes.
- * The JSON shape is already demanded by the system prompt and `unwrapCodex` extracts the
- * object from the agent message, so the schema bought nothing but a broken backend.
+ * `schemaPath` adds `--output-schema`. Whether to pass it is *learned*, not assumed: native
+ * codex serves structured output; a local proxy such as opencodex (responses adapter) dies with
+ * `adapter_eof` on it. See `CodexBackend.complete` and codex-capabilities.ts.
  */
-export function codexCliArgs(prompt: string, cwd?: string): string[] {
+export function codexCliArgs(prompt: string, cwd?: string, schemaPath?: string): string[] {
   const args = ["exec", "--yolo", "--skip-git-repo-check", "--ephemeral", "--json"];
+  if (schemaPath) args.push("--output-schema", schemaPath);
   if (cwd) args.push("--cd", cwd);
   args.push(prompt);
   return args;
@@ -651,18 +655,53 @@ export class GrokBackend implements Backend {
   }
 }
 
+/** Process runner, injectable so the fallback can be tested without a real codex. */
+export type SpawnRunner = (cmd: string, args: string[], timeoutMs: number, cwd?: string) => Promise<SpawnResult>;
+
 export class CodexBackend implements Backend {
   readonly id = "codex";
   readonly timeoutMs: number;
+  private readonly run: SpawnRunner;
+  private readonly home?: string;
 
-  constructor(timeoutMs = DEFAULT_STEP_TIMEOUT_MS) {
+  constructor(timeoutMs = DEFAULT_STEP_TIMEOUT_MS, opts: { runner?: SpawnRunner; home?: string } = {}) {
     this.timeoutMs = timeoutMs;
+    this.run = opts.runner ?? ((cmd, args, t, cwd) => spawnCapture(cmd, args, t, cwd));
+    this.home = opts.home;
   }
 
+  /**
+   * Try structured output first when nothing says it is unsupported for this codex routing;
+   * on the structured-output failure signature, retry once without the schema and remember
+   * the verdict for this base URL. A machine with native codex keeps the schema; a machine
+   * behind opencodex learns to skip it after one failure; change the routing and it re-learns.
+   */
   async complete(request: CompleteRequest): Promise<WorkerMessage> {
     const prompt = renderCompletePrompt(request);
-    const args = codexCliArgs(prompt, request.workspace);
-    const res = await spawnCapture("codex", args, this.timeoutMs, request.workspace);
+    const baseUrl = await readCodexBaseUrl();
+    const tryS = await shouldTryStructuredOutput({ home: this.home, baseUrl });
+    let res: SpawnResult;
+    if (tryS) {
+      const schemaPath = await writeWorkerSchema(request.workspace);
+      res = await this.run("codex", codexCliArgs(prompt, request.workspace, schemaPath), this.timeoutMs, request.workspace);
+      const failed = res.exitCode !== 0 && !res.timedOut && looksLikeStructuredOutputFailure(res.stdout, res.stderr);
+      if (failed) {
+        await saveCodexCapabilities(
+          {
+            baseUrl,
+            structuredOutput: "unsupported",
+            checkedAt: new Date().toISOString(),
+            evidence: (codexFailureSummary(res.stdout) || "structured-output failure").slice(0, 200),
+          },
+          this.home,
+        );
+        res = await this.run("codex", codexCliArgs(prompt, request.workspace), this.timeoutMs, request.workspace);
+      } else if (res.exitCode === 0) {
+        await saveCodexCapabilities({ baseUrl, structuredOutput: "ok", checkedAt: new Date().toISOString() }, this.home);
+      }
+    } else {
+      res = await this.run("codex", codexCliArgs(prompt, request.workspace), this.timeoutMs, request.workspace);
+    }
     // codex's real failure reason is a JSONL `error` / `turn.failed` line on stdout; stderr
     // is MCP and transport noise ("Reading additional input from stdin...").
     const err = classifyExit(
@@ -674,6 +713,14 @@ export class CodexBackend implements Backend {
     if (err) throw err;
     return decodeCodexStdout(res.stdout);
   }
+}
+
+async function writeWorkerSchema(workspace?: string): Promise<string> {
+  const dir = workspace ? `${workspace.replace(/\/$/, "")}/.agentik` : `${process.cwd()}/.agentik`;
+  await mkdir(dir, { recursive: true });
+  const path = `${dir}/worker-schema.json`;
+  await writeFile(path, JSON.stringify(WORKER_JSON_SCHEMA, null, 2), "utf8");
+  return path;
 }
 
 /** Last `turn.failed` / `error` message from a codex JSONL stream, if any. */
