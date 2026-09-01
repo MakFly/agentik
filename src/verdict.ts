@@ -104,8 +104,14 @@ export function consumeVerdictLine(v: HarnessVerdict, line: string, hooks?: Rend
           if (p.type === "tool_use") {
             record(v, String(p.name ?? "tool"), describeArgs(p.input), hooks);
           }
+          // A content block flagged is_error is the harness's own error line; keep it.
+          if (p.is_error === true) v.errors.push(claudeErrorMessage(p));
         }
       }
+    } else if (type === "error" || (type === "system" && obj.subtype === "error")) {
+      // The harness's own error lines. Recorded verbatim but never a verdict on their own:
+      // only `result` decides completion, and a run can log an error and still succeed.
+      v.errors.push(claudeErrorMessage(obj));
     } else if (type === "result") {
       v.stopReason = String(obj.stop_reason ?? obj.subtype ?? "");
       v.turns = numberOr(obj.num_turns, v.turns);
@@ -141,6 +147,29 @@ export function consumeVerdictLine(v: HarnessVerdict, line: string, hooks?: Rend
       record(v, itemType, describeArgs(item?.command ?? item?.changes ?? item?.query), hooks);
     }
   }
+}
+
+/** Longest a verbatim harness error line may get before it is cut. */
+const ERROR_LINE_MAX = 200;
+
+/**
+ * The short verbatim message of a claude error event: `error.message`, then `message`, then
+ * `error` as a string, then the event itself as JSON. Always non-empty, never longer than
+ * ERROR_LINE_MAX characters.
+ */
+function claudeErrorMessage(obj: Record<string, unknown>): string {
+  const err = obj.error;
+  const nested = err && typeof err === "object" ? (err as Record<string, unknown>).message : undefined;
+  for (const c of [nested, obj.message, err]) {
+    if (typeof c === "string" && c.trim()) return c.trim().slice(0, ERROR_LINE_MAX);
+  }
+  let json = "";
+  try {
+    json = JSON.stringify(obj);
+  } catch {
+    json = "";
+  }
+  return (json || "error event").slice(0, ERROR_LINE_MAX);
 }
 
 function numberOr(value: unknown, fallback: number): number {
