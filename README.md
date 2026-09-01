@@ -66,7 +66,12 @@ Auto-run is in-process for that one goal — not a daemon. After each tool resul
 
 A step that produces nothing is not a finished task. A refused tool call is fed back to the worker as untrusted `tool_output` so it can correct itself, and an empty or truncated reply is reprompted once before the task is recorded in `stalledTasks` — which makes the run exit **5**, never 0.
 
-Memory is Hermes-style and **automatic**: HOT `~/.agentik/memory/MEMORY.md` (small, always-on), WARM SQLite FTS5, skills as procedural memory. Every completed `agentik` run harvests a session note. `/ak` recalls before work and runs `agentik harvest` after, without asking.
+Memory is Hermes-style and **automatic**, in two stores under `~/.agentik` (or `~/.agentik/profiles/<name>` with `--profile <name>` / `AGENTIK_PROFILE`):
+
+- **HOT** `memory/MEMORY.md` — durable facts, 2200 chars, always loaded. The cap forces consolidation: `agentik memory retain` refuses a note that does not fit (`MEMORY.md at n/2200 chars — consolidate (replace/remove) before adding`); nothing overflows anywhere else.
+- **Sessions** `sessions.sqlite` — one row per run (goal, workspace, profile, status, verdict, artifacts, summary), indexed by FTS5 `unicode61 remove_diacritics 2` **and** trigram, so `agentik memory search cloturer` finds « clôturer » and `drawr` finds `drawer`. The search is filtered on `--workspace` by default (`--all` lifts it).
+
+Every completed run records a session (`agentik harvest "<goal>" --workspace "$PWD"` does the same by hand). Before work `/ak` runs `agentik context "<goal>" --workspace "$PWD"`, which prints the block it starts from: `USER.md` profile, MEMORY, the skills index (`name: description`, body loaded on demand) and the top-6 related sessions. Legacy `(session)` lines in `MEMORY.md` and rows of the old `notes.sqlite` are migrated into `sessions.sqlite` once, after a `MEMORY.md.bak.<timestamp>` copy; `notes.sqlite` is left in place.
 
 **Code never writes a skill.** It used to, whenever a run had 2+ artifacts: the goal sentence became the skill name, cut at 64 characters, and got linked into three harnesses — 28 such skills in a day. A skill is a class of work (`pwa-drawer-swipe`), named and described (≤60 chars) by a model or a human, never derived from a session title. `agentik skills unlink` and `agentik skills archive` undo the old behaviour without deleting anything; `agentik skills pin <name>` + `link <name>` make a chosen skill visible in the harnesses.
 

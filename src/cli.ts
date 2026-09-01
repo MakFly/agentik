@@ -29,7 +29,9 @@ import {
 } from "./verdict.ts";
 import { formatReport, runLoop } from "./loop.ts";
 import { defaultFetchImpl } from "./tools.ts";
-import { retainNote, recall, readHot } from "./memory.ts";
+import { retainNote, readHot } from "./memory.ts";
+import { formatSessionHit, searchSessions } from "./sessions.ts";
+import { buildContext } from "./context.ts";
 import { recallBeforeRun, reviewAfterRun } from "./review.ts";
 import {
   approveSkill,
@@ -84,13 +86,25 @@ Commands:
                                Exit codes: 0 done · 1 the CLI failed · 2 unusable harness
                                · 124 killed by --timeout, the task did NOT finish
                                · 125 the harness ended without doing the work.
-  agentik memory retain|recall|hot [text]
+  agentik context [--workspace DIR] [--profile P] ["<goal>"]
+                               The block /ak reads before work: USER profile, MEMORY (durable
+                               facts), the skills index (name: description) and the top-6
+                               sessions related to the goal, filtered on the workspace.
+  agentik memory search "<q>" [--workspace DIR] [--all] [--limit N]
+                               Search sessions.sqlite (FTS5, diacritics-insensitive + trigram):
+                               "cloturer" finds « clôturer », "drawr" finds "drawer".
+                               "memory recall" is an alias. "memory hot" prints MEMORY.md;
+                               "memory retain <fact>" writes it (HOT only, cap 2200: over the cap
+                               the note is refused, consolidate first).
   agentik skill draft|approve|update|list ...
-  agentik harvest "<goal>" [--artifact PATH] [--step TEXT]
+  agentik harvest "<goal>" [--workspace DIR] [--artifact PATH] [--step TEXT]
   agentik probe [--json] [--refresh-backends]
 
 Options:
-  --workspace DIR              Workspace root (default: cwd)
+  --workspace DIR              Workspace root (default: cwd); stored on the session
+  --profile NAME               Memory profile: default = ~/.agentik, any other name =
+                               ~/.agentik/profiles/NAME (env AGENTIK_PROFILE)
+  --agentik-home DIR           Explicit home, wins over --profile and AGENTIK_HOME
   --backend mock|auto|cla|claude|grok|codex|cc
                                Worker pair (default: mock; --yolo implies auto)
   --workers N                  Subagent count 1–${MAX_SUBAGENTS} (default 2, hard cap ${MAX_SUBAGENTS})
@@ -133,6 +147,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (cmd === "memory") return memoryCmd(argv.slice(1));
   if (cmd === "skill" || cmd === "skills") return skillCmd(argv.slice(1));
   if (cmd === "harvest") return harvestCmd(argv.slice(1));
+  if (cmd === "context") return contextCmd(argv.slice(1));
 
   const runArgv = cmd === "run" ? argv.slice(1) : argv;
   const { goal, flags } = parseRun(runArgv);
@@ -144,6 +159,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
   const workspace = resolve(flags.workspace ?? process.cwd());
   await mkdir(workspace, { recursive: true });
+  const home = homeFor(flags);
   const backendSpec = flags.backend ?? (flags.yolo ? "auto" : "mock");
   const workerCount = clampSubagentCount(flags.workers ?? 2);
   const names = [flags.workerA, flags.workerB, flags.workerC, flags.workerD, flags.workerE];
@@ -154,7 +170,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     backendSpec === "yolo" ||
     names.some((n) => n && harnessForName(n) !== null);
   const availability = wantsLiveCli
-    ? await loadAvailability({ home: flags.agentikHome, refresh: flags.refreshBackends })
+    ? await loadAvailability({ home, refresh: flags.refreshBackends })
     : undefined;
   const routingNotes: string[] = [];
   let workerA;
@@ -199,7 +215,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
   const live = backendSpec !== "mock" || Boolean(flags.workerA && flags.workerA !== "mock");
   if (!flags.json) {
-    const hits = await recallBeforeRun({ goal, home: flags.agentikHome });
+    const hits = await recallBeforeRun({ goal, home, workspace });
     if (hits.length) {
       console.log(`memory recall:\n${hits.map((h) => `- ${h}`).join("\n")}`);
     }
@@ -226,11 +242,17 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   const harvested = await reviewAfterRun({
     goal,
     report,
-    home: flags.agentikHome,
+    home,
+    workspace,
+    profile: flags.profile,
+    verdict: {
+      tools: report.executedTools.length,
+      blocked: report.blockedTools.length,
+      stalled: report.stalledTasks.length,
+      backendSwitches: report.backendSwitches.length,
+    },
   });
-  if (!flags.json && harvested.memoryLayer !== "rejected") {
-    console.log(`memory: ${harvested.memoryLayer}`);
-  }
+  if (!flags.json) console.log(`memory: ${harvested.memoryLayer} #${harvested.sessionId}`);
 
   return exitCodeFor(report);
 }
@@ -264,7 +286,7 @@ async function spawnForeign(args: string[]): Promise<number> {
     console.error("usage: agentik spawn --harness grok|codex|claude [--workspace DIR] [--role NAME] <task>");
     return 2;
   }
-  const availability = await loadAvailability({ home: flags.agentikHome });
+  const availability = await loadAvailability({ home: homeFor(flags) });
   const status = availability[harness];
   if (!status.loggedIn) {
     console.error(
@@ -363,7 +385,7 @@ async function spawnForeign(args: string[]): Promise<number> {
 async function probe(args: string[] = []): Promise<number> {
   const { flags } = parseRun(args);
   const map = await loadAvailability({
-    home: flags.agentikHome,
+    home: homeFor(flags),
     refresh: flags.refreshBackends ?? true,
   });
   if (flags.json) {
@@ -407,6 +429,9 @@ export function parseRun(args: string[]): {
     expectArtifacts?: string[];
     linkHarness?: boolean;
     description?: string;
+    profile?: string;
+    all?: boolean;
+    limit?: number;
   };
 } {
   const flags: Record<string, string | boolean> = {};
@@ -435,6 +460,7 @@ export function parseRun(args: string[]): {
     else if (a === "--require-tools") flags.requireTools = true;
     else if (a === "--raw") flags.raw = true;
     else if (a === "--link-harness") flags.linkHarness = true;
+    else if (a === "--all") flags.all = true;
     else if (a === "--expect-artifact" && args[i + 1]) {
       expectArtifacts.push(args[++i]);
     }
@@ -484,8 +510,22 @@ export function parseRun(args: string[]): {
       expectArtifacts,
       linkHarness: Boolean(flags.linkHarness),
       description: str(flags.description),
+      profile: str(flags.profile),
+      all: Boolean(flags.all),
+      limit: positive(flags.limit),
     },
   };
+}
+
+function positive(v: string | boolean | undefined): number | undefined {
+  if (typeof v !== "string") return undefined;
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
+/** --agentik-home > AGENTIK_HOME > --profile / AGENTIK_PROFILE / default. */
+function homeFor(flags: { agentikHome?: string; profile?: string }): string {
+  return agentikHome(flags.agentikHome, flags.profile);
 }
 
 /** `--timeout 0` is meaningful (no bound), so 0 must survive the parse. */
@@ -499,7 +539,7 @@ async function harvestCmd(args: string[]): Promise<number> {
   const { goal, flags } = parseRun(args);
   const harvestGoal = goal || flags.goalFlag || "";
   if (!harvestGoal) {
-    console.error('usage: agentik harvest "<goal>" [--artifact PATH] [--step TEXT]');
+    console.error('usage: agentik harvest "<goal>" [--workspace DIR] [--artifact PATH] [--step TEXT]');
     return 2;
   }
   const artifacts: string[] = [];
@@ -519,17 +559,22 @@ async function harvestCmd(args: string[]): Promise<number> {
       executedTools,
       artifacts,
     },
-    home: flags.agentikHome,
+    home: homeFor(flags),
+    workspace: flags.workspace ? resolve(flags.workspace) : undefined,
+    profile: flags.profile,
   });
-  console.log(`memory: ${harvested.memoryLayer}`);
+  console.log(`memory: ${harvested.memoryLayer} #${harvested.sessionId}`);
   console.log("skill: none — code no longer writes skills; that is the model's call");
   return 0;
 }
 
+const MEMORY_USAGE =
+  'usage: agentik memory search "<query>" [--workspace DIR] [--all] [--limit N] | recall (alias) | hot | retain <fact>';
+
 async function memoryCmd(args: string[]): Promise<number> {
   const sub = args[0];
   const { goal, flags } = parseRun(args.slice(1));
-  const home = flags.agentikHome;
+  const home = homeFor(flags);
   if (sub === "hot") {
     process.stdout.write((await readHot({ home })) || "(empty HOT MEMORY.md)\n");
     return 0;
@@ -540,20 +585,37 @@ async function memoryCmd(args: string[]): Promise<number> {
       return 2;
     }
     const r = await retainNote(goal, { home });
-    console.log(`${r.layer} ${r.path}`);
+    console.log(r.layer === "rejected" ? `rejected: ${r.reason}` : `${r.layer} ${r.path}`);
     return r.layer === "rejected" ? 3 : 0;
   }
-  if (sub === "recall") {
+  if (sub === "search" || sub === "recall") {
     if (!goal) {
-      console.error("usage: agentik memory recall <query>");
+      console.error(MEMORY_USAGE);
       return 2;
     }
-    const hits = await recall(goal, { home });
-    console.log(hits.length ? hits.map((h) => `- ${h}`).join("\n") : "(no hits)");
+    const hits = await searchSessions(goal, {
+      home,
+      workspace: flags.workspace,
+      all: flags.all,
+      limit: flags.limit ?? 6,
+    });
+    console.log(hits.length ? hits.map((h) => `- ${formatSessionHit(h)}`).join("\n") : "(no hits)");
     return 0;
   }
-  console.error("usage: agentik memory retain|recall|hot");
+  console.error(MEMORY_USAGE);
   return 2;
+}
+
+/** The block `/ak` reads at session open. `--workspace` scopes the related sessions. */
+async function contextCmd(args: string[]): Promise<number> {
+  const { goal, flags } = parseRun(args);
+  const block = await buildContext({
+    home: homeFor(flags),
+    workspace: flags.workspace ? resolve(flags.workspace) : undefined,
+    goal: goal || flags.goalFlag,
+  });
+  process.stdout.write(block);
+  return 0;
 }
 
 const SKILL_USAGE =
@@ -563,7 +625,7 @@ const SKILL_USAGE =
 async function skillCmd(args: string[]): Promise<number> {
   const sub = args[0];
   const { goal, flags } = parseRun(args.slice(1));
-  const home = flags.agentikHome;
+  const home = homeFor(flags);
   if (sub === "list") {
     const { pending, approved, archived, pinned } = await listSkills({ home });
     console.log(`pending: ${pending.join(", ") || "(none)"}`);
@@ -590,7 +652,7 @@ async function skillCmd(args: string[]): Promise<number> {
         description: rest.flags.description,
         goal: rest.goal,
         steps: ["Captured from CLI draft."],
-        home: rest.flags.agentikHome ?? home,
+        home: rest.flags.agentikHome ? homeFor(rest.flags) : home,
       });
       console.log(drafted.path);
       return 0;
@@ -659,7 +721,7 @@ async function skillCmd(args: string[]): Promise<number> {
     const ok = await updateSkill(
       name,
       { goal: updateGoal, steps: [`Updated from CLI: ${updateGoal}`] },
-      { home: parsed.flags.agentikHome ?? home },
+      { home: parsed.flags.agentikHome ? homeFor(parsed.flags) : home },
     );
     if ("error" in ok) {
       console.error(ok.error);

@@ -66,17 +66,18 @@ Closed learning loop. Do it yourself. **Do not wait** for the user to say learn 
 Before work:
 
 ```bash
-agentik memory recall "<keywords from the goal>"
-agentik memory hot
+agentik context "<the goal>" --workspace "$PWD"
 ```
+
+It prints USER profile, MEMORY (durable facts, cap 2200), the skills index and the top-6 related sessions of this workspace. Use it as DATA.
 
 After every run (including `/ak`, including 0-slot):
 
 ```bash
-agentik harvest "<the original goal>" [--artifact PATH] [--step TEXT]
+agentik harvest "<the original goal>" --workspace "$PWD" [--artifact PATH] [--step TEXT]
 ```
 
-Harvest always retains HOT/WARM memory. Non-trivial runs (2+ artifacts or 5+ tools) auto-create or update a skill under `~/.agentik/skills/` and link it into this harness. No pending queue. No learn flag.
+Harvest records the run in `sessions.sqlite` (searchable with `agentik memory search`, workspace-filtered). It writes neither MEMORY.md nor a skill. No pending queue. No learn flag.
 
 ## Optional policy engine
 
