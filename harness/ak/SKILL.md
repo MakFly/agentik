@@ -63,6 +63,8 @@ All three run to natural completion in one process, no mid-task hand-back to a h
 
 Pass **`--require-tools`** on any slot whose task must change files (implement, fix, ops). agentik then reads the harness's own event stream and fails a run that finished without calling a single tool — a worker that describes the work instead of doing it. Omit it for research/diagnostic slots, where a prose answer is the deliverable.
 
+When you can name the deliverable, also pass **`--expect-artifact <path>`** (repeatable). It is the stronger check: `--require-tools` only proves *something* happened, `--expect-artifact` proves *that file* moved. Use it for "create migration 0021", "fix apps/web/src/x.tsx", "add the test". Do not invent a path the task never promised.
+
 **Read the exit code, not the narration.** `0` done · `1` the CLI failed · `2` unusable harness · `124` killed by the timeout · `125` the harness ended without doing the work. On 124 the work is half-done by definition, and on 125 nothing was done: re-issue the task (or raise `--timeout`) rather than reporting it as delivered.
 
 Per-slot: "Korben sous grok, Leeloo sous codex" → two `agentik spawn` with those harnesses. Never 6. Never two names from the same slot.

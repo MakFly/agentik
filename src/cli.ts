@@ -15,6 +15,12 @@ import {
   type HarnessName,
 } from "./availability.ts";
 import {
+  describeUntouched,
+  snapshotArtifacts,
+  untouchedArtifacts,
+  type ArtifactSnapshot,
+} from "./artifacts.ts";
+import {
   consumeVerdictLine,
   newVerdict,
   summarizeVerdict,
@@ -94,6 +100,8 @@ Options:
   --strict-backend             Fail instead of rerouting when a named harness is unusable
   --require-tools              spawn: a run that calls no tool is a failure (exit 125).
                                Pass it for implement/fix tasks, omit it for diagnostics.
+  --expect-artifact PATH       spawn: this workspace path must be created, modified or
+                               removed by the run, else exit 125. Repeatable.
   --raw                        spawn: the harness's own output, no verdict
   --approve-high-blast         Explicit high-blast approval without --yolo
   --reject-high-blast          Reject pending high-blast tools
@@ -273,6 +281,14 @@ async function spawnForeign(args: string[]): Promise<number> {
   const workspace = resolve(flags.workspace ?? process.cwd());
   const role = flags.role ? `You are ${flags.role}. ` : "";
   const prompt = `${role}Bounded task (no nested subagents, stay in ${workspace}):\n${goal}`;
+  const expected = flags.expectArtifacts ?? [];
+  let before: ArtifactSnapshot[] = [];
+  try {
+    before = await snapshotArtifacts(workspace, expected);
+  } catch (err) {
+    console.error(`agentik spawn: ${err instanceof Error ? err.message : String(err)}`);
+    return 2;
+  }
   const timeoutMs = (flags.timeout ?? DEFAULT_SPAWN_TIMEOUT_S) * 1000;
   const timedOutMsg = () =>
     `agentik spawn: ${harness} killed after ${Math.round(timeoutMs / 1000)}s (timeout) — the task did NOT finish, partial work may be on disk`;
@@ -285,7 +301,13 @@ async function spawnForeign(args: string[]): Promise<number> {
       console.error(timedOutMsg());
       return 124;
     }
-    return res.exitCode === 0 ? 0 : 1;
+    if (res.exitCode !== 0) return 1;
+    const untouchedRaw = await untouchedArtifacts(workspace, before);
+    if (untouchedRaw.length > 0) {
+      console.error(`agentik spawn: ${describeUntouched(untouchedRaw)}`);
+      return 125;
+    }
+    return 0;
   }
 
   // Read the harness's own event stream. Exit code alone cannot tell a worker that did the
@@ -317,6 +339,17 @@ async function spawnForeign(args: string[]): Promise<number> {
   if (problem) {
     console.error(`agentik spawn: ${problem} — treating this as unfinished, not as success`);
     return 125;
+  }
+  // The stream proves tools ran; only the filesystem proves the deliverable moved.
+  const untouched = await untouchedArtifacts(workspace, before);
+  if (untouched.length > 0) {
+    console.error(
+      `agentik spawn: ${describeUntouched(untouched)} — treating this as unfinished, not as success`,
+    );
+    return 125;
+  }
+  if (expected.length > 0) {
+    console.error(`agentik spawn: ${expected.length} expected artifact(s) verified on disk`);
   }
   return 0;
 }
@@ -370,10 +403,12 @@ export function parseRun(args: string[]): {
     strictBackend?: boolean;
     requireTools?: boolean;
     raw?: boolean;
+    expectArtifacts?: string[];
   };
 } {
   const flags: Record<string, string | boolean> = {};
   const positional: string[] = [];
+  const expectArtifacts: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--json") flags.json = true;
@@ -396,6 +431,9 @@ export function parseRun(args: string[]): {
     else if (a === "--strict-backend") flags.strictBackend = true;
     else if (a === "--require-tools") flags.requireTools = true;
     else if (a === "--raw") flags.raw = true;
+    else if (a === "--expect-artifact" && args[i + 1]) {
+      expectArtifacts.push(args[++i]);
+    }
     else if (a.startsWith("--")) {
       const key = a.slice(2);
       const val = args[i + 1];
@@ -439,6 +477,7 @@ export function parseRun(args: string[]): {
       strictBackend: Boolean(flags.strictBackend),
       requireTools: Boolean(flags.requireTools),
       raw: Boolean(flags.raw),
+      expectArtifacts,
     },
   };
 }

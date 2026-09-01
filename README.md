@@ -120,6 +120,27 @@ that finished the job. `--require-tools` turns "finished without calling a singl
 answer is legitimate. A stop reason of `max_turns`, `refusal` or `cancelled`, or a claude
 `is_error`, is a failure regardless. `--raw` opts out and gives you the harness's own output.
 
+Two independent checks, because they catch different lies:
+
+| Check | Answers | Misses |
+|---|---|---|
+| `--require-tools` | did it *do* anything? | work that touched the wrong files |
+| `--expect-artifact PATH` | did *this deliverable* move? | needs you to name the file |
+
+`--expect-artifact` is repeatable and compares existence, mtime and size around the run, so a
+created, rewritten **or deleted** file all count as done — only "nothing about it is different"
+fails.
+
+```
+$ agentik spawn --harness grok --require-tools \
+    --expect-artifact migrations/0021_sessions.sql "add the sessions migration"
+agentik spawn: completed · stop=end_turn · turns=2 · tools=1
+agentik spawn: the expected artifact migrations/0021_sessions.sql was not created or
+modified — treating this as unfinished, not as success
+$ echo $?
+125
+```
+
 The wall clock is `--timeout` seconds (default 1800, `0` = unbounded).
 **A timeout exits 124**, distinct from the generic 1: the old 300s bound killed the CLI and
 returned a bare failure with nothing saying the work had been cut off mid-task. Treat 124 as
