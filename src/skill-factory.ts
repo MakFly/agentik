@@ -169,6 +169,8 @@ export async function approveSkill(
   await mkdir(destDir, { recursive: true });
   const dest = join(destDir, "SKILL.md");
   await writeFile(dest, body, "utf8");
+  // A draft is consumed by its approval; leaving it would list the skill as pending forever.
+  await rm(join(paths.pendingSkills, name), { recursive: true, force: true });
   if (opts?.linkHarness) await linkHarnessSkill(name, destDir);
   return { path: dest };
 }

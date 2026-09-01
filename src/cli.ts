@@ -147,6 +147,7 @@ Options:
   --step-timeout SECONDS       Wall clock for one worker-CLI invocation (default 600)
   --refresh-backends           Re-probe the harnesses instead of reading the 15min cache
   --strict-backend             Fail instead of rerouting when a named harness is unusable
+  --no-review                  run / harvest: skip the background review
   --require-tools              spawn: a run that calls no tool is a failure (exit 125).
                                Pass it for implement/fix tasks, omit it for diagnostics.
   --expect-artifact PATH       spawn: this workspace path must be created, modified or
@@ -730,7 +731,9 @@ async function harvestCmd(args: string[]): Promise<number> {
       artifacts,
     },
     home: homeFor(flags),
-    workspace: flags.workspace ? resolve(flags.workspace) : undefined,
+    // The help says "default: cwd"; a blank workspace would hide this session from every
+    // workspace-filtered search.
+    workspace: resolve(flags.workspace ?? process.cwd()),
     profile: flags.profile,
   });
   console.log(`memory: ${harvested.memoryLayer} #${harvested.sessionId}`);

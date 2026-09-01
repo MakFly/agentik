@@ -171,9 +171,9 @@ Décisions :
 - `--profile` → `~/.agentik/<profile>/` ; `AGENTIK_PROFILE` env.
 - `agentik context` : imprime le bloc CONTEXT (USER + MEMORY + index skills + top-k sessions)
   — c'est ce que `/ak` lira au lieu de `memory recall` + `memory hot`.
-- Preuve : recherche « tiroir » retrouve la session « drawer PWA » via trigram ; « clôturer »
-  et « cloturer » renvoient la même chose ; une session d'un autre workspace n'apparaît pas
-  sans `--all`.
+- Preuve : « clôturer » et « cloturer » renvoient la même chose (diacritiques) ; « migrat »
+  trouve « migration » et « drawr » trouve « drawer » (trigram — pas de traduction, « tiroir »
+  ne trouve pas « drawer ») ; une session d'un autre workspace n'apparaît pas sans `--all`.
 
 ### L2 — la review par un modèle
 - Tool `memory` (`add/replace/remove`, cible `memory|user`, batch atomique) dans le catalogue
