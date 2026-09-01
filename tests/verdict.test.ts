@@ -116,6 +116,73 @@ describe("claude stream-json", () => {
     expect(v.completed).toBe(true);
     expect(v.errors[0]).toContain("permission denial");
   });
+
+  test("an error event before a successful result is recorded without changing completion", () => {
+    const v = fold("claude", [
+      { type: "system", subtype: "init" },
+      { type: "error", error: { message: "MCP server notion failed to start" } },
+      { type: "result", subtype: "success", is_error: false, num_turns: 2, result: "ok" },
+    ]);
+    expect(v.errors).toEqual(["MCP server notion failed to start"]);
+    expect(v.completed).toBe(true);
+    expect(verdictProblem(v, {})).toBeUndefined();
+  });
+
+  test("an error event followed by an is_error result yields both lines and no completion", () => {
+    const v = fold("claude", [
+      { type: "error", message: "rate limited" },
+      { type: "result", subtype: "error_during_execution", is_error: true, num_turns: 1, result: "API Error: 529" },
+    ]);
+    expect(v.errors).toEqual(["rate limited", "API Error: 529"]);
+    expect(v.completed).toBe(false);
+  });
+
+  test("error message precedence: error.message, then message, then error as a string", () => {
+    expect(fold("claude", [{ type: "error", error: { message: "nested" }, message: "flat" }]).errors).toEqual(["nested"]);
+    expect(fold("claude", [{ type: "error", message: "flat", error: "plain" }]).errors).toEqual(["flat"]);
+    expect(fold("claude", [{ type: "error", error: "plain" }]).errors).toEqual(["plain"]);
+  });
+
+  test("system/error events and is_error content blocks are recorded too", () => {
+    const v = fold("claude", [
+      { type: "system", subtype: "error", message: "hook failed" },
+      { type: "assistant", message: { content: [{ type: "tool_result", is_error: true, content: "ENOENT" }] } },
+      { type: "result", subtype: "success", is_error: false, num_turns: 1 },
+    ]);
+    expect(v.errors).toHaveLength(2);
+    expect(v.errors[0]).toBe("hook failed");
+    expect(v.errors[1]).toContain("ENOENT");
+    expect(v.completed).toBe(true);
+  });
+
+  test("a malformed error event with no message falls back to its JSON, cut at 200 chars", () => {
+    const v = fold("claude", [{ type: "error", detail: "x".repeat(500) }]);
+    expect(v.errors).toHaveLength(1);
+    expect(v.errors[0]!.length).toBeLessThanOrEqual(200);
+    expect(v.errors[0]!.startsWith('{"type":"error"')).toBe(true);
+    // No result line: still not completed, the error event alone decides nothing.
+    expect(v.completed).toBe(false);
+
+    const short = fold("claude", [{ type: "error" }]);
+    expect(short.errors).toEqual(['{"type":"error"}']);
+  });
+
+  test("a long error message is cut at 200 chars", () => {
+    const v = fold("claude", [{ type: "error", message: "m".repeat(300) }]);
+    expect(v.errors[0]).toBe("m".repeat(200));
+  });
+
+  test("unknown claude event types are still ignored, even with an error field", () => {
+    const v = fold("claude", [
+      { type: "system", subtype: "init" },
+      { type: "system", subtype: "compact_boundary" },
+      { type: "some_future_event", error: "not an error event" },
+      { type: "rate_limit_event", rate_limit_info: {} },
+      { type: "result", subtype: "success", is_error: false, num_turns: 1 },
+    ]);
+    expect(v.errors).toEqual([]);
+    expect(v.completed).toBe(true);
+  });
 });
 
 describe("codex exec --json", () => {
