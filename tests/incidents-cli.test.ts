@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AvailabilityMap, HarnessName } from "../src/availability.ts";
@@ -211,6 +211,91 @@ describe("run: stalled tasks, backend switches and a blocked/rejected run are in
     expect(
       await recordRunIncidents({ goal: "g", report: { status: "awaiting_approval", stalledTasks: [], backendSwitches: [], blockedTools: [] }, home, workspace: "/tmp/run", quiet: true }),
     ).toEqual([]);
+  });
+});
+
+describe("run --backend mock, end to end: a stalled task exits 5 and leaves exactly one incident", () => {
+  const prevStall = process.env.AGENTIK_MOCK_STALL;
+  afterEach(() => {
+    if (prevStall === undefined) delete process.env.AGENTIK_MOCK_STALL;
+    else process.env.AGENTIK_MOCK_STALL = prevStall;
+  });
+
+  const runMock = async (argv: string[], workspace: string, home: string) =>
+    main([...argv, "--workspace", workspace, "--backend", "mock", "--agentik-home", home]);
+
+  test("AGENTIK_MOCK_STALL=worker_b: main([\"run\", …]) exits 5 and the incident names the role and backend", async () => {
+    const workspace = await makeWorkspace("inc-run-stall-ws-");
+    const home = await makeWorkspace("inc-run-stall-home-");
+    process.env.AGENTIK_MOCK_STALL = "worker_b";
+    const restore = silence();
+    let code: number;
+    let lines: string[];
+    try {
+      code = await runMock(["run", "Create src/greet.txt containing AGENTIK_OK and record sandbox workspace status"], workspace, home);
+    } finally {
+      lines = restore();
+    }
+    expect(code).toBe(5);
+    const rows = await listIncidents({ home });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].symptom.startsWith("stalled ")).toBe(true);
+    expect(rows[0].symptom).toContain("worker_b");
+    expect(rows[0].symptom).toContain("mock-b");
+    expect(rows[0].harness).toBe("mock-b");
+    expect(rows[0].backend).toBe("mock-b");
+    expect(rows[0].workspace).toBe(workspace);
+    expect(rows[0].seen).toBe(1);
+    expect(lines.some((l) => l.startsWith("incident: #") && l.includes("stalled worker_b@mock-b"))).toBe(true);
+    // A mock run never triggers the model review: no review output, no pending hint.
+    expect(lines.some((l) => /^review:/.test(l))).toBe(false);
+  });
+
+  test("prompt-first launch (no run subcommand) records the same incident", async () => {
+    const workspace = await makeWorkspace("inc-run-stall-p-ws-");
+    const home = await makeWorkspace("inc-run-stall-p-home-");
+    process.env.AGENTIK_MOCK_STALL = "worker_a";
+    const restore = silence();
+    let code: number;
+    try {
+      code = await runMock(["Create src/greet.txt containing AGENTIK_OK and record sandbox workspace status"], workspace, home);
+    } finally {
+      restore();
+    }
+    expect(code).toBe(5);
+    const rows = await listIncidents({ home });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].symptom.startsWith("stalled worker_a@mock-a: ")).toBe(true);
+  });
+
+  test("a clean mock run exits 0 and records no incident", async () => {
+    const workspace = await makeWorkspace("inc-run-clean-ws-");
+    const home = await makeWorkspace("inc-run-clean-home-");
+    delete process.env.AGENTIK_MOCK_STALL;
+    const restore = silence();
+    let code: number;
+    try {
+      code = await runMock(["run", "Create src/greet.txt containing AGENTIK_OK and record sandbox workspace status"], workspace, home);
+    } finally {
+      restore();
+    }
+    expect(code).toBe(0);
+    expect(await listIncidents({ home })).toEqual([]);
+  });
+
+  test("an AGENTIK_MOCK_STALL value that is not a worker role is refused (exit 2) before any worker runs", async () => {
+    const workspace = await makeWorkspace("inc-run-badstall-ws-");
+    const home = await makeWorkspace("inc-run-badstall-home-");
+    process.env.AGENTIK_MOCK_STALL = "worker_z";
+    const restore = silence();
+    let code: number;
+    try {
+      code = await runMock(["run", "Create src/greet.txt containing AGENTIK_OK"], workspace, home);
+    } finally {
+      restore();
+    }
+    expect(code).toBe(2);
+    expect(await listIncidents({ home })).toEqual([]);
   });
 });
 

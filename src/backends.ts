@@ -14,6 +14,7 @@ import {
   type CompleteRequest,
   type ToolCallDraft,
   type WorkerMessage,
+  type WorkerRole,
 } from "./types.ts";
 
 export const WORKER_JSON_SCHEMA = {
@@ -424,6 +425,11 @@ export interface MockOptions {
   id?: string;
   followUntrusted?: boolean;
   compromise?: { text?: string; toolCalls?: ToolCallDraft[] };
+  /**
+   * Test hook: the act phase of this role answers like a CLI cut off mid-reply (empty text,
+   * no toolCalls) every time, so the loop's single reprompt fails too and the task stalls.
+   */
+  stall?: WorkerRole;
 }
 
 /**
@@ -435,14 +441,20 @@ export class MockBackend implements Backend {
   readonly id: string;
   readonly followUntrusted: boolean;
   readonly compromise?: MockOptions["compromise"];
+  readonly stall?: WorkerRole;
 
   constructor(opts: MockOptions = {}) {
     this.id = opts.id ?? "mock";
     this.followUntrusted = opts.followUntrusted ?? false;
     this.compromise = opts.compromise;
+    this.stall = opts.stall;
   }
 
   async complete(request: CompleteRequest): Promise<WorkerMessage> {
+    if (request.phase === "act" && this.stall !== undefined && request.role === this.stall) {
+      return { text: "", toolCalls: [] };
+    }
+
     if (request.phase === "plan") {
       const tasks = buildPlan(request.trustedGoal, request.workerCount ?? 2).map((t) => ({
         assignee: t.assignee,
@@ -934,6 +946,8 @@ export interface BackendOptions {
   timeoutMs?: number;
   /** agentik home (profile) — where learned backend capabilities are recorded. */
   home?: string;
+  /** Test hook (`AGENTIK_MOCK_STALL`): the mock stalls this role's act phase. Ignored by live CLIs. */
+  mockStall?: WorkerRole;
 }
 
 /**
@@ -945,7 +959,7 @@ export function makeBackend(name: string, opts: BackendOptions = {}): Backend {
   const n = name.toLowerCase();
   const t = opts.timeoutMs;
   if (n === "mock" || /^mock-[a-e]$/.test(n)) {
-    return new MockBackend({ id: n === "mock" ? "mock" : n });
+    return new MockBackend({ id: n === "mock" ? "mock" : n, stall: opts.mockStall });
   }
   if (n === "grok") return new GrokBackend(t);
   if (n === "codex" || n === "cc") return new CodexBackend(t, { home: opts.home });

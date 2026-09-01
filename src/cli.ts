@@ -65,6 +65,7 @@ import { viewSkill } from "./skill-ops.ts";
 import { describeUsage, readSkillUsage, recordSkillUsage } from "./skill-usage.ts";
 import {
   clampSubagentCount,
+  isWorkerRole,
   MAX_SUBAGENTS,
   type OrchestratorDecision,
   type RunReport,
@@ -188,6 +189,7 @@ Worker CLIs keep their native file/shell tools disabled; tool calls still go thr
 the gate. --backend auto only routes to a harness whose authenticated probe passes,
 and a backend that dies mid-run is handed off to a live one (see "backend switches" in
 the report). Exit 5 means a task stalled: it never produced a usable answer.
+Test hook: AGENTIK_MOCK_STALL=worker_a…worker_e makes that mock worker stall (exit 5, incident).
 `;
 }
 
@@ -230,6 +232,12 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     ? await loadAvailability({ home, refresh: flags.refreshBackends })
     : undefined;
   const routingNotes: string[] = [];
+  // Test hook, read only here: the mock worker for that role stalls (empty act replies).
+  const mockStall = process.env.AGENTIK_MOCK_STALL;
+  if (mockStall !== undefined && !isWorkerRole(mockStall)) {
+    console.error(`agentik: AGENTIK_MOCK_STALL="${mockStall}" is not a worker role (worker_a…worker_e)`);
+    return 2;
+  }
   let workerA;
   let workerB;
   let workers;
@@ -241,6 +249,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       notes: routingNotes,
       timeoutMs: flags.stepTimeout === undefined ? undefined : flags.stepTimeout * 1000,
       home,
+      mockStall,
     }));
   } catch (err) {
     console.error(`agentik: ${err instanceof Error ? err.message : String(err)}`);

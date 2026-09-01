@@ -100,6 +100,8 @@ Invariants (tests enforce them):
 - Unresolved and seen ≥2 ⇒ in `agentik context` as KNOWN FAILURES; seen once is silent (log only).
 - Secrets are masked at write time in the incident log (goal included); the disk never holds the token.
 - Recording an incident never changes the exit code of `spawn` nor breaks `harvest` / `run` (try/catch, one stderr line).
+  Tested end to end on `run --backend mock` with the test hook `AGENTIK_MOCK_STALL=worker_a…e` (read once in
+  `src/cli.ts`, the named mock worker answers empty in its act phase): exit 5, one `stalled <role>@mock-<x>` incident.
 - Code never writes MEMORY.md, a cause, or a fix on its own: the review (a model) or a human does.
   The reviewer's memory guidance routes transient failures to the incident log, not to memory.
 
