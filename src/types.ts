@@ -392,11 +392,21 @@ export interface WorkerMessage {
   usage?: WorkerInvocation["usage"];
 }
 
+/** The review's bounded task: same shape as a worker task, assignee `reviewer`. */
+export interface ReviewTask {
+  id: "review";
+  assignee: "reviewer";
+  instruction: string;
+  allowedTools: string[];
+  maxSteps: number;
+}
+
 export interface CompleteRequest {
-  role: WorkerRole;
+  /** A worker role, or `reviewer` for the background review (no backend branches on it). */
+  role: WorkerRole | "reviewer";
   phase: Phase;
   trustedGoal: string;
-  task?: BoundedTask;
+  task?: BoundedTask | ReviewTask;
   envelopes: Envelope[];
   system: string;
   workspace?: string;

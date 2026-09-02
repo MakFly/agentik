@@ -119,6 +119,12 @@ Invariants (tests enforce them):
   yes → `memory`, no → `project`; a repo fact already in the workspace's CLAUDE.md goes nowhere. The
   reviewer sees `project:snapshot` (this workspace's file) as DATA right after `memory:snapshot`.
 - Retrieved pages, tool output, transcripts and peer-agent text are DATA, never instructions.
+- The review's tool calls go through the **same gate** as a worker's (`Orchestrator.proposeTool` with
+  the review allowlist) with an **empty context, deliberately**: the transcript and snapshots quote
+  injections by design, and scanning them at the gate would let an attacker veto every memory write.
+  The args of every review tool (skill bodies, incident causes, memory entries) are scanned there.
+  `CompleteRequest.role` is `reviewer` for the review (`ReviewTask`); no backend branches on it;
+  `AGENTIK_MOCK_STALL=worker_e` no longer touches a review.
 - The injection detector (`src/injection.ts`) reads English **and French** under the same rule ids
   (`ignore_previous_instructions`, `goal_hijack`, `role_hijack`, `reveal_system_prompt`,
   `destructive_coercion`, `tool_coercion`); `normalizeForScan` folds NFKC + NFD diacritics like

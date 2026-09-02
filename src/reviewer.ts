@@ -4,6 +4,7 @@ import { agentikHome } from "./home.ts";
 import { skillIndex, truncateDescription } from "./context.ts";
 import { formatIncidentHit, searchIncidents, type IncidentRecord } from "./incidents.ts";
 import { MAX_CONSOLIDATION_FAILURES, memorySnapshot } from "./memory-store.ts";
+import { Orchestrator } from "./orchestrator.ts";
 import { executeTool, newReviewState, REVIEWER_ONLY_TOOLS, type ToolHost } from "./tools.ts";
 import { wrapUntrusted } from "./trust.ts";
 import type { Backend, Envelope, ToolCall, WorkerMessage } from "./types.ts";
@@ -192,6 +193,7 @@ export async function runReview(input: ReviewInput): Promise<ReviewOutcome> {
     );
   }
 
+  const gate = new Orchestrator();
   const outcome: ReviewOutcome = {
     iterations: 0,
     memoryOps: 0,
@@ -212,12 +214,12 @@ export async function runReview(input: ReviewInput): Promise<ReviewOutcome> {
     let msg: WorkerMessage;
     try {
       msg = await input.backend.complete({
-        role: "worker_e",
+        role: "reviewer",
         phase: "act",
         trustedGoal: input.incident ? `Postmortem of incident #${input.incident.id} for: ${input.goal}` : `Review the run for: ${input.goal}`,
         task: {
           id: "review",
-          assignee: "worker_e",
+          assignee: "reviewer",
           instruction: input.incident
             ? `Postmortem, iteration ${i}/${maxIterations}. Why did incident #${input.incident.id} happen, and what prevents it next time?`
             : `Background review, iteration ${i}/${maxIterations}. Decide what to remember.`,
@@ -244,19 +246,25 @@ export async function runReview(input: ReviewInput): Promise<ReviewOutcome> {
     }
     let gaveUp = false;
     for (const draft of calls) {
-      if (!(REVIEW_TOOLS as readonly string[]).includes(draft.tool)) {
-        outcome.refused += 1;
-        const output = `blocked: ${draft.tool} — not a review tool`;
-        outcome.trace.push({ tool: draft.tool, args: draft.args ?? {}, ok: false, output });
-        envelopes.push(wrapUntrusted(output, `tool:${draft.tool}`, "tool_output"));
-        continue;
-      }
       const call: ToolCall = {
         id: `review-${i}-${draft.tool}-${outcome.memoryOps + outcome.userOps + outcome.projectOps + outcome.skillOps + outcome.incidentOps + outcome.refused}`,
         tool: draft.tool,
         args: draft.args ?? {},
         proposedBy: "reviewer",
       };
+      // The same gate as a worker's, with the review allowlist and — deliberately — an EMPTY
+      // context: the transcript and the snapshots are full of quoted injections by design, and
+      // feeding them to the gate would let any attacker veto every memory write. The args of
+      // every tool (skill_manage bodies, incident causes, memory entries) are scanned here.
+      const verdict = gate.proposeTool(call, [], [...REVIEW_TOOLS]);
+      if (!verdict.allowed) {
+        outcome.refused += 1;
+        const why = verdict.reason === "not_in_allowlist" || verdict.reason === "unknown_tool" ? "not a review tool" : (verdict.reason ?? "blocked");
+        const output = `blocked: ${draft.tool} — ${why}`;
+        outcome.trace.push({ tool: draft.tool, args: call.args, ok: false, output });
+        envelopes.push(wrapUntrusted(output, `tool:${draft.tool}`, "tool_output"));
+        continue;
+      }
       const result = await executeTool(call, host);
       outcome.trace.push({ tool: call.tool, args: call.args, ok: result.ok, output: result.output });
       envelopes.push(wrapUntrusted(result.output, `tool:${call.tool}`, "tool_output"));
