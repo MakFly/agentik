@@ -22,12 +22,7 @@ import {
   untouchedArtifacts,
   type ArtifactSnapshot,
 } from "./artifacts.ts";
-import {
-  consumeVerdictLine,
-  newVerdict,
-  summarizeVerdict,
-  verdictArgs,
-  verdictProblem, floorViolations } from "./verdict.ts";
+import { consumeVerdictLine, describeEvidence, floorViolations, newVerdict, summarizeVerdict, verdictArgs, verdictProblem } from "./verdict.ts";
 import { formatReport, runLoop } from "./loop.ts";
 import { defaultFetchImpl } from "./tools.ts";
 import { retainNote, readHot } from "./memory.ts";
@@ -195,6 +190,9 @@ Options:
                                sudo, … are denied at the harness by default; codex gets a trusted
                                prompt line and after-the-fact detection). Says "floor DISABLED".
   --require-tools              spawn: a run that calls no tool is a failure (exit 125).
+  --require-evidence           spawn: no test ran after the last edit → exit 125 ("unverified").
+                               Evidence is read from the stream: Edit/Write… vs bun test, bunx
+                               tsc, pytest, cargo test… (a ./scripts/test.sh counts as "other").
                                Pass it for implement/fix tasks, omit it for diagnostics.
   --expect-artifact PATH       spawn: this workspace path must be created, modified or
                                removed by the run, else exit 125. Repeatable.
@@ -813,6 +811,8 @@ async function spawnForeign(args: string[]): Promise<number> {
   }
 
   const detail = { stopReason: verdict.stopReason, errors: verdict.errors };
+  // Every 125 says what evidence there was: the incident line is what the conductor reads next time.
+  const detail125 = { stopReason: verdict.stopReason, errors: [describeEvidence(verdict), ...verdict.errors] };
   if (res.timedOut) {
     console.error(timedOutMsg());
     return fail(124, timedOutSymptom(), detail);
@@ -820,24 +820,24 @@ async function spawnForeign(args: string[]): Promise<number> {
   if (res.exitCode !== 0) {
     if (res.stderr.trim()) process.stderr.write(res.stderr);
     // A CLI that rejects the deny rules as argv dies at once, before any event.
-    if (floor && verdict.events === 0 && Date.now() - startedAt < 5_000 && ARGV_REJECTED.test(res.stderr)) {
+    if (floor && verdict.eventCount === 0 && Date.now() - startedAt < 5_000 && ARGV_REJECTED.test(res.stderr)) {
       const symptom = `${harness} rejected the deny rules (argv) — exit ${res.exitCode}; the floor could not be installed`;
       console.error(`agentik spawn: ${symptom}`);
       return fail(1, symptom, { ...detail, errors: [res.stderr.trim().split("\n")[0].slice(0, 200), ...verdict.errors] });
     }
     return fail(1, `${harness} exited ${res.exitCode}`, detail);
   }
-  const problem = verdictProblem(verdict, { requireTools: flags.requireTools });
+  const problem = verdictProblem(verdict, { requireTools: flags.requireTools, requireEvidence: flags.requireEvidence });
   if (problem) {
     console.error(`agentik spawn: ${problem} — treating this as unfinished, not as success`);
-    return fail(125, problem, detail);
+    return fail(125, problem, detail125);
   }
   // The stream proves tools ran; only the filesystem proves the deliverable moved.
   const untouched = await untouchedArtifacts(workspace, before);
   if (untouched.length > 0) {
     const symptom = describeUntouched(untouched);
     console.error(`agentik spawn: ${symptom} — treating this as unfinished, not as success`);
-    return fail(125, symptom, detail);
+    return fail(125, symptom, detail125);
   }
   if (expected.length > 0) {
     console.error(`agentik spawn: ${expected.length} expected artifact(s) verified on disk`);
@@ -903,6 +903,7 @@ export function parseRun(args: string[]): {
     session?: string;
     noReview?: boolean;
     allowHighBlast?: boolean;
+    requireEvidence?: boolean;
     maxIterations?: number;
     all?: boolean;
     limit?: number;
@@ -942,6 +943,7 @@ export function parseRun(args: string[]): {
     else if (a === "--strict-backend") flags.strictBackend = true;
     else if (a === "--require-tools") flags.requireTools = true;
     else if (a === "--allow-high-blast") flags.allowHighBlast = true;
+    else if (a === "--require-evidence") flags.requireEvidence = true;
     else if (a === "--raw") flags.raw = true;
     else if (a === "--no-context") flags.noContext = true;
     else if (a === "--link-harness") flags.linkHarness = true;
@@ -998,6 +1000,7 @@ export function parseRun(args: string[]): {
       strictBackend: Boolean(flags.strictBackend),
       requireTools: Boolean(flags.requireTools),
       allowHighBlast: Boolean(flags.allowHighBlast),
+      requireEvidence: Boolean(flags.requireEvidence),
       raw: Boolean(flags.raw),
       noContext: Boolean(flags.noContext),
       expectArtifacts,

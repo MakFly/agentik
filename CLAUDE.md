@@ -212,6 +212,13 @@ command × level table (~80 rows) and the benign-neighbour check for every rule.
   `nested agentik <cmd> refused at depth N`. `harvest|review|memory|context|skills|postmortem|probe`
   stay allowed. Belt: the `agentik_nested` policy rule denies `agentik spawn|run` at the harness and
   flags it as a floor violation in the outer verdict.
+- **Evidence** (`src/verdict.ts`): every tool event is `{kind: edit|test|other, at, detail, paths?}`
+  (`EDIT_TOOLS` per harness: claude Edit|Write|NotebookEdit|MultiEdit, grok write|search_replace|edit|
+  create_file|apply_patch, codex file_change|patch_apply; `isTestCommand` over every segment: bun test,
+  bunx tsc, npm|pnpm|yarn test, pytest, cargo test, go test, vitest, jest, make test, dotnet test…;
+  `echo bun test` and `./scripts/test.sh` are `other`). `evidenceOf` → `fresh` (a test after the last
+  edit) · `stale(n edits after last test)` · `none`, printed in the verdict line and first in the `errors`
+  of every 125 incident. `--require-evidence` (default off) → exit 125 "the result is unverified".
 - `agentik spawn --harness X` reads the harness event stream (verdict): exit `0` done · `1` CLI
   failed · `2` unusable harness · `124` timeout (default 1800 s) · `125` finished without doing the
   work (`--require-tools`, `--expect-artifact PATH`).

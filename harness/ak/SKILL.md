@@ -57,6 +57,7 @@ agentik spawn --harness claude --workspace "$PWD" --role Cornelius "<bounded tas
 - `codex` → `codex exec --yolo …`
 - `claude` → `claude -p --dangerously-skip-permissions --effort high` (Agent tool denied so no nested fan-out)
 - every spawned worker gets the `agentik context` block of that workspace (USER, MEMORY, PROJECT MEMORY, skills, sessions, KNOWN FAILURES) in front of its task as DATA (≤6000 chars); `--no-context` to leave it out
+- on an implement / fix slot whose task promises tests, add `--require-evidence`: the stream must show a test run (`bun test`, `bunx tsc`, `pytest`, `cargo test`…) **after** the last edit, else exit 125 « the result is unverified ». The verdict line prints `evidence=fresh|stale(n edits after last test)|none`; a project-specific `./scripts/test.sh` is read as `other`, so name the real test command in the task.
 
 **Probe before you route.** Run `agentik probe --json` first. A harness that is `present but not authenticated` cannot do the work: say so to the user and offer the live ones instead of firing five dead CLIs. `agentik spawn` refuses a dead harness with exit 2.
 

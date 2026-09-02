@@ -173,6 +173,12 @@ match that the harness did not deny itself is printed as `FLOOR VIOLATION` and l
 (exit code unchanged). `--allow-high-blast` removes the floor and says `floor DISABLED`. A claude or
 grok whose `--help` no longer advertises the deny flag is refused rather than run without the floor.
 
+**Evidence, not narration.** The verdict classifies every tool event as an edit, a test run or
+other, and prints `evidence=fresh|stale(n edits after last test)|none`. `agentik spawn
+--require-evidence` turns a missing test after the last edit into exit 125 ("the result is
+unverified"); off by default, because a research task legitimately edits nothing. Limit: a
+project-specific `./scripts/test.sh` reads as "other".
+
 **A worker never spawns workers.** Every child agentik starts inherits `AGENTIK_DEPTH`; at depth 1 or
 more, `agentik spawn` and `agentik run` refuse (exit 2, incident `nested agentik spawn refused at
 depth 1`) before probing anything. That is agent #6 by another route, and it is closed on both sides:

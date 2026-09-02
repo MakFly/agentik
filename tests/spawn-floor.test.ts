@@ -58,7 +58,7 @@ describe("verdict: commands the harness ran, and the floor after the fact", () =
     consumeVerdictLine(v, JSON.stringify({ type: "result", subtype: "success", is_error: false, num_turns: 2, result: "ok", permission_denials: [{ tool_name: "Bash", tool_input: { command: "git push --force origin main" } }] }));
     expect(v.denied).toEqual(["git push --force origin main"]);
     expect(floorViolations(v)).toEqual([]);
-    expect(v.events).toBe(4);
+    expect(v.eventCount).toBe(4);
   });
 
   test("codex command_execution and grok run_terminal_command are commands; every match is a violation", () => {

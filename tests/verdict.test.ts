@@ -230,6 +230,6 @@ describe("robustness", () => {
 
   test("summarizeVerdict is readable at a glance", () => {
     const v = fold("grok", [{ type: "end", stopReason: "end_turn", num_turns: 5 }]);
-    expect(summarizeVerdict(v)).toBe("completed · stop=end_turn · turns=5 · tools=0");
+    expect(summarizeVerdict(v)).toBe("completed · stop=end_turn · turns=5 · tools=0 · evidence=none");
   });
 });
