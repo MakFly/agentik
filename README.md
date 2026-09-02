@@ -203,6 +203,10 @@ more, `agentik spawn` and `agentik run` refuse (exit 2, incident `nested agentik
 depth 1`) before probing anything. That is agent #6 by another route, and it is closed on both sides:
 the harness deny rules also cover `agentik spawn|run`.
 
+**Big tool outputs go to disk.** Over 8000 chars, a tool result is written to
+`.agentik/tool-results/<callId>.txt` (secrets and injections masked per line) and the model sees head +
+a `read_file {path, offset, limit}` pointer + tail; the injection scan still covers the whole body.
+
 **Command policy.** `run_command` executes one argv with no shell (pipes, `;`, `&&`, redirections
 and `$(…)` are refused: "one command per call"), with a 30 s default timeout (`timeout_s`, max 120),
 a scrubbed environment (no `*_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `GH_TOKEN`, API keys) and a

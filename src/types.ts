@@ -149,6 +149,8 @@ export interface Envelope {
   body: string;
   channel: Channel;
   injection?: InjectionFinding;
+  /** The body is head + pointer + tail of a larger tool output spilled to disk. */
+  truncated?: boolean;
 }
 
 export interface InjectionFinding {
@@ -183,7 +185,10 @@ export interface ExecutedTool {
   tool: string;
   args: Record<string, unknown>;
   artifact?: string;
+  /** Inline output (head + pointer + tail when spilled). */
   output: string;
+  /** Workspace-relative file holding the full output, when it exceeded the inline cap. */
+  outputPath?: string;
 }
 
 export interface BlockedTool {

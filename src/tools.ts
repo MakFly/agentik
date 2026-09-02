@@ -20,7 +20,7 @@ import type {
 } from "./types.ts";
 
 export const TOOL_CATALOG: ToolSpec[] = [
-  { name: "read_file", blastRadius: "low", description: "Read a workspace file" },
+  { name: "read_file", blastRadius: "low", description: "Read a workspace file; {path, offset?, limit?} in chars to page a large file or a spilled tool output" },
   { name: "write_file", blastRadius: "medium", description: "Write a workspace file" },
   {
     name: "run_command",
@@ -174,11 +174,25 @@ export async function executeTool(call: ToolCall, host: ToolHost): Promise<ToolR
   }
 }
 
+/**
+ * `offset` / `limit` are characters: a spilled tool output (`.agentik/tool-results/<id>.txt`)
+ * is paged with them, so a 50k test log is read in slices instead of re-entering the context
+ * whole. Without them the file is returned entire (and spilled again by the loop if too big).
+ */
 async function readFileTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {
   const rel = String(call.args.path ?? "");
   const full = resolveSafe(host.workspace, rel);
   const body = await readFile(full, "utf8");
-  const env = wrapUntrusted(body, `file:${rel}`, "retrieved");
+  const offsetRaw = Number(call.args.offset ?? 0);
+  const limitRaw = call.args.limit === undefined ? undefined : Number(call.args.limit);
+  const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.min(Math.floor(offsetRaw), body.length) : 0;
+  const limit = limitRaw !== undefined && Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : undefined;
+  const slice = limit === undefined ? body.slice(offset) : body.slice(offset, offset + limit);
+  const paged = offset > 0 || (limit !== undefined && offset + limit < body.length);
+  const output = paged
+    ? `[${rel} chars ${offset}-${offset + slice.length} of ${body.length}${offset + slice.length < body.length ? `; next offset ${offset + slice.length}` : "; end"}]\n${slice}`
+    : slice;
+  const env = wrapUntrusted(output, `file:${rel}`, "retrieved");
   return {
     callId: call.id,
     ok: true,

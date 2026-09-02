@@ -149,6 +149,16 @@ Invariants (tests enforce them):
 - Code never writes MEMORY.md, a cause, or a fix on its own: the review (a model) or a human does.
   The reviewer's memory guidance routes transient failures to the incident log, not to memory.
 
+## Tool output spill (`agentik run`)
+
+`src/tool-results.ts`: a tool output over `TOOL_OUTPUT_INLINE_MAX` (8000 chars) is written whole
+to `<workspace>/.agentik/tool-results/<callId>.txt` (each line that reads as a secret or an injection
+replaced by `[BLOCKED: …]`, the rest byte for byte); the envelope keeps head 3000 + `…[N chars omitted
+— full output in <path>; read_file {"path","offset","limit"} to page it]…` + tail 2000, flagged
+`Envelope.truncated`, and `ExecutedTool.outputPath` points to the file. Injection detection runs on
+the **full** body, so a payload padded into the omitted middle is still a finding. `read_file` takes
+`offset` / `limit` in chars and prefixes a paged read with `[path chars a-b of n; next offset …]`.
+
 ## Command policy — one source of truth for dangerous shell commands
 
 `src/command-policy.ts` (rules) + `src/argv.ts` (shell-words tokenizer). `classifyCommand(argv|string)

@@ -2,6 +2,7 @@ import { BackendError, systemPromptFor } from "./backends.ts";
 import { Orchestrator } from "./orchestrator.ts";
 import { buildPlan } from "./plan.ts";
 import { normalizeClaims } from "./sources.ts";
+import { spillToolResult } from "./tool-results.ts";
 import { executeTool } from "./tools.ts";
 import { wrapUntrusted } from "./trust.ts";
 import type {
@@ -268,19 +269,25 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
       noteBlocked(call, String(err));
       return;
     }
-    const outEnv = wrapUntrusted(result.output, `tool:${call.tool}`, "tool_output");
+    // Over the inline cap the full body goes to disk; the envelope keeps head + pointer + tail,
+    // and the injection scan covers the whole body, not the visible part.
+    const spilled = await spillToolResult(opts.workspace, call.id, result.output, `tool:${call.tool}`);
+    const outEnv = wrapUntrusted(spilled.inline, `tool:${call.tool}`, "tool_output");
+    if (spilled.injection.detected) outEnv.injection = spilled.injection;
+    if (spilled.truncated) outEnv.truncated = true;
     envelopes.push(outEnv);
-    if (outEnv.injection) orch.recordFinding(outEnv.injection);
+    if (outEnv.injection?.detected) orch.recordFinding(outEnv.injection);
     if (result.ok) {
       executed.push({
         tool: call.tool,
         args: call.args,
         artifact: result.artifact,
-        output: result.output,
+        output: spilled.inline,
+        ...(spilled.outputPath ? { outputPath: spilled.outputPath } : {}),
       });
       if (result.artifact) artifacts.push(result.artifact);
     } else {
-      blocked.push({ tool: call.tool, args: call.args, reason: result.output });
+      blocked.push({ tool: call.tool, args: call.args, reason: spilled.inline });
     }
   };
 
