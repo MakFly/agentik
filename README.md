@@ -179,6 +179,10 @@ other, and prints `evidence=fresh|stale(n edits after last test)|none`. `agentik
 unverified"); off by default, because a research task legitimately edits nothing. Limit: a
 project-specific `./scripts/test.sh` reads as "other".
 
+**What it cost.** Every `agentik spawn` ends with `usage: in=11.1k (5.8k cached) out=42
+cost=$0.0043 turns=1 dur=12s`, read from the harness's own stream (claude `result`, grok `end` —
+dollars or ticks — codex `turn.completed`), and the line is stored on every incident.
+
 **A worker never spawns workers.** Every child agentik starts inherits `AGENTIK_DEPTH`; at depth 1 or
 more, `agentik spawn` and `agentik run` refuse (exit 2, incident `nested agentik spawn refused at
 depth 1`) before probing anything. That is agent #6 by another route, and it is closed on both sides:

@@ -219,6 +219,12 @@ command × level table (~80 rows) and the benign-neighbour check for every rule.
   `echo bun test` and `./scripts/test.sh` are `other`). `evidenceOf` → `fresh` (a test after the last
   edit) · `stale(n edits after last test)` · `none`, printed in the verdict line and first in the `errors`
   of every 125 incident. `--require-evidence` (default off) → exit 125 "the result is unverified".
+- **Usage** (`HarnessVerdict.usage {inputTokens, cachedInputTokens?, outputTokens, costUsd?, turns,
+  durationMs?}`): claude `result.usage` + `total_cost_usd` + `num_turns` + `duration_ms`; grok `end`
+  `usage` + `total_cost_usd` else `total_cost_usd_ticks / 1e10`; codex sum of `turn.completed.usage`.
+  `GROK_ENVELOPE_KEYS` (gated-mode unwrapper) is untouched. `agentik spawn` always prints
+  `agentik spawn: usage: in=11.1k (5.8k cached) out=42 cost=$0.0043 turns=1 dur=12s` (or "none
+  reported") and adds that line to the `errors` of every 1/124/125 incident.
 - `agentik spawn --harness X` reads the harness event stream (verdict): exit `0` done · `1` CLI
   failed · `2` unusable harness · `124` timeout (default 1800 s) · `125` finished without doing the
   work (`--require-tools`, `--expect-artifact PATH`).

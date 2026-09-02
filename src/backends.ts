@@ -118,7 +118,7 @@ export function parseWorkerMessage(raw: string): WorkerMessage {
   return { text: trimmed };
 }
 
-const GROK_ENVELOPE_KEYS = new Set([
+export const GROK_ENVELOPE_KEYS = new Set([
   "stopReason",
   "sessionId",
   "requestId",

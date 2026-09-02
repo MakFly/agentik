@@ -30,6 +30,62 @@ export interface HarnessVerdict {
   commands: string[];
   /** Commands the harness itself denied (claude `permission_denials`). */
   denied: string[];
+  /** Tokens, cost and time as the harness reported them; undefined when it reported nothing. */
+  usage?: HarnessUsage;
+}
+
+export interface HarnessUsage {
+  inputTokens: number;
+  cachedInputTokens?: number;
+  outputTokens: number;
+  costUsd?: number;
+  turns: number;
+  durationMs?: number;
+}
+
+function num(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+/** Token counts under whatever names a harness uses (snake or camel, prompt/completion or input/output). */
+function tokensOf(usage: unknown): { input?: number; cached?: number; output?: number } {
+  if (!usage || typeof usage !== "object") return {};
+  const u = usage as Record<string, unknown>;
+  const pick = (...keys: string[]) => keys.map((k) => num(u[k])).find((x) => x !== undefined);
+  return {
+    input: pick("input_tokens", "inputTokens", "prompt_tokens", "promptTokens"),
+    cached: pick("cached_input_tokens", "cachedInputTokens", "cache_read_input_tokens", "cached_tokens", "cachedTokens"),
+    output: pick("output_tokens", "outputTokens", "completion_tokens", "completionTokens"),
+  };
+}
+
+/** Add one usage report to the verdict (codex reports one per turn; claude and grok once). */
+function addUsage(v: HarnessVerdict, usage: unknown, extra: { costUsd?: number; turns?: number; durationMs?: number } = {}): void {
+  const t = tokensOf(usage);
+  if (t.input === undefined && t.output === undefined && extra.costUsd === undefined) return;
+  const cur = v.usage ?? { inputTokens: 0, outputTokens: 0, turns: 0 };
+  cur.inputTokens += t.input ?? 0;
+  cur.outputTokens += t.output ?? 0;
+  if (t.cached !== undefined) cur.cachedInputTokens = (cur.cachedInputTokens ?? 0) + t.cached;
+  if (extra.costUsd !== undefined) cur.costUsd = (cur.costUsd ?? 0) + extra.costUsd;
+  if (extra.turns !== undefined) cur.turns = extra.turns;
+  else cur.turns += 1;
+  if (extra.durationMs !== undefined) cur.durationMs = extra.durationMs;
+  v.usage = cur;
+}
+
+function kilo(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
+
+/** `usage: in=11.1k (5.8k cached) out=42 cost=$0.0043 turns=1 dur=12s` — or that nothing was reported. */
+export function formatUsage(u: HarnessUsage | undefined): string {
+  if (!u) return "usage: (none reported by the harness)";
+  const bits = [`in=${kilo(u.inputTokens)}${u.cachedInputTokens ? ` (${kilo(u.cachedInputTokens)} cached)` : ""}`, `out=${kilo(u.outputTokens)}`];
+  if (u.costUsd !== undefined) bits.push(`cost=$${u.costUsd < 0.01 ? u.costUsd.toFixed(4) : u.costUsd.toFixed(2)}`);
+  bits.push(`turns=${u.turns}`);
+  if (u.durationMs !== undefined) bits.push(`dur=${Math.round(u.durationMs / 1000)}s`);
+  return `usage: ${bits.join(" ")}`;
 }
 
 export type VerdictEventKind = "edit" | "test" | "other";
@@ -236,6 +292,10 @@ export function consumeVerdictLine(v: HarnessVerdict, line: string, hooks?: Rend
       v.stopReason = typeof obj.stopReason === "string" ? obj.stopReason : undefined;
       v.turns = numberOr(obj.num_turns, v.turns);
       v.completed = !v.stopReason || !GROK_BAD_STOP.has(v.stopReason);
+      // grok prices in "ticks" (1e-10 $) when it does not give dollars: 43220800 ticks = $0.00432208.
+      const ticks = num(obj.total_cost_usd_ticks);
+      const costUsd = num(obj.total_cost_usd) ?? (ticks !== undefined ? ticks / 1e10 : undefined);
+      addUsage(v, obj.usage, { costUsd, turns: v.turns, durationMs: num(obj.duration_ms) });
     }
     return;
   }
@@ -263,6 +323,7 @@ export function consumeVerdictLine(v: HarnessVerdict, line: string, hooks?: Rend
       v.turns = numberOr(obj.num_turns, v.turns);
       v.completed = obj.subtype === "success" && obj.is_error !== true;
       if (typeof obj.result === "string") v.text = obj.result;
+      addUsage(v, obj.usage, { costUsd: num(obj.total_cost_usd), turns: v.turns, durationMs: num(obj.duration_ms) });
       const denials = obj.permission_denials;
       if (Array.isArray(denials) && denials.length > 0) {
         v.errors.push(`${denials.length} permission denial(s)`);
@@ -280,6 +341,7 @@ export function consumeVerdictLine(v: HarnessVerdict, line: string, hooks?: Rend
   if (type === "turn.completed") {
     v.turns += 1;
     v.completed = true;
+    addUsage(v, obj.usage, { turns: v.turns });
   } else if (type === "turn.failed") {
     v.completed = false;
     v.errors.push(describeArgs(obj.error) || "turn failed");

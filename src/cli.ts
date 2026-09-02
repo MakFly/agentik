@@ -22,7 +22,7 @@ import {
   untouchedArtifacts,
   type ArtifactSnapshot,
 } from "./artifacts.ts";
-import { consumeVerdictLine, describeEvidence, floorViolations, newVerdict, summarizeVerdict, verdictArgs, verdictProblem } from "./verdict.ts";
+import { consumeVerdictLine, describeEvidence, floorViolations, formatUsage, newVerdict, summarizeVerdict, verdictArgs, verdictProblem } from "./verdict.ts";
 import { formatReport, runLoop } from "./loop.ts";
 import { defaultFetchImpl } from "./tools.ts";
 import { retainNote, readHot } from "./memory.ts";
@@ -787,6 +787,7 @@ async function spawnForeign(args: string[]): Promise<number> {
   );
   process.stdout.write("\n");
   console.error(`agentik spawn: ${summarizeVerdict(verdict)}`);
+  console.error(`agentik spawn: ${formatUsage(verdict.usage)}`);
   // Only an incomplete turn makes these errors; on a completed turn they are harness notes
   // (codex, for one, emits a benign config warning on every successful run).
   const label = verdict.completed ? "note" : "harness error";
@@ -810,9 +811,11 @@ async function spawnForeign(args: string[]): Promise<number> {
     }
   }
 
-  const detail = { stopReason: verdict.stopReason, errors: verdict.errors };
-  // Every 125 says what evidence there was: the incident line is what the conductor reads next time.
-  const detail125 = { stopReason: verdict.stopReason, errors: [describeEvidence(verdict), ...verdict.errors] };
+  // Every incident carries what the run cost; every 125 says what evidence there was — the
+  // incident line is what the conductor reads next time.
+  const usageLine = formatUsage(verdict.usage);
+  const detail = { stopReason: verdict.stopReason, errors: [usageLine, ...verdict.errors] };
+  const detail125 = { stopReason: verdict.stopReason, errors: [describeEvidence(verdict), usageLine, ...verdict.errors] };
   if (res.timedOut) {
     console.error(timedOutMsg());
     return fail(124, timedOutSymptom(), detail);
