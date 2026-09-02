@@ -1,6 +1,7 @@
 import { classifyCommand } from "./command-policy.ts";
 import { detectInjection, isGoalHijack } from "./injection.ts";
-import { REVIEWER_ONLY_TOOLS, resolveSafe, TOOL_CATALOG } from "./tools.ts";
+import { REVIEWER_ONLY_TOOLS, TOOL_CATALOG } from "./tool-catalog.ts";
+import { resolveSafe } from "./tools.ts";
 import {
   clampSubagentCount,
   DEFAULT_MAX_STEPS,

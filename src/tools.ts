@@ -10,6 +10,9 @@ import { memoryApply, type MemoryOperation, type MemoryTarget } from "./memory-s
 import { newPendingId, stagePending, type PendingSkillOp } from "./pending.ts";
 import { applySkillCreate, applySkillPatch, skillCreateProblem, skillFile, viewSkill } from "./skill-ops.ts";
 import { skillNameProblem } from "./skill-factory.ts";
+import { hasIndex, indexKey } from "./code-index.ts";
+import { formatSearch, searchCode } from "./code-search.ts";
+import { REVIEWER_ONLY_TOOLS, TOOL_CATALOG } from "./tool-catalog.ts";
 import { wrapUntrusted } from "./trust.ts";
 import type {
   BlastRadius,
@@ -19,59 +22,7 @@ import type {
   ToolSpec,
 } from "./types.ts";
 
-export const TOOL_CATALOG: ToolSpec[] = [
-  { name: "read_file", blastRadius: "low", description: "Read a workspace file; {path, offset?, limit?} in chars to page a large file or a spilled tool output" },
-  { name: "write_file", blastRadius: "medium", description: "Write a workspace file" },
-  {
-    name: "run_command",
-    blastRadius: "medium",
-    description: "Run ONE command in the workspace (argv, no shell: no pipes or chains; destructive argv is high-blast, rm -rf / and friends are refused outright; timeout_s ≤120)",
-  },
-  {
-    name: "sandbox_ops",
-    blastRadius: "medium",
-    description: "Representative sandbox admin/ops (workspace status artifact)",
-  },
-  {
-    name: "research_fetch",
-    blastRadius: "low",
-    description: "Fetch a URL and record origin; body is untrusted data",
-  },
-  {
-    name: "server_admin",
-    blastRadius: "high",
-    description: "Remote/server mutation (gated; writes a local receipt only — no remote host is ever touched, out of scope)",
-  },
-  {
-    name: "fs_destructive",
-    blastRadius: "high",
-    description: "Delete or move a workspace path: {action: delete|move, path, to?}. Gated; runs only after approval, inside the workspace, never .git/ or .agentik/, never overwrites",
-  },
-  {
-    name: "credential_use",
-    blastRadius: "high",
-    description: "Use or export credentials (no executor: refused even after approval — out of scope)",
-  },
-  {
-    name: "memory",
-    blastRadius: "low",
-    description:
-      "Reviewer only. add/replace/remove an entry in the GLOBAL MEMORY.md (target memory), USER.md (target user) or this workspace's PROJECT memory (target project); batch via operations[]",
-  },
-  {
-    name: "skill_manage",
-    blastRadius: "medium",
-    description: "Reviewer only. view/patch/create a skill; create and patch require a prior view of that skill",
-  },
-  {
-    name: "incident",
-    blastRadius: "low",
-    description: "Reviewer only. classify {id, cause} / resolve {id, fix} / merge {into, from} an incident of the failure log",
-  },
-];
-
-/** Tools that write the agent's own memory (and its failure log). Never for a worker, only for the review fork. */
-export const REVIEWER_ONLY_TOOLS = new Set(["memory", "skill_manage", "incident"]);
+export { REVIEWER_ONLY_TOOLS, TOOL_CATALOG } from "./tool-catalog.ts";
 
 /** A postmortem cause is a sentence, not a transcript. */
 export const INCIDENT_CAUSE_MAX = 120;
@@ -143,6 +94,8 @@ export interface ToolHost {
   approved?: Set<string>;
   /** The session under review, for the memory journal. */
   sessionId?: number;
+  /** Home of the code index (`<home>/index/`); default profile when absent. */
+  indexHome?: string;
 }
 
 export function newReviewState(maxSkillCreates = 1): ReviewState {
@@ -153,6 +106,8 @@ export async function executeTool(call: ToolCall, host: ToolHost): Promise<ToolR
   switch (call.tool) {
     case "read_file":
       return readFileTool(call, host);
+    case "search_code":
+      return searchCodeTool(call, host);
     case "write_file":
       return writeFileTool(call, host);
     case "run_command":
@@ -213,6 +168,35 @@ async function readFileTool(call: ToolCall, host: ToolHost): Promise<ToolResult>
     output: env.body,
     artifact: rel,
   };
+}
+
+/**
+ * The code index as a tool: candidates from the index, verdict and quotes from the live files,
+ * output grouped by file (≤6000 chars, so it is never spilled). An empty result is a success —
+ * "no hits" is an answer, not a failing call. No index is a failure the worker can read: it
+ * falls back to read_file / run_command, and the conductor runs `agentik index`.
+ */
+async function searchCodeTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {
+  const query = String(call.args.query ?? "").trim();
+  if (!query) return { callId: call.id, ok: false, output: "search_code: query is required" };
+  const home = host.indexHome ?? host.agentikHome;
+  if (!hasIndex(home, host.workspace)) {
+    return { callId: call.id, ok: false, output: `search_code: no code index for ${indexKey(host.workspace).root} (the conductor builds one with: agentik index); use read_file or run_command rg instead` };
+  }
+  const num = (v: unknown): number | undefined => (v === undefined || v === null || v === "" ? undefined : Number(v));
+  try {
+    const res = await searchCode(home, host.workspace, {
+      query,
+      regex: Boolean(call.args.regex),
+      pathGlob: call.args.path === undefined ? undefined : String(call.args.path),
+      k: num(call.args.k),
+      offset: num(call.args.offset),
+    });
+    const env = wrapUntrusted(formatSearch(res), `tool:${call.tool}`, "retrieved");
+    return { callId: call.id, ok: true, output: env.body };
+  } catch (err) {
+    return { callId: call.id, ok: false, output: `search_code: ${err instanceof Error ? err.message : String(err)}` };
+  }
 }
 
 async function writeFileTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {

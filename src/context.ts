@@ -1,4 +1,5 @@
 import { readdir, readFile } from "node:fs/promises";
+import { CODE_MAP_BUDGET, repoMap } from "./repo-map.ts";
 import { join } from "node:path";
 import { agentikHome, memoryPaths } from "./home.ts";
 import { readHot } from "./memory.ts";
@@ -66,6 +67,8 @@ export async function buildContext(opts: {
   home?: string;
   workspace?: string;
   goal?: string;
+  /** Append the CODE MAP of the workspace (default true; spawn renders it as its own envelope). */
+  code?: boolean;
 }): Promise<string> {
   const home = agentikHome(opts.home);
   await readHot({ home }); // runs the legacy migration once before the snapshots are taken
@@ -116,7 +119,22 @@ export async function buildContext(opts: {
       out.push(`- #${f.id} ${formatIncidentHit({ ...f, symptom: truncateDescription(f.symptom, KNOWN_FAILURE_SYMPTOM_MAX) })}`);
     }
   }
+  const map = opts.code !== false && opts.workspace ? await codeMapSection(home, opts.workspace, goal) : undefined;
+  if (map) {
+    out.push("");
+    out.push(map.trimEnd());
+  }
   return `${out.join("\n")}\n`;
+}
+
+/** The repo map block, or undefined when the workspace has no index (a failure is one stderr line). */
+export async function codeMapSection(home: string, workspace: string, goal: string | undefined, budget = CODE_MAP_BUDGET): Promise<string | undefined> {
+  try {
+    return await repoMap(home, workspace, { goal, budgetChars: budget });
+  } catch (err) {
+    console.error(`agentik context: code map unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
+  }
 }
 
 /** `name:` and `description:` from a YAML frontmatter; folded (`>`) / literal (`|`) blocks are joined. */

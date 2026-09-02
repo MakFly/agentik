@@ -33,6 +33,7 @@ import { memoryFileLabel, memoryFilePath, memoryRemoveEntry, resealMemory, type 
 import { formatSessionHit, searchSessions } from "./sessions.ts";
 import { buildContext } from "./context.ts";
 import { formatIndexStats, hasIndex, indexKey, indexStats, refreshIndex } from "./code-index.ts";
+import { repoMap } from "./repo-map.ts";
 import { formatSearch, searchCode } from "./code-search.ts";
 import { renderEnvelope, wrapUntrusted } from "./trust.ts";
 import {
@@ -112,7 +113,11 @@ Commands:
                                The worker gets the same block "agentik context" prints (USER,
                                MEMORY, PROJECT MEMORY of that workspace, skills index, related
                                sessions, KNOWN FAILURES) as DATA in front of the task, capped
-                               at 6000 chars; --no-context leaves it out.
+                               at 6000 chars; --no-context leaves it out. When the workspace
+                               has a code index (agentik index) the worker also gets its repo
+                               map (paths + exported symbols) as a second DATA envelope, capped
+                               at 2500 chars, and one trusted line saying "agentik search" is
+                               available; --no-index leaves both out.
                                Output streams live and agentik reads the harness's own event
                                stream, so it reports what the worker actually did (turns, tool
                                calls, stop reason) instead of trusting the exit code. The
@@ -419,6 +424,8 @@ async function runMain(runArgv: string[], resume?: ResumePayload): Promise<numbe
   const report = await runLoop({
     goal,
     workspace,
+    home: homeFor(flags),
+    codeIndex: !flags.noIndex,
     workerA,
     workerB,
     workers,
@@ -915,6 +922,16 @@ export function exitCodeFor(report: RunReport): number {
 /** The context block a spawned worker gets in front of its task; longer than this is cut. */
 export const SPAWN_CONTEXT_CAP = 6000;
 export const SPAWN_CONTEXT_ORIGIN = "agentik:context";
+/** The repo map a spawned worker gets as its own envelope (the 6000-char context block is full). */
+export const CODE_CONTEXT_CAP = 2500;
+export const CODE_CONTEXT_ORIGIN = "agentik:code";
+/**
+ * One TRUSTED line, static text: only the root (given by the human) is interpolated — never the
+ * goal, never a path from the index — so retrieved data cannot shape an instruction.
+ */
+export function codeHintLine(root: string): string {
+  return `This repository has a local code index: you may run \`agentik search "<query>" [--regex] [--path GLOB] --workspace ${root}\` for hits grouped by file with L<start>-<end> <symbol> ranges (cheaper than grepping; read the file for the full body).`;
+}
 
 /**
  * `agentik context` for this goal and workspace, rendered as an UNTRUSTED envelope ("DATA ONLY",
@@ -924,13 +941,36 @@ export const SPAWN_CONTEXT_ORIGIN = "agentik:context";
 export async function spawnContextBlock(goal: string, workspace: string, home: string): Promise<string | undefined> {
   let block: string;
   try {
-    block = await buildContext({ goal, workspace, home });
+    block = await buildContext({ goal, workspace, home, code: false });
   } catch (err) {
     console.error(`agentik spawn: could not build context: ${err instanceof Error ? err.message : String(err)}`);
     return undefined;
   }
   const body = block.length > SPAWN_CONTEXT_CAP ? `${block.slice(0, SPAWN_CONTEXT_CAP)}…[truncated]` : block;
   return renderEnvelope(wrapUntrusted(body, SPAWN_CONTEXT_ORIGIN, "retrieved"));
+}
+
+/**
+ * The repo map as its own UNTRUSTED envelope (`agentik:code`, ≤ CODE_CONTEXT_CAP), after a refresh
+ * of the index. No index → undefined (nothing said); a failure → one stderr line, the task runs.
+ */
+export async function spawnCodeBlock(goal: string, workspace: string, home: string): Promise<string | undefined> {
+  if (!hasIndex(home, workspace)) return undefined;
+  try {
+    await refreshIndex(home, workspace);
+  } catch (err) {
+    console.error(`agentik spawn: code index not refreshed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  let map: string | undefined;
+  try {
+    map = await repoMap(home, workspace, { goal, budgetChars: CODE_CONTEXT_CAP - 200 });
+  } catch (err) {
+    console.error(`agentik spawn: could not build the code map: ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
+  }
+  if (!map) return undefined;
+  const body = map.length > CODE_CONTEXT_CAP ? `${map.slice(0, CODE_CONTEXT_CAP)}…[truncated]` : map;
+  return renderEnvelope(wrapUntrusted(body, CODE_CONTEXT_ORIGIN, "retrieved"));
 }
 
 /** stderr of a CLI whose argv parser refused the floor flags. */
@@ -985,11 +1025,15 @@ async function spawnForeign(args: string[]): Promise<number> {
 
   const workspace = resolve(flags.workspace ?? process.cwd());
   const role = flags.role ? `You are ${flags.role}. ` : "";
-  const bounded = `${role}Bounded task (no nested subagents, stay in ${workspace}):\n${goal}`;
+  const home = homeFor(flags);
+  const codeBlock = flags.noIndex ? undefined : await spawnCodeBlock(goal, workspace, home);
+  const hint = codeBlock ? `${codeHintLine(indexKey(workspace).root)}\n` : "";
+  const bounded = `${role}${hint}Bounded task (no nested subagents, stay in ${workspace}):\n${goal}`;
   // The worker sees what the conductor sees — memory, this workspace's project memory, skills,
-  // related sessions, known failures — as DATA in front of the task, never as instructions.
-  const context = flags.noContext ? undefined : await spawnContextBlock(goal, workspace, homeFor(flags));
-  const prompt = context ? `${context}\n\n${bounded}` : bounded;
+  // related sessions, known failures — as DATA in front of the task, never as instructions; the
+  // repo map is a second DATA envelope, and the trusted hint line is agentik's own static text.
+  const context = flags.noContext ? undefined : await spawnContextBlock(goal, workspace, home);
+  const prompt = [context, codeBlock, bounded].filter((p): p is string => Boolean(p)).join("\n\n");
   const expected = flags.expectArtifacts ?? [];
   // Murphy: a failure that is not written down happens again. Every non-zero exit leaves an
   // incident (same symptom on the same harness and workspace -> seen+1). Recording never
@@ -1244,6 +1288,7 @@ export function parseRun(args: string[]): {
     requireTools?: boolean;
     raw?: boolean;
     noContext?: boolean;
+    noIndex?: boolean;
     expectArtifacts?: string[];
     linkHarness?: boolean;
     description?: string;
@@ -1320,6 +1365,7 @@ export function parseRun(args: string[]): {
     }
     else if (a === "--raw") flags.raw = true;
     else if (a === "--no-context") flags.noContext = true;
+    else if (a === "--no-index") flags.noIndex = true;
     else if (a === "--link-harness") flags.linkHarness = true;
     else if (a === "--no-review") flags.noReview = true;
     else if (a === "--max-iterations") {
@@ -1380,6 +1426,7 @@ export function parseRun(args: string[]): {
       concurrency: positive(flags.concurrency),
       raw: Boolean(flags.raw),
       noContext: Boolean(flags.noContext),
+      noIndex: Boolean(flags.noIndex),
       expectArtifacts,
       linkHarness: Boolean(flags.linkHarness),
       description: str(flags.description),
@@ -1748,6 +1795,7 @@ async function contextCmd(args: string[]): Promise<number> {
     home: homeFor(flags),
     workspace: flags.workspace ? resolve(flags.workspace) : undefined,
     goal: goal || flags.goalFlag,
+    code: !flags.noIndex,
   });
   process.stdout.write(block);
   return 0;

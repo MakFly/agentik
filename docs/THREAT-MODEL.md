@@ -11,7 +11,7 @@ Untrusted content is **data**, never the instruction channel. High-blast-radius 
 | Fetched page / file body | untrusted | no | no |
 | Tool stdout | untrusted | no | no |
 | Spawned worker (`agentik spawn`, yolo under the floor, `AGENTIK_DEPTH=1`) | untrusted, bounded | no (never spawns, never sets a goal) | denied at the harness; a violation is an incident |
-| Reviewer (`agentik review`, same gate, empty context) | trusted tools, untrusted inputs | no | no (memory · skill_manage · incident · read_file only) |
+| Reviewer (`agentik review`, same gate, empty context) | trusted tools, untrusted inputs | no | no (memory · skill_manage · incident · read_file · search_code only) |
 | Code index (`<home>/index/<slug>.sqlite`, `agentik index` / `search` output) | untrusted cache of workspace files, never sealed | no | no |
 
 ## Controls
@@ -43,7 +43,10 @@ Untrusted content is **data**, never the instruction channel. High-blast-radius 
    every quoted line is re-read from the live file, secret-scanned and returned as untrusted data.
    Regex patterns come from workers: bounded in length and shape (no backreference, lookbehind or
    nested quantifier), in candidates (≤300 files) and in wall clock (1.5 s), so a pattern cannot
-   pin the process.
+   pin the process. `search_code` hits enter a task context only when the worker asks, scanned
+   per call like a `read_file`; the planner and a spawned worker get the repo map (paths and
+   exported symbols, never a body line) as DATA, and the spawn hint line is static agentik text
+   that interpolates only the human-given root.
 
 ## Sources (retrieved and attributed)
 

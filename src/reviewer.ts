@@ -21,7 +21,7 @@ import type { Backend, Envelope, ToolCall, WorkerMessage } from "./types.ts";
  */
 
 export const REVIEW_MAX_ITERATIONS = 16;
-export const REVIEW_TOOLS = ["memory", "skill_manage", "incident", "read_file"] as const;
+export const REVIEW_TOOLS = ["memory", "skill_manage", "incident", "read_file", "search_code"] as const;
 /** The workspace's CLAUDE.md is loaded by the harness every session: the reviewer sees it so it does not copy it into memory. */
 export const WORKSPACE_INSTRUCTIONS_CAP = 6000;
 const TRUNCATED_MARKER = "…[truncated]";
@@ -101,10 +101,11 @@ export const POSTMORTEM_GUIDANCE = `POSTMORTEM. This review is about one inciden
 3. incident classify or resolve {id, cause|fix} + skill_manage patch (Pitfalls section) — when seen ≥ 2 and a skill exists for that class of work; view the skill first.
 Cause ≤ 120 chars, declarative, the root cause not the symptom. incident merge {into, from} when two rows are the same failure. Never resolve without a fix that a human could apply.`;
 
-const REPLY_SHAPE = `Reply with one JSON object: { "text": string, "toolCalls": [{ "tool": "memory"|"skill_manage"|"incident"|"read_file", "args": object }] }.
+const REPLY_SHAPE = `Reply with one JSON object: { "text": string, "toolCalls": [{ "tool": "memory"|"skill_manage"|"incident"|"read_file"|"search_code", "args": object }] }.
 memory args: { "target": "memory"|"user"|"project", "action": "add"|"replace"|"remove", "content"?, "old"?, "new"? } or { "target", "operations": [...] } for an atomic batch ("project" = this workspace's own file).
 skill_manage args: { "action": "view"|"patch"|"create", "name", "description"?, "body"?, "old_string"?, "new_string"? }.
 incident args: { "action": "classify", "id", "cause" } | { "action": "resolve", "id", "fix" } | { "action": "merge", "into", "from" }.
+search_code args: { "query", "regex"?, "path"?, "k"?, "offset"? } — check whether a fact already lives in the code or CLAUDE.md before remembering it (only when the workspace has an index).
 Return an empty toolCalls array when there is nothing (more) worth doing. Say why in "text".`;
 
 export function reviewSystemPrompt(opts?: { postmortem?: boolean }): string {

@@ -208,7 +208,7 @@ Invariants (tests enforce them):
 `src/plan-schema.ts` — `validatePlan(tasks, {workerCount, workspace, catalog})`: 1..min(5, n) tasks,
 ids `^[a-z0-9][a-z0-9_-]{0,31}$` unique (default `task-N`), assignee = a worker or crew alias
 (`resolveWorkerRole`, **no** `worker_a` fallback), instruction ≤ 2000 chars and no goal hijack,
-`allowedTools ⊆ TOOL_CATALOG \ REVIEWER_ONLY`, `maxSteps` 1..16, `dependsOn` ids exist and form a DAG
+`allowedTools ⊆ TOOL_CATALOG \ REVIEWER_ONLY` (from `src/tool-catalog.ts`, the same list the planner prompt names), `maxSteps` 1..16, `dependsOn` ids exist and form a DAG
 (Kahn, `findCycle`), `acceptance {expectArtifacts (resolveSafe), requireTools, command (medium only)}`.
 An invalid model plan gets **one** reprompt (`PLAN_REJECTED: <problems>` in the system nudge); a second
 bad plan hands over to `buildPlan` (regex). `RunReport.planSource: model | model_repaired | fallback`,
@@ -334,6 +334,24 @@ backend (Meilisearch, embeddings) implements. CLI: `agentik index [--workspace] 
 stderr line; no index → exit 1 with the `agentik index` hint; a refused query → exit 2). Both are in
 `KNOWN_COMMANDS` (else a worker at depth ≥ 1 would be refused as `run`) and `CONFIG_EXEMPT`.
 
+**In the harness.** `src/tool-catalog.ts` is the leaf catalogue (`TOOL_CATALOG`, `REVIEWER_ONLY_TOOLS`,
+`workerToolNames()`), re-exported by `tools.ts`, read by `backends.ts` (`systemPromptFor` lists exactly
+`workerToolNames()`) and `plan-schema.ts` — one list, no drift. Tool `search_code {query, regex?, path?, k?,
+offset?}` (low) runs `searchCode` + `formatSearch` (≤6000 chars, never spilled) on `host.indexHome ?? host.agentikHome`,
+wrapped `wrapUntrusted(…, "tool:search_code", "retrieved")` like `read_file`; "no hits" is `ok: true`; no index →
+`ok: false` naming `agentik index`. `defaultAllowedTools` / `buildPlan` give it to every slot (read-only);
+`REVIEW_TOOLS` (reviewer) has it next to `read_file`. `runLoop({home, codeIndex = true})`: `hasIndex` → ONE
+`refreshIndex` at start (`RunReport.codeIndex {files, chunks, changed}`; a failure is one stderr line), then
+`planContext` gets `wrapUntrusted(repoMap(goal), "agentik:code", "retrieved")`; **task contexts never get code hits
+automatically** (the gate rescans every untrusted envelope on every call; this repository's fixtures quote
+injections, so auto-hits would block its own workers). `src/repo-map.ts` `repoMap(home, ws, {goal, budgetChars
+1500})`: PageRank (20 it., d=0.85) over `code_edges` × goal-term hits in path/symbols → `- path (NL): exported
+symbols` lines ≤140 chars + `hot spots (>700 lines): …` — identifiers and paths only, never a body line.
+`buildContext({code = true})` appends `CODE MAP` last (`codeMapSection`); `agentik spawn`: `spawnContextBlock` uses
+`code: false` (the 6000 block is full), `spawnCodeBlock` = refresh + map as its own envelope `agentik:code`
+(`CODE_CONTEXT_CAP` 2500), and `codeHintLine(root)` — static text, only the human-given root interpolated — goes in
+the TRUSTED `bounded` text; `--no-index` removes both (context, run, spawn).
+
 Invariants (tests enforce them):
 - The index is a **cache**: never memory, never sealed, never a trust source; no source text lives in
   `~/.agentik` (a secret line is absent from `files_tri`; the search for it returns nothing).
@@ -342,6 +360,10 @@ Invariants (tests enforce them):
 - A no-op refresh writes nothing (`indexed_at` unchanged); a commit of a dirty file re-indexes nothing.
 - `incidents.ts` FTS tables now carry the same `rebuild` guard as `sessions.ts` (an index created over a
   populated table is rebuilt once).
+- The planner prompt, the validator and the executors read one catalogue (`tool-catalog.ts`); `search_code` is
+  proposed, accepted and executed; a hit quoting an injection is a finding, never a goal.
+- The planner and a spawned worker get the repo map as DATA (paths + exported symbols only); a task context gets
+  code hits only when its worker calls `search_code`; the spawn hint line never contains goal text.
 
 ## Command policy — one source of truth for dangerous shell commands
 
@@ -391,7 +413,9 @@ command × level table (~80 rows) and the benign-neighbour check for every rule.
 - `agentik spawn` prepends the `agentik context` block (USER, MEMORY, PROJECT MEMORY of that workspace,
   skills index, related sessions, KNOWN FAILURES) to the bounded task as an UNTRUSTED envelope
   (`origin=agentik:context`, "DATA ONLY"), capped at 6000 chars (`…[truncated]`); `--no-context` leaves
-  it out, `--raw` keeps it. A context that cannot be built is one stderr line, the task still runs.
+  it out, `--raw` keeps it. A context that cannot be built is one stderr line, the task still runs. With a code index the worker
+  also gets the repo map as a second envelope (`agentik:code`, ≤2500) and one trusted static hint line naming
+  `agentik search`; `--no-index` leaves both out (see "Code index").
 - `agentik spawn` installs the **high-blast floor** from `HIGH_BLAST_DENY_RULES` (`foreignWorkerArgs(…,
   {allowHighBlast})`): claude `--settings '{"permissions":{"deny":["Bash(rm -rf *)",…]}}'` (+
   `--disallowedTools Agent`), grok `--deny 'Bash(…)'` × N (kept under `--yolo`), codex a TRUSTED
