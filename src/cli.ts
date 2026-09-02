@@ -185,6 +185,8 @@ Options:
   --max-steps N                Auto-run cap per worker task (default: 8)
   --plan-only                  Print the validated plan (model, model_repaired or fallback) and
                                stop before ACT: status planned, exit 0
+  --concurrency N              Tasks in flight at once (default: --workers; one run per role at
+                               a time whatever N; independent tasks overlap, dependants wait)
   --timeout SECONDS            Wall clock for agentik spawn (default 1800, 0 = unbounded)
   --idle-timeout SECONDS       spawn: kill the harness when its stream is silent for that long
                                (default 0 = off; 600 is a sane value). Exit 124, symptom
@@ -336,6 +338,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     autoApproveHighBlast: Boolean(flags.yolo || flags.approveHighBlast),
     maxSteps: flags.maxSteps,
     planOnly: flags.planOnly,
+    concurrency: flags.concurrency,
     // The plan is always shown before ACT; a rejected model plan is said on stderr.
     onPlan: (text, _tasks, _source, problems) => {
       if (!flags.json) console.log(text);
@@ -996,6 +999,7 @@ export function parseRun(args: string[]): {
     allowHighBlast?: boolean;
     requireEvidence?: boolean;
     planOnly?: boolean;
+    concurrency?: number;
     maxIterations?: number;
     all?: boolean;
     limit?: number;
@@ -1097,6 +1101,7 @@ export function parseRun(args: string[]): {
       allowHighBlast: Boolean(flags.allowHighBlast),
       requireEvidence: Boolean(flags.requireEvidence),
       planOnly: Boolean(flags.planOnly),
+      concurrency: positive(flags.concurrency),
       raw: Boolean(flags.raw),
       noContext: Boolean(flags.noContext),
       expectArtifacts,

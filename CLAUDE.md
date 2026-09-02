@@ -178,6 +178,18 @@ orchestrator` (medium only, validated by the plan schema); a failed acceptance i
 as DATA. `formatReport` prints the whole synthesis and a `tasks:` block with status, duration, steps,
 ran, acceptance.
 
+## DAG scheduler (`agentik run`)
+
+`src/scheduler.ts` (pure): `runDag(tasks, {concurrency, keyOf, run, blocked, shouldStop, skipped})`.
+Ready = every dependency `done` and no run of the same key (the worker role) in flight; at most
+`concurrency` in flight, `Promise.race` starts the next ready task at once; a dependency that ended
+other than `done` → synthetic `blocked` with no model call; results in plan order. Concurrency model
+(header of the file): one thread, interleaving only at the `await`s of backends and tools, shared
+mutations synchronous, ids unique, **one run in flight per role**. `--concurrency N` (default =
+`--workers`). A task waiting for an approval is `blocked`, blocks only its dependants, and the run
+stays `awaiting_approval` (exit 4); `--yolo` / `--approve-high-blast` are session approvals,
+`decisions[]` are consumed by the first task that asks. `report.tasks` / `taskResults` keep plan order.
+
 ## Tool output spill (`agentik run`)
 
 `src/tool-results.ts`: a tool output over `TOOL_OUTPUT_INLINE_MAX` (8000 chars) is written whole

@@ -210,6 +210,10 @@ non-destructive check command). One `PLAN_REJECTED` reprompt, then the regex pla
 `plan: model | model_repaired | fallback` and lists the problems; `--plan-only` prints the plan and
 stops.
 
+**Tasks run in parallel along the plan's dependencies.** A pure scheduler starts every task whose
+dependencies are done, up to `--concurrency N` (default: the worker count) and never two runs of
+the same worker at once; a task blocked on an approval holds back only its dependants.
+
 **Each task has its own context and a structured result.** A task sees the goal, the results of
 the tasks it depends on (as data) and its own tool outputs — not the whole run's. It ends as a
 `TaskResult` (status `done | stalled | blocked | failed`, summary, artifacts, every call with its
