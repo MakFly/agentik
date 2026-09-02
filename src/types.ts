@@ -107,6 +107,11 @@ function crewAliasMap(): Record<string, WorkerRole> {
 
 const CREW_ALIASES = crewAliasMap();
 
+/** Strict: a name that is not a worker or a crew alias is undefined, never worker_a. */
+export function resolveWorkerRole(value: string): WorkerRole | undefined {
+  return CREW_ALIASES[value.trim().toLowerCase()];
+}
+
 export function normalizeWorkerRole(value: string): WorkerRole {
   const v = value.trim().toLowerCase();
   return CREW_ALIASES[v] ?? "worker_a";
@@ -118,6 +123,7 @@ export type Phase = "plan" | "act" | "synthesize";
 export type RunStatus =
   | "idle"
   | "planning"
+  | "planned"
   | "delegating"
   | "acting"
   | "awaiting_approval"
@@ -134,12 +140,25 @@ export interface Goal {
   createdAt: string;
 }
 
+/** What proves a task done, beyond "the worker stopped proposing tools". */
+export interface TaskAcceptance {
+  /** Workspace paths that must be created, modified or deleted by the task. */
+  expectArtifacts?: string[];
+  /** The task must have executed at least one tool. */
+  requireTools?: boolean;
+  /** A medium command run by the orchestrator after the task; exit 0 = accepted. */
+  command?: string;
+}
+
 export interface BoundedTask {
   id: string;
   assignee: WorkerRole;
   instruction: string;
   allowedTools: string[];
   maxSteps: number;
+  /** Task ids that must be done first. */
+  dependsOn?: string[];
+  acceptance?: TaskAcceptance;
 }
 
 export interface Envelope {
@@ -288,6 +307,10 @@ export interface RunReport {
   artifacts: string[];
   synthesis: string;
   events: OrchEvent[];
+  /** Where the plan came from: the model, the model after one PLAN_REJECTED reprompt, or the regex planner. */
+  planSource: "model" | "model_repaired" | "fallback";
+  /** Why the model plan(s) were rejected, when they were. */
+  planProblems: string[];
 }
 
 export interface GoalClass {
@@ -300,10 +323,13 @@ export interface GoalClass {
 export interface WorkerMessage {
   text: string;
   tasks?: Array<{
+    id?: string;
     assignee: WorkerRole;
     instruction: string;
     allowedTools?: string[];
     maxSteps?: number;
+    dependsOn?: string[];
+    acceptance?: TaskAcceptance;
   }>;
   toolCalls?: ToolCallDraft[];
   claims?: ClaimDraft[];

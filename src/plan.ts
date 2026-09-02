@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   clampSubagentCount,
   DEFAULT_MAX_STEPS,
@@ -48,13 +47,19 @@ export function buildPlan(goalText: string, workerCount = 2): BoundedTask[] {
   const cls = classifyGoal(goalText);
   const tasks: BoundedTask[] = [];
 
+  // Fixed ids and a fixed shape: b and c wait for a (they verify / debug its artifacts), e waits
+  // for everyone (final pass); d is independent (reads or fetches).
+  const LETTERS = ["a", "b", "c", "d", "e"] as const;
   const add = (assignee: WorkerRole, instruction: string, tools: string[]) => {
+    const letter = LETTERS[tasks.length];
+    const dependsOn = letter === "b" || letter === "c" ? ["task-a"] : letter === "e" ? tasks.map((t) => t.id) : [];
     tasks.push({
-      id: `task-${randomUUID().slice(0, 8)}`,
+      id: `task-${letter}`,
       assignee,
       instruction,
       allowedTools: tools,
       maxSteps: DEFAULT_MAX_STEPS,
+      ...(dependsOn.length ? { dependsOn } : {}),
     });
   };
 

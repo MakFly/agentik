@@ -183,6 +183,8 @@ Options:
                                Backends for extra subagents
   --yolo                       Session approval (you launched yolo) + live CLIs
   --max-steps N                Auto-run cap per worker task (default: 8)
+  --plan-only                  Print the validated plan (model, model_repaired or fallback) and
+                               stop before ACT: status planned, exit 0
   --timeout SECONDS            Wall clock for agentik spawn (default 1800, 0 = unbounded)
   --idle-timeout SECONDS       spawn: kill the harness when its stream is silent for that long
                                (default 0 = off; 600 is a sane value). Exit 124, symptom
@@ -333,8 +335,18 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     fetchImpl: live ? defaultFetchImpl() : undefined,
     autoApproveHighBlast: Boolean(flags.yolo || flags.approveHighBlast),
     maxSteps: flags.maxSteps,
+    planOnly: flags.planOnly,
+    // The plan is always shown before ACT; a rejected model plan is said on stderr.
+    onPlan: (text, _tasks, _source, problems) => {
+      if (!flags.json) console.log(text);
+      for (const p of problems) console.error(`agentik: plan problem — ${p}`);
+    },
   });
 
+  if (flags.planOnly) {
+    if (flags.json) console.log(JSON.stringify(report, null, 2));
+    return 0;
+  }
   if (flags.json) {
     console.log(JSON.stringify(report, null, 2));
   } else {
@@ -983,6 +995,7 @@ export function parseRun(args: string[]): {
     idleTimeout?: number;
     allowHighBlast?: boolean;
     requireEvidence?: boolean;
+    planOnly?: boolean;
     maxIterations?: number;
     all?: boolean;
     limit?: number;
@@ -1024,6 +1037,7 @@ export function parseRun(args: string[]): {
     else if (a === "--require-tools") flags.requireTools = true;
     else if (a === "--allow-high-blast") flags.allowHighBlast = true;
     else if (a === "--require-evidence") flags.requireEvidence = true;
+    else if (a === "--plan-only") flags.planOnly = true;
     else if (a === "--raw") flags.raw = true;
     else if (a === "--no-context") flags.noContext = true;
     else if (a === "--link-harness") flags.linkHarness = true;
@@ -1082,6 +1096,7 @@ export function parseRun(args: string[]): {
       requireTools: Boolean(flags.requireTools),
       allowHighBlast: Boolean(flags.allowHighBlast),
       requireEvidence: Boolean(flags.requireEvidence),
+      planOnly: Boolean(flags.planOnly),
       raw: Boolean(flags.raw),
       noContext: Boolean(flags.noContext),
       expectArtifacts,

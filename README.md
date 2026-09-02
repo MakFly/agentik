@@ -203,6 +203,13 @@ more, `agentik spawn` and `agentik run` refuse (exit 2, incident `nested agentik
 depth 1`) before probing anything. That is agent #6 by another route, and it is closed on both sides:
 the harness deny rules also cover `agentik spawn|run`.
 
+**The plan is validated, not trusted.** A model plan must pass a schema (ids, known assignees — an
+unknown name is a problem, never silently `worker_a` — allowed tools from the catalog, `maxSteps`
+1..16, `dependsOn` forming a DAG, an `acceptance` block with artifacts / required tools / a
+non-destructive check command). One `PLAN_REJECTED` reprompt, then the regex planner. The report says
+`plan: model | model_repaired | fallback` and lists the problems; `--plan-only` prints the plan and
+stops.
+
 **Big tool outputs go to disk.** Over 8000 chars, a tool result is written to
 `.agentik/tool-results/<callId>.txt` (secrets and injections masked per line) and the model sees head +
 a `read_file {path, offset, limit}` pointer + tail; the injection scan still covers the whole body.

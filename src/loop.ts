@@ -1,6 +1,7 @@
 import { BackendError, systemPromptFor } from "./backends.ts";
 import { Orchestrator } from "./orchestrator.ts";
 import { buildPlan } from "./plan.ts";
+import { formatPlan, validatePlan, type PlanSource } from "./plan-schema.ts";
 import { normalizeClaims } from "./sources.ts";
 import { spillToolResult } from "./tool-results.ts";
 import { executeTool } from "./tools.ts";
@@ -23,7 +24,6 @@ import {
   clampSubagentCount,
   DEFAULT_MAX_STEPS,
   MAX_SUBAGENTS,
-  normalizeWorkerRole,
   SUBAGENT_ROLES,
 } from "./types.ts";
 
@@ -44,6 +44,10 @@ export interface LoopConfig {
   maxSteps?: number;
   /** Session approval: every high-blast tool in this run is released (CLI --yolo). */
   autoApproveHighBlast?: boolean;
+  /** Stop after the plan: no ACT, no synthesis; status `planned`. */
+  planOnly?: boolean;
+  /** Called with the plan before ACT (the CLI prints it). */
+  onPlan?: (text: string, tasks: BoundedTask[], source: PlanSource, problems: string[]) => void;
 }
 
 function workerPool(opts: LoopConfig): Backend[] {
@@ -65,6 +69,8 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
   const decisionQ = [...(opts.decisions ?? [])];
   let claimDrafts: RunReport["claims"] = [];
   let synthesis = "";
+  let planSource: PlanSource = "fallback";
+  let planProblems: string[] = [];
 
   const submitted = orch.submitGoal(opts.goal);
   if (!submitted.ok) {
@@ -78,6 +84,8 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
       switches,
       claims: [],
       synthesis: "goal rejected: prompt injection / goal hijack",
+      planSource,
+      planProblems,
     });
   }
 
@@ -338,22 +346,49 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
     });
   }
   const fallback = buildPlan(orch.goalText(), workerCount);
-  let tasks: BoundedTask[] =
-    planMsg.tasks && planMsg.tasks.length >= Math.min(2, workerCount)
-      ? planMsg.tasks.slice(0, MAX_SUBAGENTS).map((t, i) => ({
-          id: `task-${i + 1}`,
-          assignee: normalizeWorkerRole(t.assignee),
-          instruction: t.instruction,
-          allowedTools: t.allowedTools ?? fallback[i]?.allowedTools ?? [],
-          maxSteps: t.maxSteps ?? DEFAULT_MAX_STEPS,
-        }))
-      : fallback;
-
-  tasks = tasks.slice(0, workerCount);
-  if (tasks.length < workerCount) {
-    tasks = fallback;
+  // The model's plan is DATA until it passes the schema. One reprompt names the problems; a second
+  // bad plan hands over to the regex planner, and the report says so.
+  let tasks: BoundedTask[] = fallback;
+  const validateOpts = { workerCount, workspace: opts.workspace };
+  const withDefaultTools = (t: BoundedTask, i: number): BoundedTask =>
+    t.allowedTools.length ? t : { ...t, allowedTools: fallback[i]?.allowedTools ?? fallback[0]?.allowedTools ?? ["read_file"] };
+  if (planRes.ok && planMsg.tasks) {
+    const first = validatePlan(planMsg.tasks, validateOpts);
+    if (first.ok) {
+      tasks = first.tasks.map(withDefaultTools);
+      planSource = "model";
+    } else {
+      planProblems = first.problems;
+      const retry = await invoke(planner, "plan", undefined, { nudge: `PLAN_REJECTED: ${first.problems.join("; ")}. Reply with a corrected tasks[] only.` });
+      const second = retry.ok && retry.msg.tasks ? validatePlan(retry.msg.tasks, validateOpts) : { ok: false as const, problems: [retry.ok ? "second plan had no tasks" : `planner unavailable: ${retry.reason}`] };
+      if (second.ok) {
+        tasks = second.tasks.map(withDefaultTools);
+        planSource = "model_repaired";
+      } else {
+        planProblems = [...planProblems, ...second.problems.map((p) => `retry: ${p}`)];
+        tasks = fallback;
+        planSource = "fallback";
+      }
+    }
   }
   orch.delegate(tasks);
+  opts.onPlan?.(formatPlan(tasks, planSource, planProblems), tasks, planSource, planProblems);
+  if (opts.planOnly) {
+    orch.status = "planned";
+    return report(orch, {
+      workersInvoked,
+      executed,
+      blocked,
+      artifacts,
+      sources,
+      stalled,
+      switches,
+      claims: claimDrafts,
+      synthesis: "plan only",
+      planSource,
+      planProblems,
+    });
+  }
 
   if (consumeOverride() && orch.isStopped()) {
     return report(orch, {
@@ -366,6 +401,8 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
       switches,
       claims: claimDrafts,
       synthesis: "overridden by orchestrator",
+      planSource,
+      planProblems,
     });
   }
 
@@ -417,6 +454,8 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
       switches,
       claims: claimDrafts,
       synthesis: "overridden by orchestrator",
+      planSource,
+      planProblems,
     });
   }
 
@@ -457,6 +496,8 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
     switches,
     claims: claimDrafts,
     synthesis,
+    planSource,
+    planProblems,
   });
 }
 
@@ -471,8 +512,9 @@ export function formatReport(r: RunReport): string {
     ...r.workersInvoked.map(
       (w) => `  - ${w.role} (${w.backend}) ${w.phase}${w.taskId ? " " + w.taskId : ""}`,
     ),
+    `plan: ${r.planSource}${r.planProblems.length ? ` (${r.planProblems.length} problem(s) with the model plan)` : ""}`,
     "tasks:",
-    ...r.tasks.map((t) => `  - ${t.id} ${t.assignee} tools=${t.allowedTools.join(",")}`),
+    ...r.tasks.map((t) => `  - ${t.id} ${t.assignee} tools=${t.allowedTools.join(",")}${t.dependsOn?.length ? ` after=${t.dependsOn.join(",")}` : ""}`),
     "executed:",
     ...(r.executedTools.length
       ? r.executedTools.map((t) => `  - ${t.tool}${t.artifact ? " -> " + t.artifact : ""}`)
@@ -524,6 +566,8 @@ function report(
     switches: BackendSwitch[];
     claims: RunReport["claims"];
     synthesis: string;
+    planSource: RunReport["planSource"];
+    planProblems: string[];
   },
 ): RunReport {
   return {
@@ -543,5 +587,7 @@ function report(
     artifacts: bits.artifacts,
     synthesis: bits.synthesis,
     events: orch.events,
+    planSource: bits.planSource,
+    planProblems: bits.planProblems,
   };
 }

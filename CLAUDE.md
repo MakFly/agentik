@@ -149,6 +149,19 @@ Invariants (tests enforce them):
 - Code never writes MEMORY.md, a cause, or a fix on its own: the review (a model) or a human does.
   The reviewer's memory guidance routes transient failures to the incident log, not to memory.
 
+## Plan schema (`agentik run`)
+
+`src/plan-schema.ts` — `validatePlan(tasks, {workerCount, workspace, catalog})`: 1..min(5, n) tasks,
+ids `^[a-z0-9][a-z0-9_-]{0,31}$` unique (default `task-N`), assignee = a worker or crew alias
+(`resolveWorkerRole`, **no** `worker_a` fallback), instruction ≤ 2000 chars and no goal hijack,
+`allowedTools ⊆ TOOL_CATALOG \ REVIEWER_ONLY`, `maxSteps` 1..16, `dependsOn` ids exist and form a DAG
+(Kahn, `findCycle`), `acceptance {expectArtifacts (resolveSafe), requireTools, command (medium only)}`.
+An invalid model plan gets **one** reprompt (`PLAN_REJECTED: <problems>` in the system nudge); a second
+bad plan hands over to `buildPlan` (regex). `RunReport.planSource: model | model_repaired | fallback`,
+`planProblems[]` (report + stderr `agentik: plan problem — …`). `buildPlan` emits `task-a…e` with
+deps b,c ← a; e ← all. The plan is always printed before ACT (`onPlan` → `formatPlan`); `--plan-only`
+prints it, status `planned`, exit 0, no ACT.
+
 ## Tool output spill (`agentik run`)
 
 `src/tool-results.ts`: a tool output over `TOOL_OUTPUT_INLINE_MAX` (8000 chars) is written whole
