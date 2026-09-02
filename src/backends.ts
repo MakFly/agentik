@@ -248,7 +248,14 @@ export function decodeGrokStdout(stdout: string): WorkerMessage {
  */
 export const GROK_DISALLOWED_TOOLS =
   "run_terminal_command,search_replace,write,read_file,web_fetch,web_search,Agent";
-export const CLAUDE_DISALLOWED_TOOLS = "Bash,Edit,Write,Read,WebFetch,WebSearch,Agent";
+/**
+ * Belt only: the gated claude worker runs with `--tools ""` (no built-in tool at all), because a
+ * deny LIST leaks — the first live A/B (bench/index-ab) showed a worker exploring the repository
+ * through Grep/Glob for 17 turns with zero call through the gate. Names still listed for older
+ * binaries without `--tools`.
+ */
+export const CLAUDE_DISALLOWED_TOOLS =
+  "Bash,Edit,Write,Read,Grep,Glob,MultiEdit,NotebookEdit,NotebookRead,WebFetch,WebSearch,Agent,Task,Skill";
 
 /** Upper bound on agentic turns inside one gated `--single` invocation. */
 export const GROK_MAX_TURNS = "24";
@@ -292,7 +299,8 @@ export function grokCliArgs(prompt: string, cwd?: string): string[] {
 
 /**
  * Gated claude worker: it proposes JSON tool calls and owns no native tool, so it runs in
- * `--restricted` mode with the host tools denied. No `--dangerously-skip-permissions` here —
+ * `--restricted` mode with `--tools ""` (every built-in tool off: Grep and Glob included, which
+ * a deny list alone let through) plus the deny list as a belt. No `--dangerously-skip-permissions` here —
  * claude rejects "bypassPermissions" together with `--restricted` (exit 1), and a worker with
  * no tools has nothing to bypass. That combination shipped untested until the first real
  * `agentik review` ran on it.
@@ -310,6 +318,8 @@ export function claudeCliArgs(prompt: string, model: string): string[] {
     "--json-schema",
     JSON.stringify(WORKER_JSON_SCHEMA),
     "--restricted",
+    "--tools",
+    "",
     "--disallowedTools",
     CLAUDE_DISALLOWED_TOOLS,
   ];

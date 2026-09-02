@@ -1,0 +1,1 @@
+Diagnostic only, modify no file: explain how memory sealing works in this repository. Name the module that writes memory/.seal.json, the function that detects an out-of-band modification, and every operation that refuses on a diverged seal. Cite file paths with line ranges for each claim.

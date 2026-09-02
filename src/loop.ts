@@ -319,6 +319,7 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
     const host = {
       workspace: opts.workspace,
       indexHome: opts.home,
+      codeIndex: opts.codeIndex !== false,
       fetchImpl: opts.fetchImpl,
       approved,
       onRetrieved: (url: string, body: string) => {

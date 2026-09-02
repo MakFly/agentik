@@ -92,6 +92,11 @@ describe("CLI envelope unwrap (shipped decodeGrokStdout / decodeClaudeStdout)", 
     expect(args[args.indexOf("--effort") + 1]).toBe("high");
     expect(args).toContain("--disallowedTools");
     expect(args).toContain("--restricted");
+    // No built-in tool at all: a deny list leaks (Grep/Glob explored the repo outside the gate).
+    expect(args[args.indexOf("--tools") + 1]).toBe("");
+    for (const t of ["Grep", "Glob", "Read", "Bash", "Agent"]) {
+      expect(args[args.indexOf("--disallowedTools") + 1].split(",")).toContain(t);
+    }
   });
 
   test("Codex CLI args match cc (codex --yolo exec) and keep JSON schema", () => {

@@ -1,0 +1,17 @@
+              no-index              index
+status        completed             completed
+exit          —                     undefined
+duration s    77.3                  115.4
+tokens in     18                    30
+  cached in   172075                244265
+tokens out    6635                  15303
+cost $        0.2290                0.3591
+invocations   3                     5
+tool calls    0                     1
+search_code   0                     0
+read_file     0                     1
+run_command   0                     0
+shaped chars  0                     0
+code index    off                   207 files
+plan source   model                 model
+tasks         seal-diagnostic:failedread-seal-module:done find-seal-consumers:failed

@@ -8,7 +8,11 @@ import type { ToolCall } from "./types.ts";
  *
  *   - same call (tool + canonical args) failed twice  → warning in the task context
  *   - same call failed three times                     → blocked: repeated_failing_call
- *   - same result hash three times in a row (any call) → blocked: no_progress
+ *   - same result hash three times in a row, and this call is one of the calls that produced
+ *     them → blocked: no_progress. A call with NEW arguments always runs: a refused call never
+ *     reaches `after`, so without this a task whose first three calls were refused identically
+ *     (seen live: `pattern` instead of `query`) could never run its corrected call — every
+ *     later call was refused with no_progress for the rest of the task.
  */
 
 export const REPEAT_WARN_AT = 2;
@@ -42,7 +46,7 @@ export interface GuardVerdict {
 
 export class ToolGuard {
   private readonly failures = new Map<string, number>();
-  private readonly recentResults: string[] = [];
+  private readonly recentResults: { call: string; result: string }[] = [];
   private lastWarnedFor?: string;
 
   before(call: Pick<ToolCall, "tool" | "args">): GuardVerdict {
@@ -55,7 +59,8 @@ export class ToolGuard {
       this.lastWarnedFor = h;
       return { warn: `warning: ${call.tool} with these exact arguments already failed ${n} times; a third failure blocks it` };
     }
-    if (this.recentResults.length >= NO_PROGRESS_AT && new Set(this.recentResults.slice(-NO_PROGRESS_AT)).size === 1) {
+    const recent = this.recentResults.slice(-NO_PROGRESS_AT);
+    if (recent.length >= NO_PROGRESS_AT && new Set(recent.map((r) => r.result)).size === 1 && recent.some((r) => r.call === h)) {
       return { block: `no_progress: the last ${NO_PROGRESS_AT} tool results were identical — the task is looping; change approach or stop` };
     }
     return {};
@@ -65,7 +70,7 @@ export class ToolGuard {
     const h = callHash(call.tool, call.args);
     if (ok) this.failures.delete(h);
     else this.failures.set(h, (this.failures.get(h) ?? 0) + 1);
-    this.recentResults.push(resultHash(`${ok ? "ok" : "fail"}\n${output}`));
+    this.recentResults.push({ call: h, result: resultHash(`${ok ? "ok" : "fail"}\n${output}`) });
     if (this.recentResults.length > NO_PROGRESS_AT) this.recentResults.shift();
   }
 }

@@ -46,6 +46,24 @@ describe("ToolGuard", () => {
     g.after(b, true, "different");
     expect(g.before(a)).toEqual({});
   });
+
+  test("no_progress never blocks a call with new arguments: a refused call never reaches after()", () => {
+    const g = new ToolGuard();
+    const wrong = { tool: "search_code", args: { pattern: "x" } };
+    for (let i = 0; i < 3; i++) g.after(wrong, false, "search_code: query is required");
+    expect(g.before(wrong).block).toContain("repeated_failing_call");
+    // The corrected call is new: it must run (before the fix every later call was refused for good).
+    const fixed = { tool: "search_code", args: { query: "x" } };
+    expect(g.before(fixed)).toEqual({});
+    const other = { tool: "read_file", args: { path: "a" } };
+    expect(g.before(other)).toEqual({});
+    // Once the new call joins the identical streak it is a loop again.
+    g.after(fixed, true, "same");
+    g.after(fixed, true, "same");
+    g.after(fixed, true, "same");
+    expect(g.before(fixed).block).toContain("no_progress");
+    expect(g.before(other)).toEqual({});
+  });
 });
 
 describe("fs_destructive executor: bounded and double-locked", () => {

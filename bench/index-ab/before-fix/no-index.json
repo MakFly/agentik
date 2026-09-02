@@ -1,0 +1,243 @@
+{
+  "status": "completed",
+  "goal": {
+    "id": "goal-1",
+    "text": "Diagnostic only, modify no file: explain how memory sealing works in this repository. Name the module that writes memory/.seal.json, the function that detects an out-of-band modification, and every operation that refuses on a diverged seal. Cite file paths with line ranges for each claim.",
+    "submittedBy": "orchestrator",
+    "createdAt": "2026-09-02T15:19:32.991Z"
+  },
+  "originalGoalText": "Diagnostic only, modify no file: explain how memory sealing works in this repository. Name the module that writes memory/.seal.json, the function that detects an out-of-band modification, and every operation that refuses on a diverged seal. Cite file paths with line ranges for each claim.",
+  "workersInvoked": [
+    {
+      "role": "worker_a",
+      "phase": "plan",
+      "backend": "claude-sonnet",
+      "usage": {
+        "inputTokens": 2,
+        "cachedInputTokens": 10078,
+        "outputTokens": 2050,
+        "costUsd": 0.0444656,
+        "turns": 2,
+        "durationMs": 23172
+      },
+      "durationMs": 24217
+    },
+    {
+      "role": "worker_a",
+      "phase": "act",
+      "backend": "claude-sonnet",
+      "taskId": "seal-diagnostic",
+      "usage": {
+        "inputTokens": 14,
+        "cachedInputTokens": 150298,
+        "outputTokens": 3352,
+        "costUsd": 0.1496496,
+        "turns": 10,
+        "durationMs": 35938
+      },
+      "durationMs": 36930
+    },
+    {
+      "role": "worker_b",
+      "phase": "synthesize",
+      "backend": "claude-sonnet",
+      "usage": {
+        "inputTokens": 2,
+        "cachedInputTokens": 11699,
+        "outputTokens": 1233,
+        "costUsd": 0.0348618,
+        "turns": 2,
+        "durationMs": 14890
+      },
+      "durationMs": 16132
+    }
+  ],
+  "tasks": [
+    {
+      "id": "seal-diagnostic",
+      "assignee": "worker_a",
+      "instruction": "Diagnostic only, do not modify any file. Investigate how memory sealing works in this repository. Steps: (1) search_code for terms like 'seal.json', '.seal.json', 'Seal', 'seal(', 'diverge', 'divergence', 'out-of-band', 'tamper' to find candidate files. (2) read_file on the matches to identify: (a) the exact module/function that WRITES memory/.seal.json (name + file path + line range), (b) the function that DETECTS an out-of-band modification (compares current state vs stored seal) (name + file path + line range), (c) every distinct operation/command/function in the codebase that checks the seal and REFUSES (errors out, aborts, exits) when the seal has diverged — list each with file path + line range. (3) Produce a concise report: for each of the three categories above, state the claim and cite file_path:line_start-line_end. Do not guess line numbers — only cite ranges you actually read. If something cannot be found, say so explicitly rather than speculating.",
+      "allowedTools": [
+        "search_code",
+        "read_file"
+      ],
+      "maxSteps": 12,
+      "acceptance": {
+        "requireTools": true
+      }
+    }
+  ],
+  "executedTools": [
+    {
+      "tool": "read_file",
+      "args": {
+        "path": "src/memory-seal.ts"
+      },
+      "artifact": "src/memory-seal.ts",
+      "output": "import { createHash } from \"node:crypto\";\nimport { existsSync } from \"node:fs\";\nimport { mkdir, readFile, rename, writeFile } from \"node:fs/promises\";\nimport { dirname, join, relative } from \"node:path\";\nimport { agentikHome, memoryPaths } from \"./home.ts\";\n\n/**\n * Tamper-evident memory. `memory/.seal.json` maps every memory file (`MEMORY.md`, `USER.md`,\n * `projects/<slug>/MEMORY.md`) to the sha256 of what agentik last wrote there. A file whose\n * content no longer matches was modified out of band — by a worker with a shell, by a stray\n * script — and is shown as `[BLOCKED: modified out of band]` until a human runs\n * `agentik memory reseal`; every agentik write to it is refused meanwhile, so the reviewer's\n * next write cannot launder the foreign entry. A file with no seal yet (first run, a fresh\n * home) is accepted and sealed silently.\n *\n * Limits, stated: this is tamper-EVIDENT, not tamper-proof. There is no HMAC because the key\n * would live in the same home as the files; a process that can edit MEMORY.md can edit the\n * seal. It catches mistakes and unprivileged prompt-injected writes, not a root attacker.\n *\n * Writes to the seal are serialized (module mutex) and atomic (tmp + rename): the three\n * snapshots of `buildContext` run in Promise.all.\n */\n\nexport type SealStatus = \"sealed\" | \"unsealed\" | \"diverged\";\n\nexport const SEAL_FILE = \".seal.json\";\n\nlet chain: Promise<unknown> = Promise.resolve();\nfunction locked<T>(fn: () => Promise<T>): Promise<T> {\n  const next = chain.then(fn, fn);\n  chain = next.catch(() => undefined);\n  return next;\n}\n\nexport function sealPath(home?: string): string {\n  return join(memoryPaths(agentikHome(home)).memoryDir, SEAL_FILE);\n}\n\n/** The seal key of a memory file: its path relative to `memory/`. */\nexport function sealKey(file: string, home?: string): string {\n  return relative(memoryPaths(agentikHome(home)).memoryDir, file).split(\"\\\\\").join(\"/\");\n}\n\nexport function digest(content: string): string {\n  return createHash(\"sha256\").update(content).digest(\"hex\");\n}\n\nasync function readSeal(home?: string): Promise<Record<string, string>> {\n  try {\n    const raw = JSON.parse(await readFile(sealPath(home), \"utf8\")) as unknown;\n    return raw && typeof raw === \"object\" && !Array.isArray(raw) ? (raw as Record<string, string>) : {};\n  } catch {\n    return {};\n  }\n}\n\nasync function writeSeal(seal: Record<string, string>, home?: string): Promise<void> {\n  const path = sealPath(home);\n  await mkdir(dirname(path), { recursive: true });\n  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;\n  await writeFile(tmp, `${JSON.stringify(seal, null, 2)}\\n`, \"utf8\");\n  await rename(tmp, path);\n}\n\n/** Record `content` as the sealed state of `key`. */\nexport function sealContent(key: string, content: string, home?: string): Promise<void> {\n  return locked(async () => {\n    const seal = await readSeal(home);\n    seal[key] = digest(content);\n    await writeSeal(seal, home);\n  });\n}\n\n/** Seal a file as it is on disk (a rename, a migration, a human `reseal`); absent file → entry removed. */\nexport function sealFile(file: string, home?: string): Promise<SealStatus> {\n  return locked(async () => {\n    const seal = await readSeal(home);\n    const key = sealKey(file, home);\n    if (!existsSync(file)) {\n      delete seal[key];\n      await writeSeal(seal, home);\n      return \"unsealed\";\n    }\n    seal[key] = digest(await readFile(file, \"utf8\"));\n    await writeSeal(seal, home);\n    return \"sealed\";\n  });\n}\n\nexport function unsealFile(file: string, home?: string): Promise<void> {\n  return locked(async () => {\n    const seal = await readSeal(home);\n    delete seal[sealKey(file, home)];\n    await writeSeal(seal, home);\n  });\n}\n\n/**\n * Compare a file's content with its seal. `unsealed` (no entry) is accepted AND sealed here, so a\n * home that predates the seal is not flagged on its first read.\n */\nexport function checkSeal(file: string, content: string, home?: string): Promise<SealStatus> {\n  return locked(async () => {\n    const seal = await readSeal(home);\n    const key = sealKey(file, home);\n    const have = seal[key];\n    const now = digest(content);\n    if (have === undefined) {\n      seal[key] = now;\n      await writeSeal(seal, home);\n      return \"unsealed\";\n    }\n    return have === now ? \"sealed\" : \"diverged\";\n  });\n}\n\nexport const DIVERGED_BODY = \"[BLOCKED: modified out of band — agentik memory reseal to accept]\";\n"
+    },
+    {
+      "tool": "read_file",
+      "args": {
+        "path": "src/memory-store.ts"
+      },
+      "artifact": "src/memory-store.ts",
+      "output": "import { existsSync } from \"node:fs\";\nimport { copyFile, mkdir, readFile, rename, writeFile } from \"node:fs/promises\";\nimport { dirname, join, resolve } from \"node:path\";\nimport { readConfig } from \"./config.ts\";\nimport { agentikHome, legacyProjectSlug, memoryPaths, projectMemoryPath, projectSlug } from \"./home.ts\";\nimport { checkSeal, DIVERGED_BODY, sealContent, sealFile, sealKey } from \"./memory-seal.ts\";\nimport { resolveWorkspaceRoot } from \"./workspace.ts\";\nimport { detectInjection } from \"./injection.ts\";\nimport { logMemoryOp, type MemoryOpActor } from \"./memory-log.ts\";\nimport { newPendingId, stagePending, type PendingMemoryOp } from \"./pending.ts\";\n\n/**\n * The always-loaded memory files, written by a model through the `memory` tool.\n *\n * MEMORY.md (target `memory`) holds GLOBAL durable facts — true in every project: tool\n * behaviours, CLI quirks, cross-repo lessons. USER.md (target `user`) holds who the user is\n * (preferences, corrections, style). `memory/projects/<slug>/MEMORY.md` (target `project`)\n * holds what is true of ONE workspace only — conventions, paths, test commands — and is never\n * loaded into another workspace's context. All three are capped in characters, and the cap is\n * not a limit that overflows somewhere else: an `add` that would exceed it fails and tells the\n * caller to consolidate first, in the same turn. That single rule is what keeps the file worth\n * loading — Hermes's memory_tool works the same way.\n *\n * Entries are separated by `\\n§\\n` (section sign), may span lines, and are exact-deduplicated.\n * The same masking / dedup / cap / consolidation logic serves every target; only the path differs.\n */\nexport type MemoryTarget = \"memory\" | \"user\" | \"project\";\n\nexport const MEMORY_CAP = 2200;\nexport const USER_CAP = 1375;\nexport const PROJECT_CAP = 2200;\nexport const CAPS: Record<MemoryTarget, number> = { memory: MEMORY_CAP, user: USER_CAP, project: PROJECT_CAP };\n\n/** `workspace` is required for target `project` (its file is per workspace) and ignored otherwise. */\nexport interface MemoryStoreOpts {\n  home?: string;\n  workspace?: string;\n  /** Who writes (journal): the reviewer's tool, the human's pen, an approval, a migration. Default reviewer. */\n  by?: MemoryOpActor;\n  /** The session this write belongs to, when known (journal). */\n  sessionId?: number;\n}\n\n/** Journal a batch after the file is written; a broken journal is one stderr line, never a failed write. */\nasync function journal(target: MemoryTarget, ops: MemoryOperation[], opts: MemoryStoreOpts | undefined, workspace: string | undefined): Promise<void> {\n  const mask = (text: string | undefined) => {\n    if (!text) return undefined;\n    const problem = memoryContentProblem(text);\n    return problem ? `[BLOCKED: ${problem}]` : text;\n  };\n  for (const op of ops) {\n    try {\n      await logMemoryOp(\n        {\n          target,\n          workspace: workspace ? resolve(workspace) : undefined,\n          op: op.action,\n          before: mask(op.action === \"a\n…[20566 chars omitted — full output in .agentik/tool-results/worker_b-read_file-2.txt; read_file {\"path\":\".agentik/tool-results/worker_b-read_file-2.txt\",\"offset\":3000,\"limit\":8000} to page it]…\nconst { recordIncident } = await import(\"./incidents.ts\");\n        await recordIncident(\n          { goal: \"memory integrity\", workspace: opts?.workspace, harness: \"agentik\", symptom: `memory file modified out of band: memory/${key}`, errors: [DIVERGED_MESSAGE(memoryFileLabel(target))] },\n          { home },\n        );\n      } catch (err) {\n        console.error(`agentik: could not record the seal incident: ${err instanceof Error ? err.message : String(err)}`);\n      }\n      const usage = usageOf(parseEntries(sealed.body), target);\n      return { target, header: `${title} [${Math.min(100, usage.percent)}% — ${usage.used}/${usage.cap} chars]`, body: DIVERGED_BODY, usage, blockedCount: 1, diverged: true };\n    }\n  }\n  const entries = await readEntries(target, home, { workspace: opts?.workspace });\n  const usage = usageOf(entries, target);\n  let blockedCount = 0;\n  const shown = entries.map((e) => {\n    const problem = memoryContentProblem(e);\n    if (!problem) return e;\n    blockedCount += 1;\n    return `[BLOCKED: ${problem}]`;\n  });\n  const header = `${title} [${Math.min(100, usage.percent)}% — ${usage.used}/${usage.cap} chars]`;\n  return { target, header, body: shown.length ? shown.join(\"\\n§\\n\") : \"(empty)\", usage, blockedCount };\n}\n\n/** The human's pen: accept the file as it is on disk. Journaled `reseal` by human. */\nexport async function resealMemory(target: MemoryTarget, opts?: MemoryStoreOpts): Promise<{ file: string; status: \"sealed\" | \"unsealed\" | \"diverged\" }> {\n  const workspace = target === \"project\" ? opts?.workspace : undefined;\n  const { file } = pathFor(target, opts?.home, workspace);\n  const status = await sealFile(file, opts?.home);\n  try {\n    await logMemoryOp({ target, workspace: workspace ? resolve(workspace) : undefined, op: \"reseal\", by: opts?.by ?? \"human\" }, { home: opts?.home });\n  } catch (err) {\n    console.error(`agentik: could not journal the reseal: ${err instanceof Error ? err.message : String(err)}`);\n  }\n  return { file, status };\n}\n",
+      "outputPath": ".agentik/tool-results/worker_b-read_file-2.txt"
+    }
+  ],
+  "blockedTools": [
+    {
+      "tool": "search_code",
+      "args": {
+        "pattern": "DIVERGED|diverged|\\.seal\\.json|checkSeal|writeSeal|sealFile|sealContent",
+        "path": "src"
+      },
+      "reason": "search_code: query is required"
+    }
+  ],
+  "stalledTasks": [],
+  "backendSwitches": [],
+  "pendingApprovals": [],
+  "findings": [],
+  "claims": [
+    {
+      "text": "writeSeal() at src/memory-seal.ts:57-63 is the function that writes memory/.seal.json, invoked by sealContent/sealFile/unsealFile",
+      "verified": false
+    },
+    {
+      "text": "checkSeal() at src/memory-seal.ts:102-115 detects out-of-band modification by comparing a fresh digest to the stored one",
+      "verified": false
+    },
+    {
+      "text": "memoryApply() at src/memory-store.ts:384-386 and memoryRemoveEntry() at src/memory-store.ts:465-467 refuse (return ok:false) when the seal has diverged",
+      "verified": false
+    },
+    {
+      "text": "memorySnapshot() at src/memory-store.ts:509-524 degrades to a BLOCKED body on divergence rather than refusing/erroring",
+      "verified": false
+    }
+  ],
+  "sources": [],
+  "artifacts": [
+    "src/memory-seal.ts",
+    "src/memory-store.ts"
+  ],
+  "synthesis": "The inter-agent data block is marked as UNTRUSTED and its own metadata says the underlying task actually failed with \"acceptance: no tool executed\" — meaning none of the file paths/line ranges it cites were verified against the real repository. I will not report those claims as fact. Instead, verifying directly against the repo before synthesizing an answer.",
+  "events": [
+    {
+      "at": "2026-09-02T15:19:32.991Z",
+      "type": "goal_submitted",
+      "detail": {
+        "goalId": "goal-1"
+      }
+    },
+    {
+      "at": "2026-09-02T15:19:57.212Z",
+      "type": "delegated",
+      "detail": {
+        "tasks": [
+          {
+            "id": "seal-diagnostic",
+            "assignee": "worker_a",
+            "allowedTools": [
+              "search_code",
+              "read_file"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-02T15:20:50.279Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "read_file",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T15:20:50.282Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "read_file",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T15:20:50.294Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "search_code",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T15:20:50.295Z",
+      "type": "completed",
+      "detail": {}
+    }
+  ],
+  "planSource": "model",
+  "planProblems": [],
+  "taskResults": [
+    {
+      "taskId": "seal-diagnostic",
+      "assignee": "worker_a",
+      "backend": "claude-sonnet",
+      "status": "failed",
+      "summary": "Memory sealing report (read-only; no files modified).\n\n**1. Module/function that WRITES memory/.seal.json**\n- `src/memory-seal.ts:57-63` — `writeSeal()`: serializes the seal map to JSON and writes it atomically (tmp file + `rename`) to `sealPath()` (`memory/.seal.json`, defined at `src/memory-seal.ts:35-37`).\n- It's invoked by three public setters, all in `src/memory-seal.ts`:\n  - `sealContent()` (`src/memory-seal.ts:66-72`) — records a sha256 digest of given content under a key; called from `src/memory-store.ts:260` after every successful `writeEntries()`.\n  - `sealFile()` (`src/memory-seal.ts:75-88`) — seals a file as it currently is on disk (used for migrations/reseal); called from `src/memory-store.ts:223-224,235` (project-memory migration) and `src/memory-store.ts:543` (`resealMemory`, the human's `agentik memory reseal`).\n  - `unsealFile()` (`src/memory-seal.ts:90-96`) — removes an entry (unused by callers found in this search, but part of the write surface).\n  All three run through `locked()` (`src/memory-seal.ts:28-33`), a module-level promise-chain mutex serializing seal writes.\n\n**2. Function that DETECTS an out-of-band modification**\n- `checkSeal()` — `src/memory-seal.ts:102-115`. Reads the seal map, computes `digest(content)` of the file's current on-disk content, and compares it to the stored hash for that key: no stored entry → `\"unsealed\"` (accepted and sealed silently); hashes match → `\"sealed\"`; hashes differ → `\"diverged\"`.\n- Called from `readSealed()` in `src/memory-store.ts:264-273`, which reads a memory file and returns its body plus seal status; this is the single chokepoint every consumer below goes through.\n\n**3. Every operation that REFUSES on a diverged seal**\n- `memoryApply()` — `src/memory-store.ts:384-386`. The single write path for `MEMORY.md`/`USER.md`/project memory (used by the reviewer's `memory` tool, `retainNote`, and the CLI). If `readSealed(...).status === \"diverged\"`, it returns `{ ok: false, ... }` with `DIVERGED_MESSAGE` (`sr",
+      "artifacts": [],
+      "claims": [
+        {
+          "text": "writeSeal() at src/memory-seal.ts:57-63 is the function that writes memory/.seal.json, invoked by sealContent/sealFile/unsealFile",
+          "verified": false
+        },
+        {
+          "text": "checkSeal() at src/memory-seal.ts:102-115 detects out-of-band modification by comparing a fresh digest to the stored one",
+          "verified": false
+        },
+        {
+          "text": "memoryApply() at src/memory-store.ts:384-386 and memoryRemoveEntry() at src/memory-store.ts:465-467 refuse (return ok:false) when the seal has diverged",
+          "verified": false
+        },
+        {
+          "text": "memorySnapshot() at src/memory-store.ts:509-524 degrades to a BLOCKED body on divergence rather than refusing/erroring",
+          "verified": false
+        }
+      ],
+      "evidence": {
+        "steps": 1,
+        "executed": 0,
+        "blocked": 0,
+        "calls": [],
+        "acceptance": {
+          "ok": false,
+          "problems": [
+            "no tool executed"
+          ]
+        }
+      },
+      "pendingApprovalIds": [],
+      "startedAt": "2026-09-02T15:19:57.214Z",
+      "endedAt": "2026-09-02T15:20:34.145Z",
+      "durationMs": 36931,
+      "reason": "acceptance: no tool executed"
+    }
+  ],
+  "usage": {
+    "inputTokens": 18,
+    "cachedInputTokens": 172075,
+    "outputTokens": 6635,
+    "invocations": 3,
+    "callsWithoutUsage": 0,
+    "costUsd": 0.22897699999999999
+  },
+  "shaping": {
+    "calls": 0,
+    "savedChars": 0
+  },
+  "durationMs": 77305,
+  "runId": "20260902T152050Z-6db9ca",
+  "runPath": "/home/kev/.agentik/runs/20260902T152050Z-6db9ca.json"
+}

@@ -1,0 +1,17 @@
+              no-index              index
+status        completed             completed
+exit          —                     undefined
+duration s    196.5                 87.9
+tokens in     40                    24
+  cached in   164842                81243
+tokens out    22207                 10860
+cost $        0.7772                0.2198
+invocations   13                    7
+tool calls    13                    14
+search_code   8                     13
+read_file     5                     1
+run_command   0                     0
+shaped chars  0                     0
+code index    off                   214 files
+plan source   model                 model
+tasks         find-seal-writer:done find-seal-checks:doneinspect-seal-core:done enumerate-seal-guards:failed

@@ -75,6 +75,15 @@ describe("search_code tool", () => {
     expect(escape.output).toMatch(/\.\./);
     const empty = await executeTool({ id: "c4", tool: "search_code", args: {}, proposedBy: "worker_a" }, { workspace: ws, indexHome: home });
     expect(empty.ok).toBe(false);
+    expect(empty.output).toContain('"query"');
+    // grep habits: `pattern` is accepted as the query, `path: "."` is no filter.
+    const alias = await executeTool({ id: "c4b", tool: "search_code", args: { pattern: "check seal", path: "." }, proposedBy: "worker_a" }, { workspace: ws, indexHome: home });
+    expect(alias.ok).toBe(true);
+    expect(alias.output).toContain("src/seal.ts");
+    // --no-index: the tool is off for the run even though the index exists on disk.
+    const off = await executeTool({ id: "c4c", tool: "search_code", args: { query: "check seal" }, proposedBy: "worker_a" }, { workspace: ws, indexHome: home, codeIndex: false });
+    expect(off.ok).toBe(false);
+    expect(off.output).toContain("--no-index");
     const bare = await makeWorkspace("search-tool-bare-");
     const noIndex = await executeTool({ id: "c5", tool: "search_code", args: { query: "seal" }, proposedBy: "worker_a" }, { workspace: bare, indexHome: home });
     expect(noIndex.ok).toBe(false);

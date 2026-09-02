@@ -248,7 +248,11 @@ stays `awaiting_approval` (exit 4); `--yolo` / `--approve-high-blast` are sessio
 
 `src/guardrails.ts`: one `ToolGuard` per task, `callHash = sha256(tool + canonical JSON args)`; the
 same call failed 2× → a `guardrails` warning envelope in the task context, 3× → refused
-`repeated_failing_call` before the gate; the same `resultHash` 3× in a row → refused `no_progress`.
+`repeated_failing_call` before the gate; the same `resultHash` 3× in a row → refused `no_progress`, but only
+for a call that is PART of that streak (same `callHash` as one of the three): a call with new arguments always
+runs — a refused call never reaches `guard.after`, so blocking it too was a deadlock for the rest of the task
+(seen live: three `{pattern}` refusals, then every corrected `{query}` call refused). `search_code` accepts
+`pattern` as an alias of `query` and reads `path: "."` / `**` as no filter.
 Gate refusals count as failures. `fs_destructive` has a real, bounded executor: `{action: delete|move,
 path, to?}` inside the workspace only, never the root, `.git/`, `.agentik/`, a path that escapes, a
 symlink pointing outside, or an existing move target; **double lock**: `ToolHost.approved: Set<callId>`
@@ -409,7 +413,9 @@ symbols` lines ≤140 chars + `hot spots (>700 lines): …` — identifiers and 
 `buildContext({code = true})` appends `CODE MAP` last (`codeMapSection`); `agentik spawn`: `spawnContextBlock` uses
 `code: false` (the 6000 block is full), `spawnCodeBlock` = refresh + map as its own envelope `agentik:code`
 (`CODE_CONTEXT_CAP` 2500), and `codeHintLine(root)` — static text, only the human-given root interpolated — goes in
-the TRUSTED `bounded` text; `--no-index` removes both (context, run, spawn).
+the TRUSTED `bounded` text; `--no-index` removes both (context, run, spawn) AND turns the `search_code` tool off
+for the run (`ToolHost.codeIndex = false` → `ok: false` naming `--no-index`), so an A/B with and without the index
+measures the index (`bench/index-ab/`: live claude-sonnet runs, before/after each fix).
 
 Invariants (tests enforce them):
 - The index is a **cache**: never memory, never sealed, never a trust source; no source text lives in
@@ -471,7 +477,9 @@ command × level table (~80 rows) and the benign-neighbour check for every rule.
   (it expires 2026-11-16). Unknown backend name = error, never a mock. Dead backend mid-run →
   failover + `backendSwitches` in the report. `MockBackend` lives in `src/mock-backend.ts` (the only
   backend-side module importing `plan.ts`); `backends.ts` never imports the planner.
-- Gated claude worker: `--restricted --disallowedTools …`, **never** `--dangerously-skip-permissions`
+- Gated claude worker: `--restricted --tools "" --disallowedTools …` (NO built-in tool: a deny list alone let
+  Grep/Glob explore the repository for 17 turns outside the gate — the first live A/B in `bench/index-ab/before-fix`
+  cited exact line numbers with zero gated call), **never** `--dangerously-skip-permissions`
   (claude rejects the pair). Gated grok worker: `--disallowed-tools` uses the ids the binary
   advertises (`run_terminal_command`, `write`, …), not the stale prose docs.
 - Codex structured output (`--output-schema`) is **learned per routing, never assumed**

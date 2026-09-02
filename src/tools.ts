@@ -97,6 +97,8 @@ export interface ToolHost {
   sessionId?: number;
   /** Home of the code index (`<home>/index/`); default profile when absent. */
   indexHome?: string;
+  /** `--no-index`: search_code refuses with a readable reason instead of reading a stale index. */
+  codeIndex?: boolean;
 }
 
 export function newReviewState(maxSkillCreates = 1): ReviewState {
@@ -178,8 +180,13 @@ async function readFileTool(call: ToolCall, host: ToolHost): Promise<ToolResult>
  * falls back to read_file / run_command, and the conductor runs `agentik index`.
  */
 async function searchCodeTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {
-  const query = String(call.args.query ?? "").trim();
-  if (!query) return { callId: call.id, ok: false, output: "search_code: query is required" };
+  // `pattern` is what a model trained on grep tools sends first (seen live, three refusals in a
+  // row); accepting the alias costs nothing and the refusal text names the real key.
+  const query = String(call.args.query ?? call.args.pattern ?? "").trim();
+  if (!query) return { callId: call.id, ok: false, output: "search_code: query is required ({\"query\": \"<identifiers or exact substring>\"})" };
+  if (host.codeIndex === false) {
+    return { callId: call.id, ok: false, output: "search_code: the code index is disabled for this run (--no-index); use read_file or run_command rg instead" };
+  }
   const home = host.indexHome ?? host.agentikHome;
   if (!hasIndex(home, host.workspace)) {
     return { callId: call.id, ok: false, output: `search_code: no code index for ${indexKey(host.workspace).root} (the conductor builds one with: agentik index); use read_file or run_command rg instead` };
@@ -189,7 +196,7 @@ async function searchCodeTool(call: ToolCall, host: ToolHost): Promise<ToolResul
     const res = await searchCode(home, host.workspace, {
       query,
       regex: Boolean(call.args.regex),
-      pathGlob: call.args.path === undefined ? undefined : String(call.args.path),
+      pathGlob: pathGlobArg(call.args.path),
       k: num(call.args.k),
       offset: num(call.args.offset),
     });
@@ -198,6 +205,13 @@ async function searchCodeTool(call: ToolCall, host: ToolHost): Promise<ToolResul
   } catch (err) {
     return { callId: call.id, ok: false, output: `search_code: ${err instanceof Error ? err.message : String(err)}` };
   }
+}
+
+/** `.`, `./`, `` and `**` mean "everywhere": the model's way of saying no filter. */
+function pathGlobArg(v: unknown): string | undefined {
+  if (v === undefined || v === null) return undefined;
+  const s = String(v).trim().replace(/^\.\//, "");
+  return s === "" || s === "." || s === "**" || s === "**/*" ? undefined : s;
 }
 
 async function writeFileTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {
