@@ -154,6 +154,9 @@ export async function scoreCase(expected: EvalExpected, outcome: ReviewOutcome, 
   for (const r of expected.mustNot ?? []) if (await ruleHolds(r, outcome.trace, home, workspace)) failures.push(`mustNot: ${describeRule(r)}`);
   if (expected.maxRefused !== undefined && outcome.refused > expected.maxRefused) failures.push(`refused ${outcome.refused} > ${expected.maxRefused}`);
   for (const s of expected.stoppedNot ?? []) if (outcome.stoppedBecause === s) failures.push(`stopped: ${s}`);
+  // A review the backend could not finish proves nothing: never a PASS (seen live: a CLI hiccup
+  // made a case "pass" with zero writes).
+  if (outcome.stoppedBecause === "backend_error") failures.push(`stopped: backend_error (${outcome.events.find((e) => e.startsWith("backend error")) ?? "no detail"})`);
   return failures;
 }
 

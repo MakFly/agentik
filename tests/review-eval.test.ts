@@ -84,6 +84,12 @@ describe("reviewer eval (scripted, deterministic)", () => {
     expect(mock.out).toContain("0/1 cases pass");
   });
 
+  test("a backend error never passes a case", async () => {
+    const { scoreCase } = await import("../src/review-eval.ts");
+    const failures = await scoreCase({}, { iterations: 1, memoryOps: 0, userOps: 0, projectOps: 0, skillOps: 0, incidentOps: 0, refused: 0, consolidationFailures: 0, stoppedBecause: "backend_error", summary: "", events: ["backend error: exit: claude -p failed (1)"], trace: [] }, "/tmp", "/tmp");
+    expect(failures).toEqual(["stopped: backend_error (backend error: exit: claude -p failed (1))"]);
+  });
+
   test("live eval (AGENTIK_EVAL_LIVE=sonnet|codex|grok) — skipped unless asked", async () => {
     const live = process.env.AGENTIK_EVAL_LIVE;
     if (!live) return;
