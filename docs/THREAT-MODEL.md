@@ -10,6 +10,8 @@ Untrusted content is **data**, never the instruction channel. High-blast-radius 
 | Worker plan / act / synthesize text | untrusted | no | no |
 | Fetched page / file body | untrusted | no | no |
 | Tool stdout | untrusted | no | no |
+| Spawned worker (`agentik spawn`, yolo under the floor, `AGENTIK_DEPTH=1`) | untrusted, bounded | no (never spawns, never sets a goal) | denied at the harness; a violation is an incident |
+| Reviewer (`agentik review`, same gate, empty context) | trusted tools, untrusted inputs | no | no (memory · skill_manage · incident · read_file only) |
 
 ## Controls
 

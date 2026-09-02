@@ -121,6 +121,37 @@ describe("harness install (Claude / Grok / Codex)", () => {
     }
   });
 
+  test("the skills and the CLI help name the hardening flags of spawn", async () => {
+    const ak = readFileSync(akSkill, "utf8");
+    const conductor = readFileSync(skill, "utf8");
+    for (const flag of ["--require-tools", "--expect-artifact", "--require-evidence", "--idle-timeout", "--allow-high-blast", "AGENTIK_DEPTH"]) {
+      expect(ak).toContain(flag);
+      expect(conductor).toContain(flag);
+    }
+    expect(ak).toContain("floor DISABLED");
+    expect(ak).toContain("evidence=fresh");
+    const { main } = await import("../src/cli.ts");
+    const lines: string[] = [];
+    const orig = console.log;
+    console.log = (...a: unknown[]) => { lines.push(a.map(String).join(" ")); };
+    try {
+      expect(await main(["--help"])).toBe(0);
+    } finally {
+      console.log = orig;
+    }
+    const help = lines.join("\n");
+    for (const flag of ["--require-tools", "--expect-artifact", "--require-evidence", "--idle-timeout", "--allow-high-blast", "--plan-only", "--concurrency", "runs resume", "memory reseal", "memory where", "memory log", "review --eval", "undo <name>"]) {
+      expect(help).toContain(flag);
+    }
+    expect(help).not.toContain("default: mock");
+    const readme = readFileSync(join(root, "README.md"), "utf8");
+    const claudeMd = readFileSync(join(root, "CLAUDE.md"), "utf8");
+    for (const term of ["--allow-high-blast", "--idle-timeout", "--require-evidence", "AGENTIK_DEPTH", "runs resume", "memory reseal", "review --eval"]) {
+      expect(readme).toContain(term);
+      expect(claudeMd).toContain(term);
+    }
+  });
+
   test("/ak dump-and-run skill is global and adaptive (0–5, never 6)", () => {
     const ak = join(root, "harness/ak/SKILL.md");
     const body = readFileSync(ak, "utf8");

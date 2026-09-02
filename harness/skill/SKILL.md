@@ -43,7 +43,12 @@ spawned worker gets the `agentik context` block of that workspace (USER, MEMORY,
 skills, sessions, KNOWN FAILURES) in front of its task as DATA, capped at 6000 chars (`--no-context` to skip).
 
 Run `agentik probe --json` before routing: a harness that is `present but not authenticated`
-cannot work, and `agentik spawn` refuses it with exit 2. Add `--require-tools` on any slot that
+cannot work, and `agentik spawn` refuses it with exit 2. Every spawned worker runs under the
+**high-blast floor** (`rm -rf`, `git push --force`, `sudo`, `agentik spawn`… denied at the harness;
+`--allow-high-blast` is the human's opt-out and says `floor DISABLED`), inherits `AGENTIK_DEPTH=1`
+(a worker never spawns workers), and can be bounded by `--idle-timeout S` (silent stream → 124).
+Add `--require-evidence` on implement / fix slots that promise tests (no test after the last edit →
+125 « unverified »). Add `--require-tools` on any slot that
 must change files, and `--expect-artifact <path>` (repeatable) whenever you can name the
 deliverable — it proves that file moved, not merely that some tool ran. Read the exit code, not the narration: `0` done · `1` the CLI failed ·
 `2` unusable harness · `124` killed by `--timeout` (default 1800s), task did **not** finish ·

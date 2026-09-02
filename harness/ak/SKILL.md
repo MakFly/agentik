@@ -67,6 +67,8 @@ Pass **`--require-tools`** on any slot whose task must change files (implement, 
 
 When you can name the deliverable, also pass **`--expect-artifact <path>`** (repeatable). It is the stronger check: `--require-tools` only proves *something* happened, `--expect-artifact` proves *that file* moved. Use it for "create migration 0021", "fix apps/web/src/x.tsx", "add the test". Do not invent a path the task never promised.
 
+**The floor and the clock.** Every spawned worker is denied the high-blast commands at the harness itself (`rm -rf`, `git push --force`, `git reset --hard`, `sudo`, `curl | sh`, `agentik spawn|run`…); codex has no deny flag and gets a trusted prompt line plus after-the-fact detection (`FLOOR VIOLATION` + incident). Never pass `--allow-high-blast` on your own initiative: it is the human's opt-out and prints `floor DISABLED`. A worker that goes silent can be bounded with `--idle-timeout S` (exit 124, its own symptom); leave it off for claude `--effort high`. The verdict line ends with `usage: in=… out=… cost=$…`, and every 124/125 says what moved on disk (`changed / untouched / touched`).
+
 **Read the exit code, not the narration.** `0` done · `1` the CLI failed · `2` unusable harness · `124` killed by the timeout · `125` the harness ended without doing the work. On 124 the work is half-done by definition, and on 125 nothing was done: re-issue the task (or raise `--timeout`) rather than reporting it as delivered.
 
 Per-slot: "Korben sous grok, Leeloo sous codex" → two `agentik spawn` with those harnesses. Never 6. Never two names from the same slot.

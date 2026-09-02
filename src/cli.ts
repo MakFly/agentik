@@ -82,8 +82,9 @@ import {
 } from "./types.ts";
 
 function usage(): string {
-  return `agentik — 3-role agentic development system
-You are the supreme orchestrator. Two AI workers take bounded tasks.
+  return `agentik — conductor over claude / grok / codex
+You are the supreme orchestrator. Up to five AI workers take bounded tasks, in parallel along
+the plan's dependencies; high-blast tools are a state (approval), hardline commands never run.
 
 Launch like your other CLIs:
   agentik "Create src/greet.txt containing AGENTIK_OK"
@@ -128,8 +129,8 @@ Commands:
                                Every run is persisted to <home>/runs/<id>.json whatever its
                                status (string leaves masked); "run: <id> · 84.2s · tokens 12.3k
                                in / 4.1k out · $0.31" and "run file: <path>" are printed. An
-                               awaiting_approval run is relaunched with the same goal and
-                               --approve-high-blast (or --yolo).
+                               awaiting_approval run is resumed with "runs resume" (approvals
+                               frozen by call) or relaunched with --approve-high-blast.
   agentik context [--workspace DIR] [--profile P] ["<goal>"]
   agentik review --eval DIR [--backend mock|sonnet|codex|grok] [--case NAME] [--json]
                                Reviewer eval: each case of DIR (transcript.md + snapshot.json +
