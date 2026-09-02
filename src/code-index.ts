@@ -1,0 +1,572 @@
+import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdir, readFile, unlink } from "node:fs/promises";
+import { basename, join, relative, resolve } from "node:path";
+import { chunkFile, detectLang, extractImports } from "./code-chunker.ts";
+import { agentikHome, legacyProjectSlug } from "./home.ts";
+import { secretProblem } from "./memory-store.ts";
+
+/**
+ * The local code index: one sqlite file per checkout under `<home>/index/<slug>.sqlite`, a
+ * CACHE of the workspace (never a trust source, never sealed) that holds NO source text:
+ *
+ *   code_files   path, git blob sha (dirty files hashed the same way, so a commit re-indexes
+ *                nothing), size, lines, lang
+ *   code_chunks  line ranges + the symbol a chunk declares + the identifiers it mentions
+ *   chunks_fts   FTS5 unicode61 over (idents, symbol, path)         → BM25 on words
+ *   files_tri    FTS5 trigram, contentless, detail=none, over the secret-masked file body
+ *                → substring / regex CANDIDATES; the live file on disk is what gets verified
+ *   code_edges   resolved imports (ts/js/py), for the repo map
+ *
+ * Freshness follows Cursor's model: `git ls-files -s` is the committed base, `git status` the
+ * overlay of dirty files; only files whose sha moved are re-read. A directory that is not a git
+ * checkout is walked (cap 20k files, stat-based pseudo sha). Two worktrees have two trees, so
+ * they have two indexes (unlike project memory, which follows the main checkout).
+ */
+
+export const INDEX_SCHEMA_VERSION = 1;
+export const INDEX_FILE_MAX_BYTES = 1_000_000;
+export const INDEX_WALK_MAX_FILES = 20_000;
+export const INDEX_COMMIT_EVERY = 500;
+/** Directories never indexed, in git mode too: `.agentik/` is usually untracked but not ignored. */
+export const ALWAYS_SKIP_DIRS = new Set([".git", ".agentik", ".tmp", "node_modules", "dist", "build", ".next", "target", "vendor", "coverage"]);
+const SECRET_NAME = /^(\.env(\..*)?|.*\.(pem|key|p12|pfx|kdbx)|id_(rsa|dsa|ecdsa|ed25519)(\..*)?)$/i;
+const NOISE_NAME = /(\.lock|-lock\.json|\.min\.[a-z0-9]+)$/i;
+const AVG_LINE_MAX = 500;
+
+export interface IndexStats {
+  root: string;
+  slug: string;
+  path: string;
+  mode: "git" | "walk";
+  files: number;
+  chunks: number;
+  added: number;
+  updated: number;
+  removed: number;
+  skipped: number;
+  ms: number;
+  builtAt: string;
+}
+
+export interface IndexKey {
+  root: string;
+  slug: string;
+}
+
+function git(args: string[], cwd: string): string | undefined {
+  try {
+    const res = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+    if (res.exitCode !== 0) return undefined;
+    return res.stdout.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function real(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/**
+ * The checkout a workspace indexes: the git toplevel when the workspace IS one (real path), else
+ * the directory itself (a subdirectory of a repo indexes only what is under it; a test workspace
+ * under `<repo>/.tmp/` stays its own project).
+ */
+export function indexKey(workspace: string): IndexKey {
+  const abs = resolve(workspace);
+  const top = git(["rev-parse", "--show-toplevel"], abs)?.trim();
+  const root = top && real(top) === real(abs) ? real(abs) : abs;
+  return { root, slug: legacyProjectSlug(root) };
+}
+
+export function indexPaths(home: string, root: string): { dir: string; db: string; workspaceFile: string; slug: string } {
+  const slug = legacyProjectSlug(root);
+  const dir = join(home, "index");
+  return { dir, db: join(dir, `${slug}.sqlite`), workspaceFile: join(dir, `${slug}.workspace`), slug };
+}
+
+export function hasIndex(home: string | undefined, workspace: string): boolean {
+  const h = agentikHome(home);
+  const { root } = indexKey(workspace);
+  const p = indexPaths(h, root);
+  if (!existsSync(p.db) || !existsSync(p.workspaceFile)) return false;
+  try {
+    return readFileSync(p.workspaceFile, "utf8").trim() === root;
+  } catch {
+    return false;
+  }
+}
+
+const SCHEMA = [
+  "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+  `CREATE TABLE IF NOT EXISTS code_files (
+    id INTEGER PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE,
+    sha TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    lines INTEGER NOT NULL,
+    lang TEXT NOT NULL,
+    dirty INTEGER NOT NULL DEFAULT 0,
+    indexed_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS code_chunks (
+    id INTEGER PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES code_files(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    start INTEGER NOT NULL,
+    end INTEGER NOT NULL,
+    symbol TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT '',
+    exported INTEGER NOT NULL DEFAULT 0,
+    idents TEXT NOT NULL DEFAULT ''
+  )`,
+  "CREATE INDEX IF NOT EXISTS code_chunks_file ON code_chunks(file_id, start)",
+  "CREATE INDEX IF NOT EXISTS code_chunks_symbol ON code_chunks(symbol) WHERE exported = 1",
+  "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(idents, symbol, path, tokenize='unicode61 remove_diacritics 2')",
+  "CREATE VIRTUAL TABLE IF NOT EXISTS files_tri USING fts5(text, content='', contentless_delete=1, detail='none', tokenize='trigram')",
+  "CREATE TABLE IF NOT EXISTS code_edges (from_id INTEGER NOT NULL, to_id INTEGER NOT NULL, PRIMARY KEY (from_id, to_id))",
+];
+const TABLES = ["code_edges", "files_tri", "chunks_fts", "code_chunks", "code_files", "meta"];
+
+/** Set once, when the file is created or rebuilt (WAL and synchronous are persistent). */
+function applyPragmas(db: Database): void {
+  db.run("PRAGMA journal_mode = WAL");
+  db.run("PRAGMA synchronous = NORMAL");
+  db.run("PRAGMA temp_store = MEMORY");
+}
+
+function metaGet(db: Database, key: string): string | undefined {
+  return db.query<{ value: string }, [string]>("SELECT value FROM meta WHERE key = ?").get(key)?.value;
+}
+
+function metaSet(db: Database, key: string, value: string): void {
+  db.run("INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [key, value]);
+}
+
+/**
+ * Open (or create) the index of `root`. A schema version bump drops and recreates the tables;
+ * an index whose recorded root is another directory is refused.
+ */
+export function openIndex(home: string, root: string, opts: { create?: boolean } = {}): Database | undefined {
+  const p = indexPaths(home, root);
+  if (!opts.create && !existsSync(p.db)) return undefined;
+  if (opts.create) mkdirSync(p.dir, { recursive: true });
+  const db = new Database(p.db, { create: Boolean(opts.create), readwrite: true });
+  db.run("PRAGMA busy_timeout = 5000");
+  db.run("PRAGMA foreign_keys = ON");
+  const hasMeta = db.query<{ n: number }, []>("SELECT count(*) AS n FROM sqlite_master WHERE name = 'meta'").get()?.n ?? 0;
+  if (hasMeta) {
+    const version = Number(metaGet(db, "schema_version") ?? 0);
+    const recorded = metaGet(db, "root");
+    if (recorded && recorded !== root) {
+      db.close();
+      throw new Error(`index ${p.db} belongs to ${recorded}, not ${root}`);
+    }
+    if (version === INDEX_SCHEMA_VERSION && recorded === root) return db; // healthy: no write on open
+    if (version !== INDEX_SCHEMA_VERSION) for (const t of TABLES) db.run(`DROP TABLE IF EXISTS ${t}`);
+  }
+  applyPragmas(db);
+  for (const stmt of SCHEMA) db.run(stmt);
+  metaSet(db, "schema_version", String(INDEX_SCHEMA_VERSION));
+  metaSet(db, "root", root);
+  if (!existsSync(p.workspaceFile)) writeFileSync(p.workspaceFile, `${root}\n`);
+  return db;
+}
+
+/** git's own blob id, so a dirty file and its committed version agree once committed. */
+export function blobSha(bytes: Uint8Array): string {
+  return createHash("sha1").update(`blob ${bytes.byteLength}\0`).update(bytes).digest("hex");
+}
+
+export interface Listing {
+  mode: "git" | "walk";
+  /** path → sha (undefined: dirty, hash it on read). */
+  files: Map<string, string | undefined>;
+  dirty: Set<string>;
+}
+
+function splitZ(out: string): string[] {
+  return out.split("\0").filter((s) => s.length > 0);
+}
+
+/** Every file of the workspace with its committed sha, plus the dirty overlay from git status. */
+export async function listFiles(root: string): Promise<Listing> {
+  const top = git(["rev-parse", "--show-toplevel"], root)?.trim();
+  if (!top) return walk(root);
+  // A directory git ignores (a test workspace under <repo>/.tmp/) has no git view: walk it.
+  if (git(["check-ignore", "-q", "."], root) !== undefined) return walk(root);
+  const ls = git(["ls-files", "-s", "-z"], root);
+  if (ls === undefined) return walk(root);
+  const files = new Map<string, string | undefined>();
+  for (const rec of splitZ(ls)) {
+    // "<mode> <sha> <stage>\t<path>"
+    const tab = rec.indexOf("\t");
+    if (tab < 0) continue;
+    const [mode, sha, stage] = rec.slice(0, tab).split(" ");
+    if (mode === "120000" || mode === "160000" || stage !== "0") continue;
+    files.set(rec.slice(tab + 1), sha);
+  }
+  const dirty = new Set<string>();
+  const prefix = relative(real(top), real(root));
+  const toLocal = (p: string): string | undefined => {
+    if (!prefix) return p;
+    return p.startsWith(`${prefix}/`) ? p.slice(prefix.length + 1) : undefined;
+  };
+  const st = git(["status", "--porcelain", "-z", "--untracked-files=all", "--", "."], root) ?? "";
+  const recs = splitZ(st);
+  for (let i = 0; i < recs.length; i++) {
+    const rec = recs[i];
+    const x = rec[0];
+    const y = rec[1];
+    const local = toLocal(rec.slice(3));
+    if (x === "R" || x === "C") {
+      const orig = toLocal(recs[++i] ?? "");
+      if (orig) files.delete(orig);
+    }
+    if (!local) continue;
+    if (x === "D" || y === "D") {
+      files.delete(local);
+      continue;
+    }
+    if (x === "!") continue;
+    files.set(local, undefined);
+    dirty.add(local);
+  }
+  return { mode: "git", files, dirty };
+}
+
+async function walk(root: string): Promise<Listing> {
+  const files = new Map<string, string | undefined>();
+  const glob = new Bun.Glob("**/*");
+  let n = 0;
+  for await (const rel of glob.scan({ cwd: root, onlyFiles: true, followSymlinks: false, dot: true })) {
+    if (rel.split("/").some((seg) => ALWAYS_SKIP_DIRS.has(seg))) continue;
+    let st: ReturnType<typeof lstatSync>;
+    try {
+      st = lstatSync(join(root, rel));
+    } catch {
+      continue;
+    }
+    if (!st.isFile()) continue;
+    files.set(rel, `walk:${st.size}:${Math.floor(st.mtimeMs)}`);
+    if (++n >= INDEX_WALK_MAX_FILES) break;
+  }
+  return { mode: "walk", files, dirty: new Set() };
+}
+
+export type IgnoreMatcher = (path: string) => boolean;
+
+/** `.agentikignore`: one glob per line (gitignore-like, no negation), `#` comments. */
+export async function loadIgnore(root: string): Promise<IgnoreMatcher> {
+  let text = "";
+  try {
+    text = await readFile(join(root, ".agentikignore"), "utf8");
+  } catch {
+    return () => false;
+  }
+  const globs: Bun.Glob[] = [];
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#") || line.startsWith("!")) continue;
+    const pat = line.endsWith("/") ? `${line}**` : line;
+    globs.push(new Bun.Glob(pat));
+    if (!pat.includes("/")) globs.push(new Bun.Glob(`**/${pat}`));
+    else if (!pat.startsWith("**/") && !pat.startsWith("/")) globs.push(new Bun.Glob(`**/${pat}`));
+  }
+  return (path) => globs.some((g) => g.match(path));
+}
+
+/** Why a path is not indexed, or undefined. `bytes` enables the binary / minified checks. */
+export function shouldSkip(path: string, ignore: IgnoreMatcher, bytes?: Uint8Array): string | undefined {
+  const segs = path.split("/");
+  if (segs.slice(0, -1).some((s) => ALWAYS_SKIP_DIRS.has(s))) return "always-skipped directory";
+  const name = basename(path);
+  if (SECRET_NAME.test(name)) return "secret-looking file name";
+  if (NOISE_NAME.test(name)) return "lock or minified file";
+  if (ignore(path)) return ".agentikignore";
+  if (bytes) {
+    if (bytes.byteLength > INDEX_FILE_MAX_BYTES) return "larger than 1 MB";
+    const head = bytes.subarray(0, 8192);
+    for (let i = 0; i < head.length; i++) if (head[i] === 0) return "binary";
+  }
+  return undefined;
+}
+
+/** The file body the trigram index sees: every secret-looking line blanked. */
+export function maskSecretLines(text: string): string {
+  return text
+    .split("\n")
+    .map((l) => (secretProblem(l) ? "" : l))
+    .join("\n");
+}
+
+interface StoredFile {
+  id: number;
+  sha: string;
+}
+
+/**
+ * Bring the index of `workspace` up to date: files whose sha moved are re-read and re-chunked,
+ * vanished files are dropped, everything else is untouched. `rebuild` starts from an empty file.
+ */
+const refreshLocks = new Map<string, Promise<unknown>>();
+
+export async function refreshIndex(
+  home: string | undefined,
+  workspace: string,
+  opts: { rebuild?: boolean } = {},
+): Promise<IndexStats> {
+  const h = agentikHome(home);
+  const { root, slug } = indexKey(workspace);
+  const p = indexPaths(h, root);
+  // One refresh at a time per index file inside this process; across processes the
+  // busy_timeout does the waiting.
+  const prev = refreshLocks.get(p.db) ?? Promise.resolve();
+  const run = prev.catch(() => undefined).then(() => refreshNow(h, root, slug, p, opts));
+  refreshLocks.set(p.db, run);
+  try {
+    return await run;
+  } finally {
+    if (refreshLocks.get(p.db) === run) refreshLocks.delete(p.db);
+  }
+}
+
+async function refreshNow(
+  h: string,
+  root: string,
+  slug: string,
+  p: ReturnType<typeof indexPaths>,
+  opts: { rebuild?: boolean },
+): Promise<IndexStats> {
+  const t0 = Date.now();
+  await mkdir(p.dir, { recursive: true });
+  if (opts.rebuild) {
+    for (const f of [p.db, `${p.db}-wal`, `${p.db}-shm`]) if (existsSync(f)) await unlink(f);
+  }
+  const db = openIndex(h, root, { create: true })!;
+  try {
+    const listing = await listFiles(root);
+    const ignore = await loadIgnore(root);
+    const stored = new Map<string, StoredFile>();
+    for (const r of db.query<{ id: number; path: string; sha: string }, []>("SELECT id, path, sha FROM code_files").all()) {
+      stored.set(r.path, { id: r.id, sha: r.sha });
+    }
+    const fresh = stored.size === 0;
+    const wanted = new Map<string, string | undefined>();
+    let skipped = 0;
+    for (const [path, sha] of listing.files) {
+      if (shouldSkip(path, ignore)) {
+        skipped++;
+        continue;
+      }
+      wanted.set(path, sha);
+    }
+    const removed: string[] = [];
+    for (const path of stored.keys()) if (!wanted.has(path)) removed.push(path);
+    const candidates: string[] = [];
+    for (const [path, sha] of wanted) {
+      const old = stored.get(path);
+      if (!old || sha === undefined || sha !== old.sha) candidates.push(path);
+    }
+
+    const delChunks = db.prepare("DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM code_chunks WHERE file_id = ?)");
+    const delChunkRows = db.prepare("DELETE FROM code_chunks WHERE file_id = ?");
+    const delTri = db.prepare("DELETE FROM files_tri WHERE rowid = ?");
+    const delEdgesOut = db.prepare("DELETE FROM code_edges WHERE from_id = ?");
+    const delEdgesAll = db.prepare("DELETE FROM code_edges WHERE from_id = ? OR to_id = ?");
+    const delFile = db.prepare("DELETE FROM code_files WHERE id = ?");
+    const insFile = db.query<{ id: number }, [string, string, number, number, string, number, string]>(
+      "INSERT INTO code_files(path, sha, size, lines, lang, dirty, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
+    );
+    const updFile = db.prepare("UPDATE code_files SET sha = ?, size = ?, lines = ?, lang = ?, dirty = ?, indexed_at = ? WHERE id = ?");
+    const insChunk = db.query<{ id: number }, [number, string, number, number, string, string, number, string]>(
+      "INSERT INTO code_chunks(file_id, path, start, end, symbol, kind, exported, idents) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+    );
+    const insFts = db.prepare("INSERT INTO chunks_fts(rowid, idents, symbol, path) VALUES (?, ?, ?, ?)");
+    const insTri = db.prepare("INSERT INTO files_tri(rowid, text) VALUES (?, ?)");
+    const insEdge = db.prepare("INSERT OR IGNORE INTO code_edges(from_id, to_id) VALUES (?, ?)");
+
+    const now = new Date().toISOString();
+    const known = new Set(wanted.keys());
+    const importsOf = new Map<number, string[]>();
+    let added = 0;
+    let updated = 0;
+    let pending = 0;
+    // Phase 1 (async): read every candidate. Phase 2 (sync): one transaction with no await
+    // inside, so a concurrent refresh in the same process can never deadlock on the lock.
+    const reads = new Map<string, Uint8Array | undefined>();
+    for (let i = 0; i < candidates.length; i += 64) {
+      const batch = candidates.slice(i, i + 64);
+      const bytes = await Promise.all(batch.map((path) => readWorkspaceFile(root, path)));
+      batch.forEach((path, j) => reads.set(path, bytes[j]));
+    }
+    db.run("BEGIN IMMEDIATE");
+    const flush = () => {
+      if (++pending >= INDEX_COMMIT_EVERY) {
+        db.run("COMMIT");
+        db.run("BEGIN IMMEDIATE");
+        pending = 0;
+      }
+    };
+    const dropStored = (path: string) => {
+      const old = stored.get(path);
+      if (!old) return;
+      delChunks.run(old.id);
+      delChunkRows.run(old.id);
+      delTri.run(old.id);
+      delEdgesAll.run(old.id, old.id);
+      delFile.run(old.id);
+      stored.delete(path);
+    };
+    try {
+      for (const path of removed) {
+        dropStored(path);
+        flush();
+      }
+      for (const path of candidates) {
+        const bytes = reads.get(path);
+        const old = stored.get(path);
+        if (!bytes) {
+          dropStored(path);
+          continue;
+        }
+        const why = shouldSkip(path, ignore, bytes);
+        if (why) {
+          skipped++;
+          dropStored(path);
+          continue;
+        }
+        const text = new TextDecoder().decode(bytes);
+        const lineCount = text.split("\n").length;
+        if (text.length / Math.max(1, lineCount) > AVG_LINE_MAX) {
+          skipped++;
+          dropStored(path);
+          continue;
+        }
+        const sha = listing.mode === "git" ? (wanted.get(path) ?? blobSha(bytes)) : wanted.get(path)!;
+        if (old && old.sha === sha) continue; // dirty in git status, same content as indexed
+        const lang = detectLang(path);
+        const dirty = listing.dirty.has(path) ? 1 : 0;
+        let id: number;
+        if (old) {
+          delChunks.run(old.id);
+          delChunkRows.run(old.id);
+          delTri.run(old.id);
+          delEdgesOut.run(old.id);
+          updFile.run(sha, bytes.byteLength, lineCount, lang, dirty, now, old.id);
+          id = old.id;
+          updated++;
+        } else {
+          id = insFile.get(path, sha, bytes.byteLength, lineCount, lang, dirty, now)!.id;
+          added++;
+        }
+        stored.set(path, { id, sha });
+        for (const c of chunkFile(path, text, lang)) {
+          const idents = c.idents.join(" ");
+          const cid = insChunk.get(id, path, c.start, c.end, c.symbol, c.kind, c.exported ? 1 : 0, idents)!.id;
+          insFts.run(cid, idents, c.symbol, path);
+        }
+        insTri.run(id, maskSecretLines(text));
+        importsOf.set(id, extractImports(path, text, lang, known));
+        flush();
+      }
+      // Edges of the files just indexed, against every known path (ids from the store).
+      const idOf = new Map<string, number>();
+      for (const [path, f] of stored) idOf.set(path, f.id);
+      for (const [from, targets] of importsOf) {
+        for (const t of targets) {
+          const to = idOf.get(t);
+          if (to !== undefined) insEdge.run(from, to);
+        }
+      }
+      metaSet(db, "built_at", now);
+      metaSet(db, "mode", listing.mode);
+      db.run("COMMIT");
+    } catch (err) {
+      db.run("ROLLBACK");
+      throw err;
+    }
+    if (fresh || opts.rebuild) db.run("INSERT INTO files_tri(files_tri) VALUES ('optimize')");
+    const counts = countRows(db);
+    return {
+      root,
+      slug,
+      path: p.db,
+      mode: listing.mode,
+      files: counts.files,
+      chunks: counts.chunks,
+      added,
+      updated,
+      removed: removed.length,
+      skipped,
+      ms: Date.now() - t0,
+      builtAt: now,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+function countRows(db: Database): { files: number; chunks: number } {
+  return {
+    files: db.query<{ n: number }, []>("SELECT count(*) AS n FROM code_files").get()?.n ?? 0,
+    chunks: db.query<{ n: number }, []>("SELECT count(*) AS n FROM code_chunks").get()?.n ?? 0,
+  };
+}
+
+/** The current state of an index without touching it, or undefined when there is none. */
+export function indexStats(home: string | undefined, workspace: string): IndexStats | undefined {
+  const h = agentikHome(home);
+  const { root, slug } = indexKey(workspace);
+  if (!hasIndex(h, workspace)) return undefined;
+  const db = openIndex(h, root);
+  if (!db) return undefined;
+  try {
+    const counts = countRows(db);
+    return {
+      root,
+      slug,
+      path: indexPaths(h, root).db,
+      mode: (metaGet(db, "mode") as "git" | "walk") ?? "git",
+      files: counts.files,
+      chunks: counts.chunks,
+      added: 0,
+      updated: 0,
+      removed: 0,
+      skipped: 0,
+      ms: 0,
+      builtAt: metaGet(db, "built_at") ?? "",
+    };
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Read a workspace file for indexing or verification: inside the root, a regular file (no
+ * symlink), at most INDEX_FILE_MAX_BYTES. Anything else is undefined.
+ */
+export async function readWorkspaceFile(root: string, rel: string): Promise<Uint8Array | undefined> {
+  const full = resolve(root, rel);
+  const relToRoot = relative(root, full);
+  if (relToRoot.startsWith("..") || resolve(root, relToRoot) !== full) return undefined;
+  try {
+    const st = lstatSync(full);
+    if (!st.isFile() || st.size > INDEX_FILE_MAX_BYTES) return undefined;
+    return new Uint8Array(await readFile(full));
+  } catch {
+    return undefined;
+  }
+}
+
+/** Human line for the CLI: `index: <slug> · 173 files · 612 chunks · +3 ~1 -0 · 0.4s · <path>`. */
+export function formatIndexStats(s: IndexStats): string {
+  const delta = `+${s.added} ~${s.updated} -${s.removed}`;
+  return `index: ${s.slug} · ${s.mode} · ${s.files} files · ${s.chunks} chunks · ${delta}${s.skipped ? ` · ${s.skipped} skipped` : ""} · ${(s.ms / 1000).toFixed(1)}s · ${s.path}`;
+}

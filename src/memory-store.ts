@@ -135,6 +135,14 @@ const SECRET_PATTERNS: Array<{ id: string; re: RegExp }> = [
   },
 ];
 
+/** The secret pattern a line trips, or undefined. Cheap (no injection decoding): safe per line. */
+export function secretProblem(text: string): string | undefined {
+  for (const { id, re } of SECRET_PATTERNS) {
+    if (re.test(text)) return `looks like a secret (${id})`;
+  }
+  return undefined;
+}
+
 /** The reason a text must not be stored, or undefined. */
 export function memoryContentProblem(text: string): string | undefined {
   for (const { id, re } of SECRET_PATTERNS) {

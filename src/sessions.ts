@@ -547,7 +547,7 @@ function ftsQuery(
 }
 
 /** Whitespace tokens with FTS5 syntax stripped: quotes, `*`, `^` become plain text. */
-function tokenize(query: string): string[] {
+export function tokenize(query: string): string[] {
   return query
     .split(/\s+/)
     .map((t) => t.replace(/["*^]/g, "").trim())
@@ -556,11 +556,11 @@ function tokenize(query: string): string[] {
 }
 
 /** Every token is a quoted phrase, so AND/OR/NOT/NEAR and punctuation are matched literally. */
-function ftsPhrase(token: string): string {
+export function ftsPhrase(token: string): string {
   return `"${token.replace(/"/g, '""')}"`;
 }
 
-function trigramsOf(token: string): string[] {
+export function trigramsOf(token: string): string[] {
   const chars = [...token];
   const out: string[] = [];
   for (let i = 0; i + 3 <= chars.length; i++) out.push(chars.slice(i, i + 3).join(""));
@@ -568,6 +568,6 @@ function trigramsOf(token: string): string[] {
 }
 
 /** Lowercase, diacritics stripped — mirrors what the unicode61 index sees. */
-function fold(text: string): string {
+export function fold(text: string): string {
   return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }

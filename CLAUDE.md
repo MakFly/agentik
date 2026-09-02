@@ -297,6 +297,52 @@ replaced by `[BLOCKED: …]`, the rest byte for byte); the envelope keeps head 3
 the **full** body, so a payload padded into the omitted middle is still a finding. `read_file` takes
 `offset` / `limit` in chars and prefixes a paged read with `[path chars a-b of n; next offset …]`.
 
+## Code index (`agentik index` / `agentik search`)
+
+`src/code-index.ts` + `src/code-chunker.ts` + `src/code-search.ts`. One sqlite file per **checkout**
+(`<home>/index/<slug>.sqlite` + `<slug>.workspace`, slug = `legacyProjectSlug(root)`; `indexKey(ws)`
+= the git toplevel when `ws` IS one, else `ws` itself — a worktree has its OWN index, unlike project
+memory; a directory git ignores, e.g. every test workspace under `<repo>/.tmp/`, is walked).
+Tables: `code_files(path, sha, size, lines, lang, dirty)`, `code_chunks(file_id, path, start, end,
+symbol, kind, exported, idents)`, `chunks_fts` (FTS5 unicode61 over idents/symbol/path, BM25 weights
+1/3/0.5), `files_tri` (FTS5 trigram, contentless, `detail=none`, over the body with every
+`secretProblem` line blanked — **no source text is stored**), `code_edges(from_id, to_id)` (resolved
+ts/js/py imports), `meta` (schema version, root, mode, built_at). `refreshIndex(home, ws, {rebuild})`:
+`git ls-files -s -z` (modes 120000/160000 and stage ≠ 0 skipped) + `git status --porcelain -z
+--untracked-files=all -- .` (dirty overlay; `D` = gone; renames drop the old path); a dirty file is
+hashed with git's blob id (`blobSha`), so a commit re-indexes nothing. Phase 1 reads every candidate
+(async), phase 2 writes in ONE `BEGIN IMMEDIATE` with no await inside (commit every 500 files); one
+refresh at a time per index file in-process (`refreshLocks`), `busy_timeout 5000` across processes;
+a healthy index opens without any write. `shouldSkip`: `ALWAYS_SKIP_DIRS` (.git .agentik .tmp
+node_modules dist build .next target vendor coverage — in git mode too, `.agentik/` is usually
+untracked and not ignored), secret names (`.env*`, `*.pem|key|p12|pfx|kdbx`, `id_rsa*`), lock /
+minified, `.agentikignore` globs (no negation), > 1 MB, NUL in the first 8 KB, average line > 500.
+Chunker: top-level declaration per language (the chunk starts at its comment/decorator block), python
+methods, markdown headings, else 60-line windows with 10 overlap, cap 200 lines; `idents` = identifiers
++ their camelCase/snake parts (≤400). `searchCode(home, ws, {query, regex?, pathGlob?, k 1..50, offset,
+budgetMs})`: BM25 on identifiers ∪ exact substrings (AND of trigrams → candidates, `includes()` on the
+**live file** as the verdict) fused by RRF (+path/+symbol bonus); `--regex`: `regexProblem` (≤200 chars,
+no backreference, lookbehind or nested quantifier), `literalRuns` (top-level guaranteed literals; none
+→ ≤500 files + `note`) → trigram candidates (≤300) → `RegExp` per line, wall-clock budget 1.5 s
+(`truncated`). Every quoted line is re-read from disk (an edit shows without refresh, a deleted file
+drops out), `snippet()` masks secret lines and cuts at 160 chars. `formatSearch` is rtk-style: grouped
+by file, `L<start>-<end> <symbol>`, ≤3 lines per range, ≤5 ranges per file, ≤40 files, ≤6000 chars,
+footer `[n files, offset a, next offset b]`. `SearchIndex` (`sqliteSearchIndex`) is the seam a later
+backend (Meilisearch, embeddings) implements. CLI: `agentik index [--workspace] [--rebuild] [--stats]
+[--json]` (`index: <slug> · git · 174 files · 1140 chunks · +3 ~1 -0 · 0.4s · <path>`), `agentik search
+"<q>" [--regex] [--path GLOB] [-k N] [--offset N] [--json]` (refreshes first, a failed refresh is one
+stderr line; no index → exit 1 with the `agentik index` hint; a refused query → exit 2). Both are in
+`KNOWN_COMMANDS` (else a worker at depth ≥ 1 would be refused as `run`) and `CONFIG_EXEMPT`.
+
+Invariants (tests enforce them):
+- The index is a **cache**: never memory, never sealed, never a trust source; no source text lives in
+  `~/.agentik` (a secret line is absent from `files_tri`; the search for it returns nothing).
+- Candidates come from the index, the verdict and the quote come from the live file.
+- Every regex from a worker is bounded (shape, candidates, wall clock); `pathGlob` is relative, no `..`.
+- A no-op refresh writes nothing (`indexed_at` unchanged); a commit of a dirty file re-indexes nothing.
+- `incidents.ts` FTS tables now carry the same `rebuild` guard as `sessions.ts` (an index created over a
+  populated table is rebuilt once).
+
 ## Command policy — one source of truth for dangerous shell commands
 
 `src/command-policy.ts` (rules) + `src/argv.ts` (shell-words tokenizer). `classifyCommand(argv|string)

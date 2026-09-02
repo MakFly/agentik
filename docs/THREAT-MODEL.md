@@ -12,6 +12,7 @@ Untrusted content is **data**, never the instruction channel. High-blast-radius 
 | Tool stdout | untrusted | no | no |
 | Spawned worker (`agentik spawn`, yolo under the floor, `AGENTIK_DEPTH=1`) | untrusted, bounded | no (never spawns, never sets a goal) | denied at the harness; a violation is an incident |
 | Reviewer (`agentik review`, same gate, empty context) | trusted tools, untrusted inputs | no | no (memory · skill_manage · incident · read_file only) |
+| Code index (`<home>/index/<slug>.sqlite`, `agentik index` / `search` output) | untrusted cache of workspace files, never sealed | no | no |
 
 ## Controls
 
@@ -36,6 +37,13 @@ Untrusted content is **data**, never the instruction channel. High-blast-radius 
    reviewer's next write cannot launder a foreign entry. Limits: tamper-evident, not tamper-proof —
    no HMAC (the key would live in the same home), a process that can edit MEMORY.md can edit the
    seal. It catches mistakes and unprivileged prompt-injected writes, not a root attacker.
+9. **Code index as a cache** (`src/code-index.ts`, `src/code-search.ts`): the index stores line
+   ranges, identifiers and a trigram index of the secret-masked body — no source text — and is
+   written by whoever runs a refresh (a depth-1 worker included), so it is never a trust source:
+   every quoted line is re-read from the live file, secret-scanned and returned as untrusted data.
+   Regex patterns come from workers: bounded in length and shape (no backreference, lookbehind or
+   nested quantifier), in candidates (≤300 files) and in wall clock (1.5 s), so a pattern cannot
+   pin the process.
 
 ## Sources (retrieved and attributed)
 

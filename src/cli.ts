@@ -32,6 +32,8 @@ import { retainNote, readHot } from "./memory.ts";
 import { memoryFileLabel, memoryFilePath, memoryRemoveEntry, resealMemory, type MemoryTarget } from "./memory-store.ts";
 import { formatSessionHit, searchSessions } from "./sessions.ts";
 import { buildContext } from "./context.ts";
+import { formatIndexStats, hasIndex, indexKey, indexStats, refreshIndex } from "./code-index.ts";
+import { formatSearch, searchCode } from "./code-search.ts";
 import { renderEnvelope, wrapUntrusted } from "./trust.ts";
 import {
   classifyIncident,
@@ -132,6 +134,26 @@ Commands:
                                awaiting_approval run is resumed with "runs resume" (approvals
                                frozen by call) or relaunched with --approve-high-blast.
   agentik context [--workspace DIR] [--profile P] ["<goal>"]
+  agentik index [--workspace DIR] [--rebuild] [--stats] [--json]
+                               Build or refresh the local code index of a checkout:
+                               <home>/index/<slug>.sqlite, line ranges + identifiers +
+                               symbols + imports and a trigram index of the secret-masked
+                               body — no source text is stored. Freshness follows git
+                               (blob shas, dirty files as an overlay); a directory that is
+                               not a checkout is walked. .agentikignore (one glob per line)
+                               excludes more; .git .agentik node_modules dist build …,
+                               .env* / *.pem / *.key, lock and minified files, binaries and
+                               files over 1 MB are never indexed. --stats reads without
+                               refreshing. A cache, never memory, never a trust source.
+  agentik search "<query>" [--regex] [--path GLOB] [-k N] [--offset N] [--workspace DIR] [--json]
+                               Search the index: identifiers (camelCase parts count), exact
+                               substrings, or --regex (bounded: ≤200 chars, no backreference
+                               or lookbehind, ≤300 candidate files, 1.5 s budget). Candidates
+                               come from the index; the live file on disk is what is verified
+                               and quoted (secret lines masked), grouped by file with
+                               L<start>-<end> <symbol> ranges, ≤6000 chars, paged by
+                               --offset. Refreshes the index first; no index → exit 1.
+                               Allowed inside a worker (AGENTIK_DEPTH ≥ 1).
   agentik review --eval DIR [--backend mock|sonnet|codex|grok] [--case NAME] [--json]
                                Reviewer eval: each case of DIR (transcript.md + snapshot.json +
                                expected.json [+ script.json]) runs the real review in a temporary
@@ -295,6 +317,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (cmd === "skill" || cmd === "skills") return skillCmd(argv.slice(1));
   if (cmd === "harvest") return harvestCmd(argv.slice(1));
   if (cmd === "context") return contextCmd(argv.slice(1));
+  if (cmd === "index") return indexCmd(argv.slice(1));
+  if (cmd === "search") return searchCmd(argv.slice(1));
   if (cmd === "review") return reviewCmd(argv.slice(1));
   if (cmd === "postmortem") return postmortemCmd(argv.slice(1));
   if (cmd === "runs") return runsCmd(argv.slice(1));
@@ -1250,6 +1274,12 @@ export function parseRun(args: string[]): {
     eval?: string;
     case?: string;
     approve?: string;
+    regex?: boolean;
+    rebuild?: boolean;
+    stats?: boolean;
+    path?: string;
+    offset?: number;
+    k?: number;
   };
 } {
   const flags: Record<string, string | boolean> = {};
@@ -1281,6 +1311,12 @@ export function parseRun(args: string[]): {
     else if (a === "--plan-only") flags.planOnly = true;
     else if (a === "-n" && args[i + 1]) {
       flags.n = args[++i];
+    }
+    else if (a === "--regex") flags.regex = true;
+    else if (a === "--rebuild") flags.rebuild = true;
+    else if (a === "--stats") flags.stats = true;
+    else if (a === "-k" && args[i + 1]) {
+      flags.k = args[++i];
     }
     else if (a === "--raw") flags.raw = true;
     else if (a === "--no-context") flags.noContext = true;
@@ -1372,6 +1408,12 @@ export function parseRun(args: string[]): {
       eval: str(flags.eval),
       case: str(flags.case),
       approve: str(flags.approve),
+      regex: Boolean(flags.regex),
+      rebuild: Boolean(flags.rebuild),
+      stats: Boolean(flags.stats),
+      path: str(flags.path),
+      offset: nonNegative(flags.offset),
+      k: positive(flags.k),
     },
   };
 }
@@ -1396,8 +1438,8 @@ async function skillBodyProblem(name: string, home: string): Promise<string | un
   }
 }
 
-const CONFIG_EXEMPT = new Set(["probe", "context", "postmortem", "runs"]);
-const KNOWN_COMMANDS = new Set(["probe", "spawn", "memory", "skill", "skills", "harvest", "context", "review", "postmortem", "run", "runs"]);
+const CONFIG_EXEMPT = new Set(["probe", "context", "postmortem", "runs", "index", "search"]);
+const KNOWN_COMMANDS = new Set(["probe", "spawn", "memory", "skill", "skills", "harvest", "context", "review", "postmortem", "run", "runs", "index", "search"]);
 
 /** Exit 2 with the depth message; the refusal is an incident so the conductor sees it next time. */
 async function refuseNested(cmd: "spawn" | "run", argv: string[]): Promise<number> {
@@ -1709,6 +1751,71 @@ async function contextCmd(args: string[]): Promise<number> {
   });
   process.stdout.write(block);
   return 0;
+}
+
+const SEARCH_USAGE = 'usage: agentik search "<query>" [--regex] [--path GLOB] [-k N] [--offset N] [--workspace DIR] [--json]';
+
+/**
+ * `agentik index`: build or refresh the local code index of a workspace. A cache of the
+ * checkout under <home>/index/<slug>.sqlite (no source text), never memory, never a trust source.
+ */
+async function indexCmd(args: string[]): Promise<number> {
+  const { flags } = parseRun(args);
+  const workspace = resolve(flags.workspace ?? process.cwd());
+  const home = homeFor(flags);
+  try {
+    if (flags.stats && !flags.rebuild) {
+      const stats = indexStats(home, workspace);
+      if (!stats) {
+        console.error(`agentik index: no code index for ${indexKey(workspace).root} — run: agentik index --workspace ${indexKey(workspace).root}`);
+        return 1;
+      }
+      if (flags.json) console.log(JSON.stringify(stats, null, 2));
+      else console.log(formatIndexStats(stats));
+      return 0;
+    }
+    const stats = await refreshIndex(home, workspace, { rebuild: flags.rebuild });
+    if (flags.json) console.log(JSON.stringify(stats, null, 2));
+    else console.log(formatIndexStats(stats));
+    return 0;
+  } catch (err) {
+    console.error(`agentik index: ${err instanceof Error ? err.message : String(err)}`);
+    return 2;
+  }
+}
+
+/**
+ * `agentik search`: query the code index (identifiers, exact substrings, or --regex verified on
+ * the live files), rtk-style grouped output. Refreshes the index first; a refresh that fails
+ * is one stderr line and the search runs on the index as it is. No index → exit 1.
+ */
+async function searchCmd(args: string[]): Promise<number> {
+  const { goal: query, flags } = parseRun(args);
+  const workspace = resolve(flags.workspace ?? process.cwd());
+  const home = homeFor(flags);
+  if (!query) {
+    console.error(SEARCH_USAGE);
+    return 2;
+  }
+  const { root } = indexKey(workspace);
+  if (!hasIndex(home, workspace)) {
+    console.error(`agentik search: no code index for ${root} — run: agentik index --workspace ${root}`);
+    return 1;
+  }
+  try {
+    await refreshIndex(home, workspace);
+  } catch (err) {
+    console.error(`agentik search: index not refreshed (${err instanceof Error ? err.message : String(err)}) — searching it as it is`);
+  }
+  try {
+    const res = await searchCode(home, workspace, { query, regex: flags.regex, pathGlob: flags.path, k: flags.k, offset: flags.offset });
+    if (flags.json) console.log(JSON.stringify(res, null, 2));
+    else process.stdout.write(formatSearch(res));
+    return 0;
+  } catch (err) {
+    console.error(`agentik search: ${err instanceof Error ? err.message : String(err)}`);
+    return 2;
+  }
 }
 
 const SKILL_USAGE =
