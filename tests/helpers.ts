@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
-import { MockBackend } from "../src/backends.ts";
+import { MockBackend } from "../src/mock-backend.ts";
 import type { Backend } from "../src/types.ts";
 
 export async function makeWorkspace(prefix: string): Promise<string> {

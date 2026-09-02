@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { detectInjection } from "../src/injection.ts";
 import { runLoop } from "../src/loop.ts";
-import { MockBackend } from "../src/backends.ts";
+import { MockBackend } from "../src/mock-backend.ts";
 import { makeWorkspace, pair } from "./helpers.ts";
 
 const DIRECT =

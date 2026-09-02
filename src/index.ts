@@ -4,8 +4,8 @@ export { detectInjection, isGoalHijack, INJECTION_RULES } from "./injection.ts";
 export { wrapUntrusted, wrapTrusted, renderEnvelope } from "./trust.ts";
 export { normalizeClaims, retrieveSource } from "./sources.ts";
 export { executeTool, TOOL_CATALOG, blastForCall, specFor } from "./tools.ts";
+export { MockBackend, type MockOptions } from "./mock-backend.ts";
 export {
-  MockBackend,
   ClaudeBackend,
   GrokBackend,
   CodexBackend,

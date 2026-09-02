@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { runLoop } from "../src/loop.ts";
 import { normalizeClaims } from "../src/sources.ts";
-import { MockBackend } from "../src/backends.ts";
+import { MockBackend } from "../src/mock-backend.ts";
 import { makeWorkspace } from "./helpers.ts";
 
 describe("verified-source research path", () => {

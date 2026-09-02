@@ -10,7 +10,7 @@ import {
   clampSubagentCount,
   normalizeWorkerRole,
 } from "../src/types.ts";
-import { MockBackend } from "../src/backends.ts";
+import { MockBackend } from "../src/mock-backend.ts";
 import { crew, makeWorkspace, pair } from "./helpers.ts";
 
 describe("up to 5 subagents", () => {

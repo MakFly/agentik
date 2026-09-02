@@ -133,7 +133,8 @@ Invariants (tests enforce them):
   on stderr, `grok models`), cached 15 min in `backends.json`. `--version` is not a probe.
 - `--backend auto` rotation: claude-sonnet, codex, claude-opus, grok — grok never on worker_a/b
   (it expires 2026-11-16). Unknown backend name = error, never a mock. Dead backend mid-run →
-  failover + `backendSwitches` in the report.
+  failover + `backendSwitches` in the report. `MockBackend` lives in `src/mock-backend.ts` (the only
+  backend-side module importing `plan.ts`); `backends.ts` never imports the planner.
 - Gated claude worker: `--restricted --disallowedTools …`, **never** `--dangerously-skip-permissions`
   (claude rejects the pair). Gated grok worker: `--disallowed-tools` uses the ids the binary
   advertises (`run_terminal_command`, `write`, …), not the stale prose docs.
