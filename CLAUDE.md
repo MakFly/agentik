@@ -507,14 +507,34 @@ command × level table (~80 rows) and the benign-neighbour check for every rule.
   (it expires 2026-11-16). Unknown backend name = error, never a mock. Dead backend mid-run →
   failover + `backendSwitches` in the report. `MockBackend` lives in `src/mock-backend.ts` (the only
   backend-side module importing `plan.ts`); `backends.ts` never imports the planner.
-- Gated claude worker: effort **per phase** (`claudeEffortFor(phase, {role, env})`, passed to
-  `claudeCliArgs(prompt, model, effort)`): plan `high` (a bad plan wastes the whole run), act and
-  synthesize `medium`, **`role: "reviewer"` always `high`**. `AGENTIK_CLAUDE_EFFORT=low|medium|high|xhigh|max`
-  (the values `claude --effort bogus --version` itself lists) forces one level everywhere for an A/B,
-  review included — it is set on purpose, unlike the phase default; anything else is ignored with one
-  stderr line, never handed to the CLI. `ClaudeBackend` takes an injectable `runner` (like
-  `CodexBackend`) so the argv the CLI really receives is testable without claude.
-  `foreignWorkerArgs` (`agentik spawn`) keeps `--effort high`.
+- **Routing per (harness, phase)** — `src/routing.ts`, a leaf (types only) in the spirit of
+  `tool-catalog.ts`: ONE table, read by the three gated backends, never copied into them.
+  `routingFor(harness, phase, {role, env, log}) → {model?, effort?}`:
+
+  | harness | plan | act & synthesize |
+  |---|---|---|
+  | claude | `--model opus --effort high` | `--model sonnet --effort medium` |
+  | codex | `-m gpt-5.6-sol -c model_reasoning_effort=high` | `-m gpt-5.6-luna -c model_reasoning_effort=xhigh` |
+  | grok | default model, `--reasoning-effort xhigh` | default model, `--reasoning-effort high` |
+
+  Flags checked on the installed CLIs, never assumed (`claude --model/--effort`, `codex exec -m` +
+  `-c model_reasoning_effort=` — the key the user's own `~/.codex/config.toml` sets —, `grok
+  --reasoning-effort`, alias `--effort`). **grok validates nothing** (`--effort bogus` parses), so
+  `routingFor` is the only guard on that path: `HARNESS_EFFORTS` per harness + `modelProblem`
+  (one token, no leading dash, no metacharacter) reject a bad value with one stderr line, and the
+  table's value stands — junk never reaches an argv. Overrides, one pair per harness:
+  `AGENTIK_{CLAUDE,CODEX,GROK}_{MODEL,EFFORT}` (`AGENTIK_CLAUDE_EFFORT` keeps its meaning).
+  `claudeEffortFor(phase, {role, env})` is now a thin wrapper over the table.
+  **The model follows the PHASE, not the slot**: `claude-sonnet` and `claude-opus` are the same
+  worker in practice, the `autoCycle` rotation is left alone (it still spreads over harnesses) and
+  `Backend.id` keeps both names, but the id no longer implies the model — so every live backend
+  returns `WorkerMessage.routing`, the loop stamps `WorkerInvocation.routing`, and `formatReport`
+  prints `worker_a (claude-sonnet) plan [opus/high]`.
+  **Out of scope, enforced and tested**: the background review (`role: "reviewer"`) keeps claude
+  sonnet + effort `high` and gets NO routing flag on codex/grok; `foreignWorkerArgs` (`agentik
+  spawn`) is untouched (claude `--effort high`, no `-m`, no `-c`, no `--reasoning-effort`).
+  All three backends take an injectable `runner`, so each cell of the table is asserted on the argv
+  the CLI really receives (`tests/routing.test.ts`).
 - Gated claude worker: `--restricted --tools "" --disallowedTools …` (NO built-in tool: a deny list alone let
   Grep/Glob explore the repository for 17 turns outside the gate — the first live A/B in `bench/index-ab/before-fix`
   cited exact line numbers with zero gated call), **never** `--dangerously-skip-permissions`

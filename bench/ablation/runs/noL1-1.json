@@ -1,0 +1,1016 @@
+{
+  "status": "completed",
+  "goal": {
+    "id": "goal-1",
+    "text": "Diagnostic only, modify no file: explain how memory sealing works in this repository. Name the module that writes memory/.seal.json, the function that detects an out-of-band modification, and every operation that refuses on a diverged seal. Cite file paths with line ranges for each claim.",
+    "submittedBy": "orchestrator",
+    "createdAt": "2026-09-02T22:17:12.316Z"
+  },
+  "originalGoalText": "Diagnostic only, modify no file: explain how memory sealing works in this repository. Name the module that writes memory/.seal.json, the function that detects an out-of-band modification, and every operation that refuses on a diverged seal. Cite file paths with line ranges for each claim.",
+  "workersInvoked": [
+    {
+      "role": "worker_a",
+      "phase": "plan",
+      "backend": "claude-sonnet",
+      "usage": {
+        "inputTokens": 2,
+        "cachedInputTokens": 5967,
+        "outputTokens": 1306,
+        "costUsd": 0.023682400000000003,
+        "turns": 2,
+        "durationMs": 12692
+      },
+      "durationMs": 13868
+    },
+    {
+      "role": "worker_a",
+      "phase": "act",
+      "backend": "claude-sonnet",
+      "taskId": "read-seal-module",
+      "usage": {
+        "inputTokens": 2,
+        "cachedInputTokens": 5967,
+        "outputTokens": 189,
+        "costUsd": 0.010128400000000003,
+        "turns": 2,
+        "durationMs": 2052
+      },
+      "durationMs": 3290
+    },
+    {
+      "role": "worker_b",
+      "phase": "act",
+      "backend": "claude-sonnet",
+      "taskId": "find-seal-consumers",
+      "usage": {
+        "inputTokens": 2,
+        "cachedInputTokens": 5967,
+        "outputTokens": 343,
+        "costUsd": 0.0117714,
+        "turns": 2,
+        "durationMs": 3179
+      },
+      "durationMs": 4503
+    },
+    {
+      "role": "worker_a",
+      "phase": "act",
+      "backend": "claude-sonnet",
+      "taskId": "read-seal-module",
+      "usage": {
+        "inputTokens": 10,
+        "cachedInputTokens": 56786,
+        "outputTokens": 6176,
+        "costUsd": 0.1118502,
+        "turns": 6,
+        "durationMs": 50218
+      },
+      "durationMs": 51238
+    },
+    {
+      "role": "worker_b",
+      "phase": "act",
+      "backend": "claude-sonnet",
+      "taskId": "find-seal-consumers",
+      "usage": {
+        "inputTokens": 8,
+        "cachedInputTokens": 31444,
+        "outputTokens": 1601,
+        "costUsd": 0.0372338,
+        "turns": 5,
+        "durationMs": 17504
+      },
+      "durationMs": 18487
+    },
+    {
+      "role": "worker_b",
+      "phase": "act",
+      "backend": "claude-sonnet",
+      "taskId": "find-seal-consumers",
+      "usage": {
+        "inputTokens": 2,
+        "cachedInputTokens": 5967,
+        "outputTokens": 673,
+        "costUsd": 0.028878399999999995,
+        "turns": 2,
+        "durationMs": 7780
+      },
+      "durationMs": 9142
+    },
+    {
+      "role": "worker_b",
+      "phase": "act",
+      "backend": "claude-sonnet",
+      "taskId": "find-seal-consumers",
+      "usage": {
+        "inputTokens": 4,
+        "cachedInputTokens": 25080,
+        "outputTokens": 2112,
+        "costUsd": 0.095118,
+        "turns": 3,
+        "durationMs": 20965
+      },
+      "durationMs": 22211
+    },
+    {
+      "role": "worker_b",
+      "phase": "act",
+      "backend": "claude-sonnet",
+      "taskId": "find-seal-consumers",
+      "usage": {
+        "inputTokens": 2,
+        "cachedInputTokens": 5967,
+        "outputTokens": 1223,
+        "costUsd": 0.1000704,
+        "turns": 2,
+        "durationMs": 14936
+      },
+      "durationMs": 16268
+    },
+    {
+      "role": "worker_b",
+      "phase": "act",
+      "backend": "claude-sonnet",
+      "taskId": "find-seal-consumers",
+      "usage": {
+        "inputTokens": 2,
+        "cachedInputTokens": 5967,
+        "outputTokens": 558,
+        "costUsd": 0.1084244,
+        "turns": 2,
+        "durationMs": 6020
+      },
+      "durationMs": 7267
+    },
+    {
+      "role": "worker_b",
+      "phase": "synthesize",
+      "backend": "claude-sonnet",
+      "usage": {
+        "inputTokens": 2,
+        "cachedInputTokens": 5967,
+        "outputTokens": 1963,
+        "costUsd": 0.0315574,
+        "turns": 2,
+        "durationMs": 18103
+      },
+      "durationMs": 19124
+    }
+  ],
+  "tasks": [
+    {
+      "id": "read-seal-module",
+      "assignee": "worker_a",
+      "instruction": "Diagnostic only, do not modify any file. Read src/memory-seal.ts in full. Identify and report with exact line ranges: (1) the constant/function that writes memory/.seal.json (e.g. SEAL_FILE, sealPath, sealFile/sealContent), (2) the function that computes/verifies a digest to detect out-of-band modification (e.g. digest, checkSeal), and (3) the SealStatus type values and DIVERGED_BODY constant used to signal a diverged seal. Quote the relevant function signatures and short code excerpts with their line numbers. Do not write or edit any files.",
+      "allowedTools": [
+        "read_file"
+      ],
+      "maxSteps": 4,
+      "acceptance": {
+        "requireTools": true
+      }
+    },
+    {
+      "id": "find-seal-consumers",
+      "assignee": "worker_b",
+      "instruction": "Diagnostic only, do not modify any file. Search the codebase (src/*.ts, especially src/memory-store.ts, src/memory.ts, src/memory-log.ts, src/cli.ts) for usages of checkSeal, SealStatus, DIVERGED_BODY, sealKey, and unsealFile from src/memory-seal.ts. For every call site, determine whether it refuses/aborts an operation when the seal is diverged, and identify which memory operation is being gated (e.g. write, retain, recall, log). Report each finding with the file path and exact line range where the check occurs and where the refusal/error is raised. Do not write or edit any files.",
+      "allowedTools": [
+        "search_code",
+        "read_file"
+      ],
+      "maxSteps": 6,
+      "acceptance": {
+        "requireTools": true
+      }
+    }
+  ],
+  "executedTools": [
+    {
+      "tool": "read_file",
+      "args": {
+        "path": "src/memory-seal.ts"
+      },
+      "artifact": "src/memory-seal.ts",
+      "output": "import { createHash } from \"node:crypto\";\nimport { existsSync } from \"node:fs\";\nimport { mkdir, readFile, rename, writeFile } from \"node:fs/promises\";\nimport { dirname, join, relative } from \"node:path\";\nimport { agentikHome, memoryPaths } from \"./home.ts\";\n\n/**\n * Tamper-evident memory. `memory/.seal.json` maps every memory file (`MEMORY.md`, `USER.md`,\n * `projects/<slug>/MEMORY.md`) to the sha256 of what agentik last wrote there. A file whose\n * content no longer matches was modified out of band — by a worker with a shell, by a stray\n * script — and is shown as `[BLOCKED: modified out of band]` until a human runs\n * `agentik memory reseal`; every agentik write to it is refused meanwhile, so the reviewer's\n * next write cannot launder the foreign entry. A file with no seal yet (first run, a fresh\n * home) is accepted and sealed silently.\n *\n * Limits, stated: this is tamper-EVIDENT, not tamper-proof. There is no HMAC because the key\n * would live in the same home as the files; a process that can edit MEMORY.md can edit the\n * seal. It catches mistakes and unprivileged prompt-injected writes, not a root attacker.\n *\n * Writes to the seal are serialized (module mutex) and atomic (tmp + rename): the three\n * snapshots of `buildContext` run in Promise.all.\n */\n\nexport type SealStatus = \"sealed\" | \"unsealed\" | \"diverged\";\n\nexport const SEAL_FILE = \".seal.json\";\n\nlet chain: Promise<unknown> = Promise.resolve();\nfunction locked<T>(fn: () => Promise<T>): Promise<T> {\n  const next = chain.then(fn, fn);\n  chain = next.catch(() => undefined);\n  return next;\n}\n\nexport function sealPath(home?: string): string {\n  return join(memoryPaths(agentikHome(home)).memoryDir, SEAL_FILE);\n}\n\n/** The seal key of a memory file: its path relative to `memory/`. */\nexport function sealKey(file: string, home?: string): string {\n  return relative(memoryPaths(agentikHome(home)).memoryDir, file).split(\"\\\\\").join(\"/\");\n}\n\nexport function digest(content: string): string {\n  return createHash(\"sha256\").update(content).digest(\"hex\");\n}\n\nasync function readSeal(home?: string): Promise<Record<string, string>> {\n  try {\n    const raw = JSON.parse(await readFile(sealPath(home), \"utf8\")) as unknown;\n    return raw && typeof raw === \"object\" && !Array.isArray(raw) ? (raw as Record<string, string>) : {};\n  } catch {\n    return {};\n  }\n}\n\nasync function writeSeal(seal: Record<string, string>, home?: string): Promise<void> {\n  const path = sealPath(home);\n  await mkdir(dirname(path), { recursive: true });\n  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;\n  await writeFile(tmp, `${JSON.stringify(seal, null, 2)}\\n`, \"utf8\");\n  await rename(tmp, path);\n}\n\n/** Record `content` as the sealed state of `key`. */\nexport function sealContent(key: string, content: string, home?: string): Promise<void> {\n  return locked(async () => {\n    const seal = await readSeal(home);\n    seal[key] = digest(content);\n    await writeSeal(seal, home);\n  });\n}\n\n/** Seal a file as it is on disk (a rename, a migration, a human `reseal`); absent file → entry removed. */\nexport function sealFile(file: string, home?: string): Promise<SealStatus> {\n  return locked(async () => {\n    const seal = await readSeal(home);\n    const key = sealKey(file, home);\n    if (!existsSync(file)) {\n      delete seal[key];\n      await writeSeal(seal, home);\n      return \"unsealed\";\n    }\n    seal[key] = digest(await readFile(file, \"utf8\"));\n    await writeSeal(seal, home);\n    return \"sealed\";\n  });\n}\n\nexport function unsealFile(file: string, home?: string): Promise<void> {\n  return locked(async () => {\n    const seal = await readSeal(home);\n    delete seal[sealKey(file, home)];\n    await writeSeal(seal, home);\n  });\n}\n\n/**\n * Compare a file's content with its seal. `unsealed` (no entry) is accepted AND sealed here, so a\n * home that predates the seal is not flagged on its first read.\n */\nexport function checkSeal(file: string, content: string, home?: string): Promise<SealStatus> {\n  return locked(async () => {\n    const seal = await readSeal(home);\n    const key = sealKey(file, home);\n    const have = seal[key];\n    const now = digest(content);\n    if (have === undefined) {\n      seal[key] = now;\n      await writeSeal(seal, home);\n      return \"unsealed\";\n    }\n    return have === now ? \"sealed\" : \"diverged\";\n  });\n}\n\nexport const DIVERGED_BODY = \"[BLOCKED: modified out of band — agentik memory reseal to accept]\";\n"
+    },
+    {
+      "tool": "search_code",
+      "args": {
+        "pattern": "checkSeal",
+        "path": "src"
+      },
+      "output": "no hits\n[0 files, offset 0, end]\n"
+    },
+    {
+      "tool": "search_code",
+      "args": {
+        "pattern": "SealStatus",
+        "path": "src"
+      },
+      "output": "no hits\n[0 files, offset 0, end]\n"
+    },
+    {
+      "tool": "search_code",
+      "args": {
+        "pattern": "DIVERGED_BODY",
+        "path": "src"
+      },
+      "output": "no hits\n[0 files, offset 0, end]\n"
+    },
+    {
+      "tool": "search_code",
+      "args": {
+        "pattern": "sealKey",
+        "path": "src"
+      },
+      "output": "no hits\n[0 files, offset 0, end]\n"
+    },
+    {
+      "tool": "search_code",
+      "args": {
+        "pattern": "unsealFile",
+        "path": "src"
+      },
+      "output": "no hits\n[0 files, offset 0, end]\n"
+    },
+    {
+      "tool": "read_file",
+      "args": {
+        "path": "src/memory-seal.ts"
+      },
+      "artifact": "src/memory-seal.ts",
+      "output": "import { createHash } from \"node:crypto\";\nimport { existsSync } from \"node:fs\";\nimport { mkdir, readFile, rename, writeFile } from \"node:fs/promises\";\nimport { dirname, join, relative } from \"node:path\";\nimport { agentikHome, memoryPaths } from \"./home.ts\";\n\n/**\n * Tamper-evident memory. `memory/.seal.json` maps every memory file (`MEMORY.md`, `USER.md`,\n * `projects/<slug>/MEMORY.md`) to the sha256 of what agentik last wrote there. A file whose\n * content no longer matches was modified out of band — by a worker with a shell, by a stray\n * script — and is shown as `[BLOCKED: modified out of band]` until a human runs\n * `agentik memory reseal`; every agentik write to it is refused meanwhile, so the reviewer's\n * next write cannot launder the foreign entry. A file with no seal yet (first run, a fresh\n * home) is accepted and sealed silently.\n *\n * Limits, stated: this is tamper-EVIDENT, not tamper-proof. There is no HMAC because the key\n * would live in the same home as the files; a process that can edit MEMORY.md can edit the\n * seal. It catches mistakes and unprivileged prompt-injected writes, not a root attacker.\n *\n * Writes to the seal are serialized (module mutex) and atomic (tmp + rename): the three\n * snapshots of `buildContext` run in Promise.all.\n */\n\nexport type SealStatus = \"sealed\" | \"unsealed\" | \"diverged\";\n\nexport const SEAL_FILE = \".seal.json\";\n\nlet chain: Promise<unknown> = Promise.resolve();\nfunction locked<T>(fn: () => Promise<T>): Promise<T> {\n  const next = chain.then(fn, fn);\n  chain = next.catch(() => undefined);\n  return next;\n}\n\nexport function sealPath(home?: string): string {\n  return join(memoryPaths(agentikHome(home)).memoryDir, SEAL_FILE);\n}\n\n/** The seal key of a memory file: its path relative to `memory/`. */\nexport function sealKey(file: string, home?: string): string {\n  return relative(memoryPaths(agentikHome(home)).memoryDir, file).split(\"\\\\\").join(\"/\");\n}\n\nexport function digest(content: string): string {\n  return createHash(\"sha256\").update(content).digest(\"hex\");\n}\n\nasync function readSeal(home?: string): Promise<Record<string, string>> {\n  try {\n    const raw = JSON.parse(await readFile(sealPath(home), \"utf8\")) as unknown;\n    return raw && typeof raw === \"object\" && !Array.isArray(raw) ? (raw as Record<string, string>) : {};\n  } catch {\n    return {};\n  }\n}\n\nasync function writeSeal(seal: Record<string, string>, home?: string): Promise<void> {\n  const path = sealPath(home);\n  await mkdir(dirname(path), { recursive: true });\n  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;\n  await writeFile(tmp, `${JSON.stringify(seal, null, 2)}\\n`, \"utf8\");\n  await rename(tmp, path);\n}\n\n/** Record `content` as the sealed state of `key`. */\nexport function sealContent(key: string, content: string, home?: string): Promise<void> {\n  return locked(async () => {\n    const seal = await readSeal(home);\n    seal[key] = digest(content);\n    await writeSeal(seal, home);\n  });\n}\n\n/** Seal a file as it is on disk (a rename, a migration, a human `reseal`); absent file → entry removed. */\nexport function sealFile(file: string, home?: string): Promise<SealStatus> {\n  return locked(async () => {\n    const seal = await readSeal(home);\n    const key = sealKey(file, home);\n    if (!existsSync(file)) {\n      delete seal[key];\n      await writeSeal(seal, home);\n      return \"unsealed\";\n    }\n    seal[key] = digest(await readFile(file, \"utf8\"));\n    await writeSeal(seal, home);\n    return \"sealed\";\n  });\n}\n\nexport function unsealFile(file: string, home?: string): Promise<void> {\n  return locked(async () => {\n    const seal = await readSeal(home);\n    delete seal[sealKey(file, home)];\n    await writeSeal(seal, home);\n  });\n}\n\n/**\n * Compare a file's content with its seal. `unsealed` (no entry) is accepted AND sealed here, so a\n * home that predates the seal is not flagged on its first read.\n */\nexport function checkSeal(file: string, content: string, home?: string): Promise<SealStatus> {\n  return locked(async () => {\n    const seal = await readSeal(home);\n    const key = sealKey(file, home);\n    const have = seal[key];\n    const now = digest(content);\n    if (have === undefined) {\n      seal[key] = now;\n      await writeSeal(seal, home);\n      return \"unsealed\";\n    }\n    return have === now ? \"sealed\" : \"diverged\";\n  });\n}\n\nexport const DIVERGED_BODY = \"[BLOCKED: modified out of band — agentik memory reseal to accept]\";\n"
+    },
+    {
+      "tool": "search_code",
+      "args": {
+        "query": "seal",
+        "path": "src"
+      },
+      "output": "no hits\n[0 files, offset 0, end]\n"
+    },
+    {
+      "tool": "search_code",
+      "args": {
+        "query": "checkSeal",
+        "path": "src"
+      },
+      "output": "no hits\n[0 files, offset 0, end]\n"
+    },
+    {
+      "tool": "search_code",
+      "args": {
+        "query": "memory-seal",
+        "path": "src"
+      },
+      "output": "no hits\n[0 files, offset 0, end]\n"
+    },
+    {
+      "tool": "search_code",
+      "args": {
+        "query": "DIVERGED_BODY",
+        "path": "src"
+      },
+      "output": "no hits\n[0 files, offset 0, end]\n"
+    },
+    {
+      "tool": "read_file",
+      "args": {
+        "path": "src/memory-store.ts"
+      },
+      "artifact": "src/memory-store.ts",
+      "output": "import { existsSync } from \"node:fs\";\nimport { copyFile, mkdir, readFile, rename, writeFile } from \"node:fs/promises\";\nimport { dirname, join, resolve } from \"node:path\";\nimport { readConfig } from \"./config.ts\";\nimport { agentikHome, legacyProjectSlug, memoryPaths, projectMemoryPath, projectSlug } from \"./home.ts\";\nimport { checkSeal, DIVERGED_BODY, sealContent, sealFile, sealKey } from \"./memory-seal.ts\";\nimport { resolveWorkspaceRoot } from \"./workspace.ts\";\nimport { detectInjection } from \"./injection.ts\";\nimport { logMemoryOp, type MemoryOpActor } from \"./memory-log.ts\";\nimport { newPendingId, stagePending, type PendingMemoryOp } from \"./pending.ts\";\n\n/**\n * The always-loaded memory files, written by a model through the `memory` tool.\n *\n * MEMORY.md (target `memory`) holds GLOBAL durable facts — true in every project: tool\n * behaviours, CLI quirks, cross-repo lessons. USER.md (target `user`) holds who the user is\n * (preferences, corrections, style). `memory/projects/<slug>/MEMORY.md` (target `project`)\n * holds what is true of ONE workspace only — conventions, paths, test commands — and is never\n * loaded into another workspace's context. All three are capped in characters, and the cap is\n * not a limit that overflows somewhere else: an `add` that would exceed it fails and tells the\n * caller to consolidate first, in the same turn. That single rule is what keeps the file worth\n * loading — Hermes's memory_tool works the same way.\n *\n * Entries are separated by `\\n§\\n` (section sign), may span lines, and are exact-deduplicated.\n * The same masking / dedup / cap / consolidation logic serves every target; only the path differs.\n */\nexport type MemoryTarget = \"memory\" | \"user\" | \"project\";\n\nexport const MEMORY_CAP = 2200;\nexport const USER_CAP = 1375;\nexport const PROJECT_CAP = 2200;\nexport const CAPS: Record<MemoryTarget, number> = { memory: MEMORY_CAP, user: USER_CAP, project: PROJECT_CAP };\n\n/** `workspace` is required for target `project` (its file is per workspace) and ignored otherwise. */\nexport interface MemoryStoreOpts {\n  home?: string;\n  workspace?: string;\n  /** Who writes (journal): the reviewer's tool, the human's pen, an approval, a migration. Default reviewer. */\n  by?: MemoryOpActor;\n  /** The session this write belongs to, when known (journal). */\n  sessionId?: number;\n}\n\n/** Journal a batch after the file is written; a broken journal is one stderr line, never a failed write. */\nasync function journal(target: MemoryTarget, ops: MemoryOperation[], opts: MemoryStoreOpts | undefined, workspace: string | undefined): Promise<void> {\n  const mask = (text: string | undefined) => {\n    if (!text) return undefined;\n    const problem = memoryContentProblem(text);\n    return problem ? `[BLOCKED: ${problem}]` : text;\n  };\n  for (const op of ops) {\n    try {\n      await logMemoryOp(\n        {\n          target,\n          workspace: workspace ? resolve(workspace) : undefined,\n          op: op.action,\n          before: mask(op.action === \"a\n…[20566 chars omitted — full output in .agentik/tool-results/worker_b-read_file-12.txt; read_file {\"path\":\".agentik/tool-results/worker_b-read_file-12.txt\",\"offset\":3000,\"limit\":8000} to page it]…\nconst { recordIncident } = await import(\"./incidents.ts\");\n        await recordIncident(\n          { goal: \"memory integrity\", workspace: opts?.workspace, harness: \"agentik\", symptom: `memory file modified out of band: memory/${key}`, errors: [DIVERGED_MESSAGE(memoryFileLabel(target))] },\n          { home },\n        );\n      } catch (err) {\n        console.error(`agentik: could not record the seal incident: ${err instanceof Error ? err.message : String(err)}`);\n      }\n      const usage = usageOf(parseEntries(sealed.body), target);\n      return { target, header: `${title} [${Math.min(100, usage.percent)}% — ${usage.used}/${usage.cap} chars]`, body: DIVERGED_BODY, usage, blockedCount: 1, diverged: true };\n    }\n  }\n  const entries = await readEntries(target, home, { workspace: opts?.workspace });\n  const usage = usageOf(entries, target);\n  let blockedCount = 0;\n  const shown = entries.map((e) => {\n    const problem = memoryContentProblem(e);\n    if (!problem) return e;\n    blockedCount += 1;\n    return `[BLOCKED: ${problem}]`;\n  });\n  const header = `${title} [${Math.min(100, usage.percent)}% — ${usage.used}/${usage.cap} chars]`;\n  return { target, header, body: shown.length ? shown.join(\"\\n§\\n\") : \"(empty)\", usage, blockedCount };\n}\n\n/** The human's pen: accept the file as it is on disk. Journaled `reseal` by human. */\nexport async function resealMemory(target: MemoryTarget, opts?: MemoryStoreOpts): Promise<{ file: string; status: \"sealed\" | \"unsealed\" | \"diverged\" }> {\n  const workspace = target === \"project\" ? opts?.workspace : undefined;\n  const { file } = pathFor(target, opts?.home, workspace);\n  const status = await sealFile(file, opts?.home);\n  try {\n    await logMemoryOp({ target, workspace: workspace ? resolve(workspace) : undefined, op: \"reseal\", by: opts?.by ?? \"human\" }, { home: opts?.home });\n  } catch (err) {\n    console.error(`agentik: could not journal the reseal: ${err instanceof Error ? err.message : String(err)}`);\n  }\n  return { file, status };\n}\n",
+      "outputPath": ".agentik/tool-results/worker_b-read_file-12.txt"
+    },
+    {
+      "tool": "read_file",
+      "args": {
+        "path": "src/memory.ts"
+      },
+      "artifact": "src/memory.ts",
+      "output": "import { readFile } from \"node:fs/promises\";\nimport { agentikHome, memoryPaths } from \"./home.ts\";\nimport {\n  MEMORY_CAP,\n  memoryAdd,\n  memoryContentProblem,\n  memoryFileLabel,\n  memoryFilePath,\n  readEntries,\n  USER_CAP as STORE_USER_CAP,\n  type MemoryTarget,\n} from \"./memory-store.ts\";\nimport { formatSessionHit, migrateLegacyMemory, searchSessions } from \"./sessions.ts\";\n\n/** Hermes-like caps: always-loaded HOT notes stay small. */\nexport const HOT_CAP = MEMORY_CAP;\nexport const USER_CAP = STORE_USER_CAP;\n\nexport interface MemoryNote {\n  kind: \"fact\" | \"session\" | \"lesson\";\n  body: string;\n  createdAt: string;\n}\n\nexport interface RetainResult {\n  /** `pending`: memory.writeApproval is on, the note waits in `pending/memory/` for approval. */\n  layer: \"hot\" | \"pending\" | \"rejected\";\n  path: string;\n  reason?: string;\n}\n\nexport function looksLikeSecret(text: string): boolean {\n  return memoryContentProblem(text)?.startsWith(\"looks like a secret\") ?? false;\n}\n\n/**\n * Write a durable fact through the store: one `§`-separated entry, exact-deduplicated,\n * scanned, and refused with the cap in the reason when it does not fit — the caller\n * consolidates (replace / remove) instead of the note silently landing somewhere nobody reads.\n * `target` defaults to the global MEMORY.md; `project` needs `workspace`. `kind` is kept for\n * the CLI's sake; the store does not label entries.\n */\nexport async function retainNote(\n  body: string,\n  opts?: { kind?: MemoryNote[\"kind\"]; home?: string; target?: MemoryTarget; workspace?: string },\n): Promise<RetainResult> {\n  const text = body.replace(/\\s+/g, \" \").trim();\n  if (!text) return { layer: \"rejected\", path: \"\", reason: \"empty note\" };\n  const home = agentikHome(opts?.home);\n  const target = opts?.target ?? \"memory\";\n  await migrateLegacyMemory({ home });\n  const paths = memoryPaths(home);\n  const file = memoryFilePath(target, { home, workspace: opts?.workspace });\n  const res = await memoryAdd(target, text, { home, workspace: opts?.workspace, by: \"human\" });\n  if (!res.ok) {\n    return {\n      layer: \"rejected\",\n      path: res.blocked ? \"secret\" : file,\n      reason: res.overCap\n        ? `${memoryFileLabel(target)} at ${res.usage.used}/${res.usage.cap} chars — consolidate (replace/remove) before adding`\n        : res.message,\n    };\n  }\n  if (res.staged) {\n    return { layer: \"pending\", path: `${paths.pendingMemoryOps}/${res.staged}.json`, reason: res.message };\n  }\n  return { layer: \"hot\", path: file };\n}\n\n/** HOT entries whose text contains the query (case-insensitive). */\nexport async function recallHot(query: string, opts?: { home?: string; limit?: number }): Promise<string[]> {\n  const home = agentikHome(opts?.home);\n  await migrateLegacyMemory({ home });\n  const q = query.toLowerCase();\n  const entries = await readEntries(\"memory\", home);\n  return entries.filter((e) => e.toLowerCase().includes(q)).slice(0, opts?.limit ?? 8);\n}\n\n/** HOT matches first, then session hits (`[date] goal — summary`). */\nexport async function recall(\n  query: string,\n  opts?: { home?: string; limit?: number; workspace?: string; all?: boolean },\n): Promise<string[]> {\n  const limit = opts?.limit ?? 8;\n  const hits = await recallHot(query, { home: opts?.home, limit });\n  const sessions = await searchSessions(query, {\n    home: opts?.home,\n    workspace: opts?.workspace,\n    all: opts?.all,\n    limit,\n  });\n  for (const s of sessions) hits.push(formatSessionHit(s));\n  return hits.slice(0, limit);\n}\n\nexport async function readHot(opts?: { home?: string }): Promise<string> {\n  const home = agentikHome(opts?.home);\n  await migrateLegacyMemory({ home });\n  return readOptional(memoryPaths(home).hot);\n}\n\nexport async function readUser(opts?: { home?: string }): Promise<string> {\n  return readOptional(memoryPaths(agentikHome(opts?.home)).user);\n}\n\nasync function readOptional(path: string): Promise<string> {\n  try {\n    return await readFile(path, \"utf8\");\n  } catch {\n    return \"\";\n  }\n}\n"
+    },
+    {
+      "tool": "read_file",
+      "args": {
+        "path": "src/memory-log.ts"
+      },
+      "artifact": "src/memory-log.ts",
+      "output": "import { agentikHome } from \"./home.ts\";\nimport { openSessionsDb } from \"./sessions.ts\";\n\n/**\n * Journal of every memory write: who changed what, in which file, before and after. The\n * reviewer, the human (`retain`, `remove`), an approval and a migration all go through\n * `memoryApply` / `memoryRemoveEntry`, which call `logMemoryOp` after the file is written.\n * Table `memory_ops` in sessions.sqlite (same store as sessions and incidents). Never read by\n * `context.ts` or `reviewer.ts`: the log is for the human, not for the prompt.\n */\n\nexport type MemoryOpKind = \"add\" | \"replace\" | \"remove\" | \"reseal\" | \"migrate\";\nexport type MemoryOpActor = \"reviewer\" | \"human\" | \"approval\" | \"migration\";\n\nexport interface MemoryOpInput {\n  target: string;\n  workspace?: string;\n  op: MemoryOpKind;\n  before?: string;\n  after?: string;\n  sessionId?: number;\n  by: MemoryOpActor;\n}\n\nexport interface MemoryOpRecord extends MemoryOpInput {\n  id: number;\n  ts: string;\n}\n\ninterface Row {\n  id: number;\n  ts: string;\n  target: string;\n  workspace: string;\n  op: string;\n  before: string;\n  after: string;\n  session_id: number | null;\n  by: string;\n}\n\nasync function openLog(home: string) {\n  const db = await openSessionsDb(home);\n  db.run(`CREATE TABLE IF NOT EXISTS memory_ops (\n    id INTEGER PRIMARY KEY,\n    ts TEXT NOT NULL,\n    target TEXT NOT NULL,\n    workspace TEXT NOT NULL DEFAULT '',\n    op TEXT NOT NULL,\n    before TEXT NOT NULL DEFAULT '',\n    after TEXT NOT NULL DEFAULT '',\n    session_id INTEGER NULL,\n    by TEXT NOT NULL\n  )`);\n  db.run(\"CREATE INDEX IF NOT EXISTS memory_ops_target ON memory_ops(target, workspace, ts)\");\n  return db;\n}\n\nexport async function logMemoryOp(input: MemoryOpInput, opts?: { home?: string }): Promise<MemoryOpRecord> {\n  const home = agentikHome(opts?.home);\n  const db = await openLog(home);\n  try {\n    const ts = new Date().toISOString();\n    const res = db.run(\n      \"INSERT INTO memory_ops (ts, target, workspace, op, before, after, session_id, by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)\",\n      [ts, input.target, input.workspace ?? \"\", input.op, input.before ?? \"\", input.after ?? \"\", input.sessionId ?? null, input.by],\n    );\n    return { ...input, id: Number(res.lastInsertRowid), ts };\n  } finally {\n    db.close();\n  }\n}\n\nexport async function listMemoryOps(opts?: { home?: string; target?: string; workspace?: string; limit?: number }): Promise<MemoryOpRecord[]> {\n  const home = agentikHome(opts?.home);\n  const db = await openLog(home);\n  try {\n    const where: string[] = [];\n    const params: (string | number)[] = [];\n    if (opts?.target) {\n      where.push(\"target = ?\");\n      params.push(opts.target);\n    }\n    if (opts?.workspace) {\n      where.push(\"workspace = ?\");\n      params.push(opts.workspace);\n    }\n    params.push(opts?.limit ?? 50);\n    const rows = db\n      .query<Row, (string | number)[]>(`SELECT * FROM memory_ops${where.length ? ` WHERE ${where.join(\" AND \")}` : \"\"} ORDER BY id DESC LIMIT ?`)\n      .all(...params);\n    return rows.map((r) => ({\n      id: r.id,\n      ts: r.ts,\n      target: r.target,\n      workspace: r.workspace || undefined,\n      op: r.op as MemoryOpKind,\n      before: r.before || undefined,\n      after: r.after || undefined,\n      sessionId: r.session_id ?? undefined,\n      by: r.by as MemoryOpActor,\n    }));\n  } finally {\n    db.close();\n  }\n}\n\nconst cut = (s: string | undefined, n = 70) => (s ? (s.length > n ? `${s.slice(0, n - 1)}…` : s) : \"\");\n\n/** `#12 2026-09-02 09:15 memory add by reviewer: \"…\"` / `replace: \"old\" → \"new\"` */\nexport function formatMemoryOp(r: MemoryOpRecord): string {\n  const when = r.ts.slice(0, 16).replace(\"T\", \" \");\n  const ws = r.workspace ? ` (${r.workspace})` : \"\";\n  const what =\n    r.op === \"add\" ? `\"${cut(r.after)}\"`\n    : r.op === \"remove\" ? `\"${cut(r.before)}\"`\n    : r.op === \"replace\" ? `\"${cut(r.before, 40)}\" → \"${cut(r.after, 40)}\"`\n    : r.op === \"migrate\" ? `\"${cut(r.after)}\"`\n    : \"\";\n  return `#${r.id} ${when} ${r.target}${ws} ${r.op} by ${r.by}${r.sessionId ? ` (session #${r.sessionId})` : \"\"}${what ? `: ${what}` : \"\"}`;\n}\n"
+    },
+    {
+      "tool": "read_file",
+      "args": {
+        "path": "src/cli.ts"
+      },
+      "artifact": "src/cli.ts",
+      "output": "#!/usr/bin/env bun\nimport { matchCommandRules } from \"./command-policy.ts\";\nimport { ConfigError, formatConfigError, readConfig } from \"./config.ts\";\nimport { currentDepth, depthProblem, nestedSymptom } from \"./depth.ts\";\nimport { mkdir } from \"node:fs/promises\";\nimport { resolve } from \"node:path\";\nimport {\n  foreignWorkerArgs,\n  harnessForName,\n  resolveBackends,\n  spawnCapture,\n  spawnLines,\n} from \"./backends.ts\";\nimport {\n  describeStatus,\n  HARNESSES,\n  loadAvailability,\n  type HarnessName, helpSupportsDenyRules } from \"./availability.ts\";\nimport {\n  artifactChanged,\n  describeArtifactDiff,\n  describeUntouched,\n  diffArtifacts,\n  snapshotArtifacts,\n  untouchedArtifacts,\n  type ArtifactSnapshot,\n} from \"./artifacts.ts\";\nimport { consumeVerdictLine, describeEvidence, evidenceOf, floorViolations, formatUsage, newVerdict, summarizeVerdict, verdictArgs, verdictProblem } from \"./verdict.ts\";\nimport { formatReport, runLoop, type LoopConfig } from \"./loop.ts\";\nimport { defaultFetchImpl } from \"./tools.ts\";\nimport { retainNote, readHot } from \"./memory.ts\";\nimport { memoryFileLabel, memoryFilePath, memoryRemoveEntry, resealMemory, type MemoryTarget } from \"./memory-store.ts\";\nimport { formatSessionHit, searchSessions } from \"./sessions.ts\";\nimport { buildContext } from \"./context.ts\";\nimport { ensureIndex, formatIndexEntry, formatIndexStats, gcIndexes, hasIndex, indexKey, indexStats, isIndexBusy, listIndexes, refreshIndex, removeIndex, watchIndex, WATCH_INTERVAL_MS } from \"./code-index.ts\";\nimport { hookStatus, installHooks, removeHooks } from \"./index-hooks.ts\";\nimport { repoMap } from \"./repo-map.ts\";\nimport { formatSearch, searchCode } from \"./code-search.ts\";\nimport { renderEnvelope, wrapUntrusted } from \"./trust.ts\";\nimport {\n  classifyIncident,\n  formatIncidentLine,\n  getIncident,\n  listIncidents,\n  recordIncident,\n  resolveIncident,\n  type IncidentRecord,\n} from \"./incidents.ts\";\nimport { formatIncidentForReview, formatReviewOutcome, runReview, type ReviewOutcome } from \"./reviewer.ts\";\nimport { formatRunLine, listRuns, readRun, writeRun, type RunRecord } from \"./runs.ts\";\nimport { callHash } from \"./guardrails.ts\";\nimport { formatMemoryOp, listMemoryOps } from \"./memory-log.ts\";\nimport { resolveWorkspaceRoot } from \"./workspace.ts\";\nimport { formatEvalResult, runReviewEval } from \"./review-eval.ts\";\nimport { undoSkillWrite } from \"./skill-write.ts\";\nimport { formatRunUsage } from \"./usage.ts\";\nimport { getSession, latestSession, recordSession } from \"./sessions.ts\";\nimport { existsSync } from \"node:fs\";\nimport { readFile } from \"node:fs/promises\";\nimport { recallBeforeRun, reviewAfterRun, type SessionStatus } from \"./review.ts\";\nimport {\n  approveSkill,\n  archiveAutoGeneratedSkills,\n  draftSkill,\n  linkHarnessSkill,\n  listSkills,\n  pinSkill,\n  skillNameProblem,\n  unlinkHarnessSkills,\n  updateSkill,\n} from \"./skill-factory.ts\";\nimport { agentikHome, memoryPaths, projectMemoryPath, projectSlug } from \"./home.ts\";\nimport { join } from \"node:pat\n…[101640 chars omitted — full output in .agentik/tool-results/worker_b-read_file-15.txt; read_file {\"path\":\".agentik/tool-results/worker_b-read_file-15.txt\",\"offset\":3000,\"limit\":8000} to page it]…\nr(SKILL_USAGE);\n      return 2;\n    }\n    const dir = join(memoryPaths(agentikHome(home)).skills, name);\n    let linked: string[];\n    try {\n      linked = await linkHarnessSkill(name, dir);\n    } catch (err) {\n      console.error(`agentik skills link: ${err instanceof Error ? err.message : String(err)}`);\n      return 1;\n    }\n    console.log(`linked ${name} into ${linked.length} harness home(s)`);\n    return 0;\n  }\n  if (sub === \"undo\") {\n    const name = args[1];\n    if (!name) {\n      console.error(SKILL_USAGE);\n      return 2;\n    }\n    const res = await undoSkillWrite(name, { home });\n    if (!res.ok) {\n      console.error(`agentik skills undo: ${res.error}`);\n      return 1;\n    }\n    console.log(`restored ${name} from ${res.restored} (the version you undid is backed up too)`);\n    return 0;\n  }\n  if (sub === \"update\") {\n    const name = args[1];\n    const rest = args.slice(2);\n    const parsed = parseRun(rest);\n    const updateGoal = parsed.goal;\n    if (!name || !updateGoal) {\n      console.error(\"usage: agentik skill update <name> <goal>\");\n      return 2;\n    }\n    const section = parsed.flags.section;\n    const ok = await updateSkill(\n      name,\n      { steps: [updateGoal], ...(section ? { section } : {}) },\n      { home: parsed.flags.agentikHome ? homeFor(parsed.flags) : home },\n    );\n    if (\"error\" in ok) {\n      console.error(ok.error);\n      return 1;\n    }\n    await recordSkillUsage(name, \"patch\", { home: parsed.flags.agentikHome ? homeFor(parsed.flags) : home });\n    console.log(ok.path);\n    return 0;\n  }\n  console.error(SKILL_USAGE);\n  return 2;\n}\n\n/** Wall-clock bound for one `agentik spawn`. 0 (via --timeout 0) means unbounded. */\nexport const DEFAULT_SPAWN_TIMEOUT_S = 1800;\n\nfunction str(v: string | boolean | undefined): string | undefined {\n  return typeof v === \"string\" ? v : undefined;\n}\n\nif (import.meta.main) {\n  main().then(\n    (code) => process.exit(code),\n    (err) => {\n      console.error(err);\n      process.exit(1);\n    },\n  );\n}\n",
+      "outputPath": ".agentik/tool-results/worker_b-read_file-15.txt"
+    },
+    {
+      "tool": "read_file",
+      "args": {
+        "path": ".agentik/tool-results/worker_b-read_file-12.txt",
+        "offset": 3000,
+        "limit": 8000
+      },
+      "artifact": ".agentik/tool-results/worker_b-read_file-12.txt",
+      "output": "[.agentik/tool-results/worker_b-read_file-12.txt chars 3000-11000 of 25566; next offset 11000]\ndd\" ? undefined : op.old),\n          after: mask(op.action === \"remove\" ? undefined : op.action === \"add\" ? op.content : op.new),\n          sessionId: opts?.sessionId,\n          by: opts?.by ?? \"reviewer\",\n        },\n        { home: opts?.home },\n      );\n    } catch (err) {\n      console.error(`agentik: could not journal the memory write: ${err instanceof Error ? err.message : String(err)}`);\n    }\n  }\n}\n\nexport const PROJECT_NEEDS_WORKSPACE = \"project memory needs a workspace\";\n\n/** The file's human name in messages. */\nexport function memoryFileLabel(target: MemoryTarget): string {\n  return target === \"memory\" ? \"MEMORY.md\" : target === \"user\" ? \"USER.md\" : \"project MEMORY.md\";\n}\nexport const ENTRY_SEPARATOR = \"\\n§\\n\";\n\n/** Consolidation attempts a single review gets before it is told to stop retrying. */\nexport const MAX_CONSOLIDATION_FAILURES = 3;\n\nexport interface MemoryUsage {\n  used: number;\n  cap: number;\n  percent: number;\n}\n\nexport interface MemoryOpResult {\n  ok: boolean;\n  target: MemoryTarget;\n  action: \"add\" | \"replace\" | \"remove\" | \"batch\";\n  message: string;\n  usage: MemoryUsage;\n  /** Included on a cap refusal so the caller can pick what to replace or remove. */\n  entries?: string[];\n  /** The write was refused by the safety scan. */\n  blocked?: string;\n  /** The add would have exceeded the cap. */\n  overCap?: boolean;\n  /** `memory.writeApproval` is on: nothing was written, the batch waits under this id. */\n  staged?: string;\n}\n\nexport interface MemoryOperation {\n  action: \"add\" | \"replace\" | \"remove\";\n  content?: string;\n  old?: string;\n  new?: string;\n}\n\n// ------------------------------------------------------------------------------------------\n// Safety: nothing that looks like a credential, and nothing that reads as an instruction to a\n// future agent, gets written — and anything already on disk that trips the scan is masked at\n// load time rather than silently trusted.\n// ------------------------------------------------------------------------------------------\n\nconst SECRET_PATTERNS: Array<{ id: string; re: RegExp }> = [\n  // Anthropic: `sk-ant-api03-…`, `sk-ant-…` — the body is base64url, so `-` and `_` are part\n  // of the run; checked before the openai shape, which would stop at the first `-`.\n  { id: \"anthropic_key\", re: /\\bsk-ant-[A-Za-z0-9_-]{20,}/ },\n  // OpenAI / Stripe and any other `sk-<label>-<20+>` shape: an unknown label is not a reason\n  // to accept the token. Current OpenAI project keys mix `_` and `-` inside the body\n  // (`sk-proj-…T3BlbkFJ…`), so the body admits them and there is no trailing \\b (it cannot sit\n  // between an alnum and `_`).\n  { id: \"openai_or_stripe_key\", re: /\\b[sp]k[-_](?:[A-Za-z0-9]{1,16}[-_])?[A-Za-z0-9_-]{20,}/ },\n  { id: \"github_token\", re: /\\bgh[pousr]_[A-Za-z0-9]{20,}\\b/ },\n  { id: \"slack_token\", re: /\\bxox[baprs]-[A-Za-z0-9-]{10,}\\b/ },\n  { id: \"aws_access_key\", re: /\\bAKIA[0-9A-Z]{\n…[3095 chars omitted — full output in .agentik/tool-results/worker_b-read_file-16.txt; read_file {\"path\":\".agentik/tool-results/worker_b-read_file-16.txt\",\"offset\":3000,\"limit\":8000} to page it]…\n the root slug (`.bak` kept, `.migrated-from`\n * written), or merged entry by entry into an existing root file (dedup, cap, journaled `by:\n * migration`), the legacy folder renamed `<slug>.merged.<ts>`. Once per (home, workspace) per\n * process; a workspace that is its own root has nothing to migrate.\n */\nconst migrated = new Set<string>();\nexport async function migrateProjectMemory(home: string, workspace: string): Promise<void> {\n  const abs = resolve(workspace);\n  const root = resolveWorkspaceRoot(abs);\n  if (root === abs) return;\n  const key = `${home}\\n${abs}`;\n  if (migrated.has(key)) return;\n  migrated.add(key);\n  const projectDir = memoryPaths(home).projectDir;\n  const legacyDir = join(projectDir, legacyProjectSlug(abs));\n  const rootDir = join(projectDir, projectSlug(abs));\n  if (!existsSync(join(legacyDir, \"MEMORY.md\")) || legacyDir === rootDir) return;\n  const stamp = new Date().toISOString().replace(/[:.]/g, \"-\");\n  if (!existsSync(join(rootDir, \"MEMORY.md\"))) {\n    await mkdir(projectDir, { recursive: true });\n    await copyFile(join(legacyDir, \"MEMORY.md\"), `${join(legacyDir, \"MEMORY.md\")}.bak.${stamp}`);\n    await rename(legacyDir, rootDir);\n    await writeFile(join(rootDir, \".workspace\"), `${root}\\n`, \"utf8\");\n    await writeFile(join(rootDir, \".migrated-from\"), `${abs}\\n${legacyProjectSlug(abs)}\\n`, \"utf8\");\n    await sealFile(join(legacyDir, \"MEMORY.md\"), home);\n    await sealFile(join(rootDir, \"MEMORY.md\"), home);\n    console.error(`agentik: project memory of ${abs} moved under the repository root ${root} (${projectSlug(abs)})`);\n    return;\n  }\n  const legacy = parseEntries(await readFile(join(legacyDir, \"MEMORY.md\"), \"utf8\"));\n  const leftovers: string[] = [];\n  for (const entry of legacy) {\n    const res = await memoryApply(\"project\", [{ action: \"add\", content: entry }], { home, workspace: root, by: \"migration\", bypassApproval: true });\n    if (!res.ok && !/already present|duplicate/i.test(res.message)) leftovers.push(entry);\n  }\n  await rename",
+      "outputPath": ".agentik/tool-results/worker_b-read_file-16.txt"
+    },
+    {
+      "tool": "read_file",
+      "args": {
+        "path": ".agentik/tool-results/worker_b-read_file-15.txt",
+        "offset": 3000,
+        "limit": 8000
+      },
+      "artifact": ".agentik/tool-results/worker_b-read_file-15.txt",
+      "output": "[.agentik/tool-results/worker_b-read_file-15.txt chars 3000-11000 of 106640; next offset 11000]\nh\";\nimport { approveMemory, approveSkillOps, formatPendingMemory, formatPendingSkills, rejectPending, type ApprovalOutcome } from \"./approval.ts\";\nimport { curateSkills, formatCurateResult, rollbackSkills } from \"./curator.ts\";\nimport { isPendingId, listPending, pendingCounts, readPending, type PendingMemoryOp, type PendingSkillOp } from \"./pending.ts\";\nimport { skillFile, skillTextProblem, viewSkill } from \"./skill-ops.ts\";\nimport { describeUsage, readSkillUsage, recordSkillUsage } from \"./skill-usage.ts\";\nimport {\n  clampSubagentCount,\n  isWorkerRole,\n  MAX_SUBAGENTS,\n  type OrchestratorDecision,\n  type RunReport,\n  type RunStatus,\n} from \"./types.ts\";\n\nfunction usage(): string {\n  return `agentik — conductor over claude / grok / codex\nYou are the supreme orchestrator. Up to five AI workers take bounded tasks, in parallel along\nthe plan's dependencies; high-blast tools are a state (approval), hardline commands never run.\n\nLaunch like your other CLIs:\n  agentik \"Create src/greet.txt containing AGENTIK_OK\"\n  agentik --yolo \"fix the failing test\"          # same posture as grok --yolo / cla / cc\n\nAuto-run: each worker is re-invoked on tool results until it returns no\ntoolCalls or --max-steps. Low/medium tools execute immediately. High-blast\nwaits unless you passed --yolo (your session approval).\n  agentik --backend cla \"…\"                      # workers = claude -p (cla flags)\n  agentik --backend grok \"…\"                     # workers = grok --yolo --single --no-plan\n  agentik --worker-a grok --worker-b cc \"…\"      # mix grok + codex --yolo\n\nCommands:\n  agentik [run] <goal> [options]\n  agentik spawn --harness grok|codex|claude [--workspace DIR] [--role Korben] <task>\n                               One non-interactive CLI process per foreign-harness slot.\n                               Each harness runs its OWN full agent loop to natural\n                               completion (multiple tool calls/turns) before exiting;\n                               agentik does not drive the loop for you here:\n                                 grok   -> grok --yolo --single … --no-subagents --no-plan\n                                 codex  -> codex exec --yolo --skip-git-repo-check --ephemeral\n                                 claude -> claude -p --dangerously-skip-permissions --effort high\n                               The worker gets the same block \"agentik context\" prints (USER,\n                               MEMORY, PROJECT MEMORY of that workspace, skills index, related\n                               sessions, KNOWN FAILURES) as DATA in front of the task, capped\n                               at 6000 chars; --no-context leaves it out. When the workspace\n                               has a code index (agentik index) the worker also gets its repo\n                               map (paths + exported symbols) as a second DATA envelope, capped\n                       \n…[3096 chars omitted — full output in .agentik/tool-results/worker_b-read_file-17.txt; read_file {\"path\":\".agentik/tool-results/worker_b-read_file-17.txt\",\"offset\":3000,\"limit\":8000} to page it]…\nindex follows the checkout with no daemon:\n                               a marked block appended to an existing hook (never overwritten;\n                               a foreign interpreter or an \"exec\" before the block is skipped),\n                               refused when core.hooksPath is set. --unhook removes the block.\n                               The human's pen: refused inside a worker.\n  agentik index --watch [--interval S] [--workspace DIR]\n                               Foreground polling loop (git status every S seconds, default 5),\n                               prints only what changed, Ctrl-C to stop. Nothing is installed.\n  agentik index ls [--json] | rm <slug> | rm --workspace DIR | gc [--dry-run] [--unused-days N]\n                               The registry of this home's indexes (read-only listing); rm and\n                               gc (root gone, or not refreshed for N days, default 90) are the\n                               human's pen.\n                               Files, chunks and where:\n                               <home>/index/<slug>.sqlite, line ranges + identifiers +\n                               symbols + imports and a trigram index of the secret-masked\n                               body — no source text is stored. Freshness follows git\n                               (blob shas, dirty files as an overlay); a directory that is\n                               not a checkout is walked. .agentikignore (one glob per line)\n                               excludes more; .git .agentik node_modules dist build …,\n                               .env* / *.pem / *.key, lock and minified files, binaries and\n                               files over 1 MB are never indexed. --stats reads without\n                               refreshing. A cache, never memory, never a trust source.\n  agentik search \"<query>\" [--regex] [--path GLOB] [-k N] [--offset N] [--workspace DIR] [--json]\n                               Search the index: identifiers (cam",
+      "outputPath": ".agentik/tool-results/worker_b-read_file-17.txt"
+    },
+    {
+      "tool": "search_code",
+      "args": {
+        "query": "checkSeal(",
+        "path": "src"
+      },
+      "output": "no hits\n[0 files, offset 0, end]\n"
+    },
+    {
+      "tool": "search_code",
+      "args": {
+        "query": "sealFile(",
+        "path": "src"
+      },
+      "output": "no hits\n[0 files, offset 0, end]\n"
+    },
+    {
+      "tool": "search_code",
+      "args": {
+        "query": "unsealFile(",
+        "path": "src"
+      },
+      "output": "no hits\n[0 files, offset 0, end]\n"
+    },
+    {
+      "tool": "search_code",
+      "args": {
+        "query": "DIVERGED_BODY",
+        "path": "src"
+      },
+      "output": "no hits\n[0 files, offset 0, end]\n"
+    },
+    {
+      "tool": "read_file",
+      "args": {
+        "path": "src/memory-store.ts"
+      },
+      "artifact": "src/memory-store.ts",
+      "output": "import { existsSync } from \"node:fs\";\nimport { copyFile, mkdir, readFile, rename, writeFile } from \"node:fs/promises\";\nimport { dirname, join, resolve } from \"node:path\";\nimport { readConfig } from \"./config.ts\";\nimport { agentikHome, legacyProjectSlug, memoryPaths, projectMemoryPath, projectSlug } from \"./home.ts\";\nimport { checkSeal, DIVERGED_BODY, sealContent, sealFile, sealKey } from \"./memory-seal.ts\";\nimport { resolveWorkspaceRoot } from \"./workspace.ts\";\nimport { detectInjection } from \"./injection.ts\";\nimport { logMemoryOp, type MemoryOpActor } from \"./memory-log.ts\";\nimport { newPendingId, stagePending, type PendingMemoryOp } from \"./pending.ts\";\n\n/**\n * The always-loaded memory files, written by a model through the `memory` tool.\n *\n * MEMORY.md (target `memory`) holds GLOBAL durable facts — true in every project: tool\n * behaviours, CLI quirks, cross-repo lessons. USER.md (target `user`) holds who the user is\n * (preferences, corrections, style). `memory/projects/<slug>/MEMORY.md` (target `project`)\n * holds what is true of ONE workspace only — conventions, paths, test commands — and is never\n * loaded into another workspace's context. All three are capped in characters, and the cap is\n * not a limit that overflows somewhere else: an `add` that would exceed it fails and tells the\n * caller to consolidate first, in the same turn. That single rule is what keeps the file worth\n * loading — Hermes's memory_tool works the same way.\n *\n * Entries are separated by `\\n§\\n` (section sign), may span lines, and are exact-deduplicated.\n * The same masking / dedup / cap / consolidation logic serves every target; only the path differs.\n */\nexport type MemoryTarget = \"memory\" | \"user\" | \"project\";\n\nexport const MEMORY_CAP = 2200;\nexport const USER_CAP = 1375;\nexport const PROJECT_CAP = 2200;\nexport const CAPS: Record<MemoryTarget, number> = { memory: MEMORY_CAP, user: USER_CAP, project: PROJECT_CAP };\n\n/** `workspace` is required for target `project` (its file is per workspace) and ignored otherwise. */\nexport interface MemoryStoreOpts {\n  home?: string;\n  workspace?: string;\n  /** Who writes (journal): the reviewer's tool, the human's pen, an approval, a migration. Default reviewer. */\n  by?: MemoryOpActor;\n  /** The session this write belongs to, when known (journal). */\n  sessionId?: number;\n}\n\n/** Journal a batch after the file is written; a broken journal is one stderr line, never a failed write. */\nasync function journal(target: MemoryTarget, ops: MemoryOperation[], opts: MemoryStoreOpts | undefined, workspace: string | undefined): Promise<void> {\n  const mask = (text: string | undefined) => {\n    if (!text) return undefined;\n    const problem = memoryContentProblem(text);\n    return problem ? `[BLOCKED: ${problem}]` : text;\n  };\n  for (const op of ops) {\n    try {\n      await logMemoryOp(\n        {\n          target,\n          workspace: workspace ? resolve(workspace) : undefined,\n          op: op.action,\n          before: mask(op.action === \"a\n…[20566 chars omitted — full output in .agentik/tool-results/worker_b-read_file-22.txt; read_file {\"path\":\".agentik/tool-results/worker_b-read_file-22.txt\",\"offset\":3000,\"limit\":8000} to page it]…\nconst { recordIncident } = await import(\"./incidents.ts\");\n        await recordIncident(\n          { goal: \"memory integrity\", workspace: opts?.workspace, harness: \"agentik\", symptom: `memory file modified out of band: memory/${key}`, errors: [DIVERGED_MESSAGE(memoryFileLabel(target))] },\n          { home },\n        );\n      } catch (err) {\n        console.error(`agentik: could not record the seal incident: ${err instanceof Error ? err.message : String(err)}`);\n      }\n      const usage = usageOf(parseEntries(sealed.body), target);\n      return { target, header: `${title} [${Math.min(100, usage.percent)}% — ${usage.used}/${usage.cap} chars]`, body: DIVERGED_BODY, usage, blockedCount: 1, diverged: true };\n    }\n  }\n  const entries = await readEntries(target, home, { workspace: opts?.workspace });\n  const usage = usageOf(entries, target);\n  let blockedCount = 0;\n  const shown = entries.map((e) => {\n    const problem = memoryContentProblem(e);\n    if (!problem) return e;\n    blockedCount += 1;\n    return `[BLOCKED: ${problem}]`;\n  });\n  const header = `${title} [${Math.min(100, usage.percent)}% — ${usage.used}/${usage.cap} chars]`;\n  return { target, header, body: shown.length ? shown.join(\"\\n§\\n\") : \"(empty)\", usage, blockedCount };\n}\n\n/** The human's pen: accept the file as it is on disk. Journaled `reseal` by human. */\nexport async function resealMemory(target: MemoryTarget, opts?: MemoryStoreOpts): Promise<{ file: string; status: \"sealed\" | \"unsealed\" | \"diverged\" }> {\n  const workspace = target === \"project\" ? opts?.workspace : undefined;\n  const { file } = pathFor(target, opts?.home, workspace);\n  const status = await sealFile(file, opts?.home);\n  try {\n    await logMemoryOp({ target, workspace: workspace ? resolve(workspace) : undefined, op: \"reseal\", by: opts?.by ?? \"human\" }, { home: opts?.home });\n  } catch (err) {\n    console.error(`agentik: could not journal the reseal: ${err instanceof Error ? err.message : String(err)}`);\n  }\n  return { file, status };\n}\n",
+      "outputPath": ".agentik/tool-results/worker_b-read_file-22.txt"
+    },
+    {
+      "tool": "search_code",
+      "args": {
+        "query": "reseal",
+        "path": "src/cli.ts"
+      },
+      "output": "src/cli.ts\n  L1-87\n    32: import { memoryFileLabel, memoryFilePath, memoryRemoveEntry, resealMemory, type MemoryTarget } from \"./memory-store.ts\";\n  L88-287 usage\n    220:   agentik memory reseal [--target memory|user|project|all] [--workspace DIR]\n    224:                                incident, and refuses every agentik write until you reseal it.\n  L1711-1717 MEMORY_USAGE\n    1715:   \"       agentik memory reseal [--target memory|user|project|all] [--workspace DIR]   (accept a file edited by hand)\\n\" +\n  L1727-1850 memoryCmd\n    1731:   if (sub === \"reseal\") {\n    1735:       console.error(`agentik memory reseal: unknown --target \"${raw}\" (memory | user | project | all)`);\n    1740:       const r = await resealMemory(target, { home, workspace, by: \"human\" });\n[1 files, offset 0, end]\n"
+    },
+    {
+      "tool": "search_code",
+      "args": {
+        "query": "memoryApply",
+        "path": "src/memory-store.ts"
+      },
+      "output": "src/memory-store.ts\n  L205-240 migrateProjectMemory\n    231:     const res = await memoryApply(\"project\", [{ action: \"add\", content: entry }], { home, workspace: root, by: \"migration\", bypassApproval: true });\n  L358-440 memoryApply\n    369: export async function memoryApply(\n  L441-442 memoryAdd\n    442:   memoryApply(target, [{ action: \"add\", content }], opts);\n  L443-444 memoryReplace\n    444:   memoryApply(target, [{ action: \"replace\", old, new: next }], opts);\n  L445-447 memoryRemove\n    446:   memoryApply(target, [{ action: \"remove\", old }], opts);\n[1 files, offset 0, end]\n"
+    },
+    {
+      "tool": "search_code",
+      "args": {
+        "query": "checkSeal(",
+        "path": "src/memory-store.ts"
+      },
+      "output": "src/memory-store.ts\n  L1-11\n    1: import { existsSync } from \"node:fs\";\n  L251-262 writeEntries\n    251: async function writeEntries(target: MemoryTarget, entries: string[], home?: string, workspace?: string): Promise<void> {\n  L263-274 readSealed\n    272:   return { file, body, status: await checkSeal(file, body, home) };\n  L275-280 DIVERGED_MESSAGE\n    275: export const DIVERGED_MESSAGE = (label: string) => `${label} was modified out of band (seal mismatch) — a human must run \\`agentik memory reseal\\` to accept it…\n  L490-500 MemorySnapshot\n    490: export interface MemorySnapshot {\n[1 files, offset 0, end]\n"
+    },
+    {
+      "tool": "search_code",
+      "args": {
+        "query": "diverged",
+        "path": "src/memory-store.ts"
+      },
+      "output": "src/memory-store.ts\n  L1-11\n    6: import { checkSeal, DIVERGED_BODY, sealContent, sealFile, sealKey } from \"./memory-seal.ts\";\n  L263-274 readSealed\n    264: async function readSealed(target: MemoryTarget, home?: string, workspace?: string): Promise<{ file: string; body: string; status: \"sealed\" | \"unsealed\" | \"dive…\n  L275-280 DIVERGED_MESSAGE\n    275: export const DIVERGED_MESSAGE = (label: string) => `${label} was modified out of band (seal mismatch) — a human must run \\`agentik memory reseal\\` to accept it…\n  L358-440 memoryApply\n    384:   if ((await readSealed(target, opts?.home, workspace)).status === \"diverged\") {\n    385:     return { ok: false, target, action, message: DIVERGED_MESSAGE(memoryFileLabel(target)), usage: usageBefore };\n  L452-489 memoryRemoveEntry\n    465:   if ((await readSealed(target, opts?.home, workspace)).status === \"diverged\") {\n    466:     return { ok: false, message: DIVERGED_MESSAGE(memoryFileLabel(target)), candidates: [] };\n[1 files, offset 0, end]\n"
+    },
+    {
+      "tool": "search_code",
+      "args": {
+        "query": "DIVERGED_MESSAGE",
+        "path": "src/memory-store.ts"
+      },
+      "output": "src/memory-store.ts\n  L275-280 DIVERGED_MESSAGE\n    275: export const DIVERGED_MESSAGE = (label: string) => `${label} was modified out of band (seal mismatch) — a human must run \\`agentik memory reseal\\` to accept it…\n  L358-440 memoryApply\n    385:     return { ok: false, target, action, message: DIVERGED_MESSAGE(memoryFileLabel(target)), usage: usageBefore };\n  L452-489 memoryRemoveEntry\n    466:     return { ok: false, message: DIVERGED_MESSAGE(memoryFileLabel(target)), candidates: [] };\n  L501-538 memorySnapshot\n    516:           { goal: \"memory integrity\", workspace: opts?.workspace, harness: \"agentik\", symptom: `memory file modified out of band: memory/${key}`, errors: [DIVE…\n  L539-550 resealMemory\n    539: /** The human's pen: accept the file as it is on disk. Journaled `reseal` by human. */\n[1 files, offset 0, end]\n"
+    }
+  ],
+  "blockedTools": [],
+  "stalledTasks": [],
+  "backendSwitches": [],
+  "pendingApprovals": [],
+  "findings": [],
+  "claims": [
+    {
+      "text": "SEAL_FILE = \".seal.json\" constant defined",
+      "source": {
+        "url": "src/memory-seal.ts:26",
+        "retrievedAt": ""
+      },
+      "verified": false
+    },
+    {
+      "text": "sealPath() builds memory/.seal.json path",
+      "source": {
+        "url": "src/memory-seal.ts:35-37",
+        "retrievedAt": ""
+      },
+      "verified": false
+    },
+    {
+      "text": "writeSeal() performs the atomic write (tmp file then rename) to the seal file",
+      "source": {
+        "url": "src/memory-seal.ts:57-63",
+        "retrievedAt": ""
+      },
+      "verified": false
+    },
+    {
+      "text": "writeSeal is called from sealContent, sealFile, unsealFile, checkSeal, serialized via module mutex locked()",
+      "source": {
+        "url": "src/memory-seal.ts:29-33",
+        "retrievedAt": ""
+      },
+      "verified": false
+    },
+    {
+      "text": "digest() computes sha256 hash of content",
+      "source": {
+        "url": "src/memory-seal.ts:44-46",
+        "retrievedAt": ""
+      },
+      "verified": false
+    },
+    {
+      "text": "checkSeal() detects divergence by comparing live content hash to stored seal entry, returning sealed/unsealed/diverged",
+      "source": {
+        "url": "src/memory-seal.ts:101-114",
+        "retrievedAt": ""
+      },
+      "verified": false
+    },
+    {
+      "text": "SealStatus type is \"sealed\" | \"unsealed\" | \"diverged\"",
+      "source": {
+        "url": "src/memory-seal.ts:24",
+        "retrievedAt": ""
+      },
+      "verified": false
+    },
+    {
+      "text": "DIVERGED_BODY constant holds the blocked-modification message",
+      "source": {
+        "url": "src/memory-seal.ts:116",
+        "retrievedAt": ""
+      },
+      "verified": false
+    },
+    {
+      "text": "No files were modified during this task",
+      "verified": false
+    }
+  ],
+  "sources": [],
+  "artifacts": [
+    "src/memory-seal.ts",
+    "src/memory-seal.ts",
+    "src/memory-store.ts",
+    "src/memory.ts",
+    "src/memory-log.ts",
+    "src/cli.ts",
+    ".agentik/tool-results/worker_b-read_file-12.txt",
+    ".agentik/tool-results/worker_b-read_file-15.txt",
+    "src/memory-store.ts"
+  ],
+  "synthesis": "## Memory sealing — what's confirmed vs. missing\n\nI can confirm the seal-writing and divergence-detection mechanics from `src/memory-seal.ts`, but the sub-task tasked with finding every refusal call-site (`find-seal-consumers`) did not actually deliver results — it returned status \"done\" but only a note saying it still needs line numbers before finalizing, with no findings. I'm not going to invent line numbers for `memory-store.ts`/`memory.ts`/`memory-log.ts`/`cli.ts`, so that part of your question (every operation that refuses on a diverged seal) is **incomplete**. Flagging this as a data-quality gap rather than guessing.\n\n### Seal-file writer\n- `src/memory-seal.ts:26` — `SEAL_FILE = \".seal.json\"` constant.\n- `src/memory-seal.ts:35-37` — `sealPath()` builds `memory/.seal.json` via `join(memoryPaths(agentikHome(home)).memoryDir, SEAL_FILE)`.\n- `src/memory-seal.ts:57-63` — `writeSeal()` performs the actual atomic write (tmp file then rename). This is the function that writes `memory/.seal.json`.\n- Called from `sealContent` (66-72), `sealFile` (75-88), `unsealFile` (90-96), `checkSeal` (101-114); all serialized through the module mutex `locked()` at 29-33.\n\n### Divergence detection\n- `src/memory-seal.ts:44-46` — `digest()` computes a sha256 hash of content.\n- `src/memory-seal.ts:101-114` — `checkSeal()` is the function that detects out-of-band modification: it compares the live content hash against the stored seal entry. No entry → `\"unsealed\"` (seals silently, per doc comment lines 13-14). Entry present and hash matches → `\"sealed\"`. Entry present and hash differs → `\"diverged\"` — this is the divergence signal.\n- `src/memory-seal.ts:24` — `SealStatus` type: `\"sealed\" | \"unsealed\" | \"diverged\"`.\n- `src/memory-seal.ts:116` — `DIVERGED_BODY` constant, the `\"[BLOCKED: modified out of band — agentik memory reseal to accept]\"` message returned/attached on divergence.\n\n### Every operation that refuses on a diverged seal — **not established**\n`memory-seal.ts` itself only detects divergence and exposes `DIVERGED_BODY`; it does not refuse writes itself (confirmed scope note from the module read). The actual refusal logic lives in caller code elsewhere (likely `memory-store.ts` per the second task's partial artifact list), but no concrete function names or line ranges were retrieved for those call sites. To answer this part accurately I'd need a follow-up read of `src/memory-store.ts` (and possibly `memory.ts`, `memory-log.ts`, `cli.ts`) grepping for `checkSeal(` and `DIVERGED_BODY` usages — this wasn't completed in this run.\n\nNo files were modified during this diagnostic.",
+  "events": [
+    {
+      "at": "2026-09-02T22:17:12.316Z",
+      "type": "goal_submitted",
+      "detail": {
+        "goalId": "goal-1"
+      }
+    },
+    {
+      "at": "2026-09-02T22:17:26.201Z",
+      "type": "delegated",
+      "detail": {
+        "tasks": [
+          {
+            "id": "read-seal-module",
+            "assignee": "worker_a",
+            "allowedTools": [
+              "read_file"
+            ]
+          },
+          {
+            "id": "find-seal-consumers",
+            "assignee": "worker_b",
+            "allowedTools": [
+              "search_code",
+              "read_file"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-02T22:17:29.494Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "read_file",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:17:30.706Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "search_code",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:17:30.716Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "search_code",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:17:30.722Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "search_code",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:17:30.728Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "search_code",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:17:30.732Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "search_code",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:17:49.226Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "read_file",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:17:49.227Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "search_code",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:17:58.375Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "search_code",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:17:58.380Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "search_code",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:17:58.385Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "search_code",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:17:58.392Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "read_file",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:17:58.404Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "read_file",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:17:58.405Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "read_file",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:17:58.406Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "read_file",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:18:20.658Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "read_file",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:18:20.664Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "read_file",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:18:20.670Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "search_code",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:18:20.677Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "search_code",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:18:20.684Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "search_code",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:18:20.691Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "search_code",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:18:36.966Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "read_file",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:18:36.985Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "search_code",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:18:36.996Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "search_code",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:18:44.275Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "search_code",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:18:44.285Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "search_code",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:18:44.293Z",
+      "type": "tool_allowed",
+      "detail": {
+        "tool": "search_code",
+        "blast": "low"
+      }
+    },
+    {
+      "at": "2026-09-02T22:19:03.428Z",
+      "type": "completed",
+      "detail": {}
+    }
+  ],
+  "planSource": "model",
+  "planProblems": [],
+  "taskResults": [
+    {
+      "taskId": "read-seal-module",
+      "assignee": "worker_a",
+      "backend": "claude-sonnet",
+      "status": "done",
+      "summary": "Read src/memory-seal.ts in full (116 lines). Findings, with line numbers counted from the file content:\n\n1) Seal-file writer: SEAL_FILE constant at line 26 (export const SEAL_FILE = \".seal.json\"); sealPath() at lines 35-37 builds memory/.seal.json via join(memoryPaths(agentikHome(home)).memoryDir, SEAL_FILE); writeSeal() at lines 57-63 performs the actual atomic write (tmp file then rename), called from sealContent (66-72), sealFile (75-88), unsealFile (90-96), and checkSeal (101-114), all serialized via the module mutex locked() at lines 29-33.\n\n2) Divergence detection: digest() at lines 44-46 computes sha256 of content; checkSeal() at lines 101-114 compares live content hash against the stored seal entry: no entry returns \"unsealed\" and seals silently (per doc comment lines 13-14); entry present and hash matches returns \"sealed\"; entry present and hash differs returns \"diverged\" — the out-of-band-modification signal.\n\n3) SealStatus type at line 24 (\"sealed\" | \"unsealed\" | \"diverged\"); DIVERGED_BODY constant at line 116, the \"[BLOCKED: modified out of band — agentik memory reseal to accept]\" message.\n\nScope note: memory-seal.ts only detects divergence and exposes DIVERGED_BODY; it does not itself refuse writes. The actual refusal of writes when status is diverged happens in calling code elsewhere in the repo, outside this file, so enumerating every refusing operation is out of scope for this task restricted to src/memory-seal.ts. Recommend a follow-up search_code task for \"checkSeal(\" and \"DIVERGED_BODY\" call sites to find those refusal points.\n\nNo files were modified.",
+      "artifacts": [
+        "src/memory-seal.ts"
+      ],
+      "claims": [],
+      "evidence": {
+        "steps": 2,
+        "executed": 1,
+        "blocked": 0,
+        "calls": [
+          {
+            "callId": "worker_a-read_file-1",
+            "tool": "read_file",
+            "ok": true,
+            "artifact": "src/memory-seal.ts",
+            "durationMs": 2
+          }
+        ],
+        "acceptance": {
+          "ok": true,
+          "problems": []
+        }
+      },
+      "pendingApprovalIds": [],
+      "startedAt": "2026-09-02T22:17:26.202Z",
+      "endedAt": "2026-09-02T22:18:20.737Z",
+      "durationMs": 54535
+    },
+    {
+      "taskId": "find-seal-consumers",
+      "assignee": "worker_b",
+      "backend": "claude-sonnet",
+      "status": "done",
+      "summary": "Need exact line numbers for the checkSeal call site and the diverged-refusal block in memory-store.ts before finalizing.",
+      "artifacts": [
+        "src/memory-seal.ts",
+        "src/memory-store.ts",
+        "src/memory.ts",
+        "src/memory-log.ts",
+        "src/cli.ts",
+        ".agentik/tool-results/worker_b-read_file-12.txt",
+        ".agentik/tool-results/worker_b-read_file-15.txt",
+        "src/memory-store.ts"
+      ],
+      "claims": [],
+      "evidence": {
+        "steps": 6,
+        "executed": 26,
+        "blocked": 0,
+        "calls": [
+          {
+            "callId": "worker_b-search_code-2",
+            "tool": "search_code",
+            "ok": true,
+            "durationMs": 10
+          },
+          {
+            "callId": "worker_b-search_code-3",
+            "tool": "search_code",
+            "ok": true,
+            "durationMs": 6
+          },
+          {
+            "callId": "worker_b-search_code-4",
+            "tool": "search_code",
+            "ok": true,
+            "durationMs": 5
+          },
+          {
+            "callId": "worker_b-search_code-5",
+            "tool": "search_code",
+            "ok": true,
+            "durationMs": 4
+          },
+          {
+            "callId": "worker_b-search_code-6",
+            "tool": "search_code",
+            "ok": true,
+            "durationMs": 6
+          },
+          {
+            "callId": "worker_b-read_file-7",
+            "tool": "read_file",
+            "ok": true,
+            "artifact": "src/memory-seal.ts",
+            "durationMs": 0
+          },
+          {
+            "callId": "worker_b-search_code-8",
+            "tool": "search_code",
+            "ok": true,
+            "durationMs": 6
+          },
+          {
+            "callId": "worker_b-search_code-9",
+            "tool": "search_code",
+            "ok": true,
+            "durationMs": 5
+          },
+          {
+            "callId": "worker_b-search_code-10",
+            "tool": "search_code",
+            "ok": true,
+            "durationMs": 5
+          },
+          {
+            "callId": "worker_b-search_code-11",
+            "tool": "search_code",
+            "ok": true,
+            "durationMs": 7
+          },
+          {
+            "callId": "worker_b-read_file-12",
+            "tool": "read_file",
+            "ok": true,
+            "artifact": "src/memory-store.ts",
+            "durationMs": 3,
+            "outputPath": ".agentik/tool-results/worker_b-read_file-12.txt"
+          },
+          {
+            "callId": "worker_b-read_file-13",
+            "tool": "read_file",
+            "ok": true,
+            "artifact": "src/memory.ts",
+            "durationMs": 0
+          },
+          {
+            "callId": "worker_b-read_file-14",
+            "tool": "read_file",
+            "ok": true,
+            "artifact": "src/memory-log.ts",
+            "durationMs": 1
+          },
+          {
+            "callId": "worker_b-read_file-15",
+            "tool": "read_file",
+            "ok": true,
+            "artifact": "src/cli.ts",
+            "durationMs": 10,
+            "outputPath": ".agentik/tool-results/worker_b-read_file-15.txt"
+          },
+          {
+            "callId": "worker_b-read_file-16",
+            "tool": "read_file",
+            "ok": true,
+            "artifact": ".agentik/tool-results/worker_b-read_file-12.txt",
+            "durationMs": 1,
+            "outputPath": ".agentik/tool-results/worker_b-read_file-16.txt"
+          },
+          {
+            "callId": "worker_b-read_file-17",
+            "tool": "read_file",
+            "ok": true,
+            "artifact": ".agentik/tool-results/worker_b-read_file-15.txt",
+            "durationMs": 2,
+            "outputPath": ".agentik/tool-results/worker_b-read_file-17.txt"
+          },
+          {
+            "callId": "worker_b-search_code-18",
+            "tool": "search_code",
+            "ok": true,
+            "durationMs": 7
+          },
+          {
+            "callId": "worker_b-search_code-19",
+            "tool": "search_code",
+            "ok": true,
+            "durationMs": 7
+          },
+          {
+            "callId": "worker_b-search_code-20",
+            "tool": "search_code",
+            "ok": true,
+            "durationMs": 7
+          },
+          {
+            "callId": "worker_b-search_code-21",
+            "tool": "search_code",
+            "ok": true,
+            "durationMs": 7
+          },
+          {
+            "callId": "worker_b-read_file-22",
+            "tool": "read_file",
+            "ok": true,
+            "artifact": "src/memory-store.ts",
+            "durationMs": 5,
+            "outputPath": ".agentik/tool-results/worker_b-read_file-22.txt"
+          },
+          {
+            "callId": "worker_b-search_code-23",
+            "tool": "search_code",
+            "ok": true,
+            "durationMs": 11
+          },
+          {
+            "callId": "worker_b-search_code-24",
+            "tool": "search_code",
+            "ok": true,
+            "durationMs": 11
+          },
+          {
+            "callId": "worker_b-search_code-25",
+            "tool": "search_code",
+            "ok": true,
+            "durationMs": 9
+          },
+          {
+            "callId": "worker_b-search_code-26",
+            "tool": "search_code",
+            "ok": true,
+            "durationMs": 8
+          },
+          {
+            "callId": "worker_b-search_code-27",
+            "tool": "search_code",
+            "ok": true,
+            "durationMs": 8
+          }
+        ],
+        "acceptance": {
+          "ok": true,
+          "problems": []
+        }
+      },
+      "pendingApprovalIds": [],
+      "startedAt": "2026-09-02T22:17:26.203Z",
+      "endedAt": "2026-09-02T22:18:44.302Z",
+      "durationMs": 78099
+    }
+  ],
+  "usage": {
+    "inputTokens": 36,
+    "cachedInputTokens": 155079,
+    "outputTokens": 16144,
+    "invocations": 10,
+    "callsWithoutUsage": 0,
+    "costUsd": 0.5587148
+  },
+  "shaping": {
+    "calls": 0,
+    "savedChars": 0
+  },
+  "codeIndex": {
+    "files": 203,
+    "chunks": 1353,
+    "changed": 0,
+    "built": false,
+    "ms": 38
+  },
+  "durationMs": 111152,
+  "runId": "20260902T221903Z-d804b9",
+  "runPath": "/home/kev/.agentik/runs/20260902T221903Z-d804b9.json"
+}

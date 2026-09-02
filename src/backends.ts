@@ -8,6 +8,7 @@ import {
 } from "./codex-capabilities.ts";
 import { denyFloorPrompt, renderDenyRules } from "./command-policy.ts";
 import { childEnv } from "./depth.ts";
+import { HARNESS_EFFORTS, routingFor, type Routing, type RoutingOptions } from "./routing.ts";
 import { workerToolNames } from "./tool-catalog.ts";
 import { MockBackend } from "./mock-backend.ts";
 import { renderEnvelopes } from "./trust.ts";
@@ -333,7 +334,7 @@ export const GROK_MAX_TURNS = "24";
  * the session `plan.md` (19-plan-mode.md), so a worker that wrote files was never in it. For
  * that failure mode see `spawnCapture`'s `timedOut`.
  */
-export function grokCliArgs(prompt: string, cwd?: string): string[] {
+export function grokCliArgs(prompt: string, cwd?: string, routing: Routing = {}): string[] {
   const args = [
     "--yolo",
     "--single",
@@ -350,46 +351,28 @@ export function grokCliArgs(prompt: string, cwd?: string): string[] {
     "--max-turns",
     GROK_MAX_TURNS,
   ];
+  // `--reasoning-effort` (alias `--effort`) exists on grok 1.0.13 but the parser accepts ANY value
+  // without complaining, so `routingFor` validates before we get here; an absent value adds no flag
+  // and grok keeps its own default. Same for `--model`: the table leaves grok's default alone.
+  if (routing.model) args.push("--model", routing.model);
+  if (routing.effort) args.push("--reasoning-effort", routing.effort);
   if (cwd) args.push("--cwd", cwd);
   return args;
 }
 
-/** What `claude --help` advertises for `--effort` on the installed CLI (checked, not assumed). */
-export const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
-export type ClaudeEffort = (typeof CLAUDE_EFFORTS)[number];
+/** The values claude itself lists (`claude --effort bogus --version`). Owned by `routing.ts`. */
+export const CLAUDE_EFFORTS = HARNESS_EFFORTS.claude;
+export type ClaudeEffort = string;
 
-export interface ClaudeEffortOptions {
-  /** `reviewer` (the background review) keeps `high` whatever the phase says. */
-  role?: CompleteRequest["role"];
-  env?: Record<string, string | undefined>;
-}
+export type ClaudeEffortOptions = RoutingOptions;
 
 /**
- * Reasoning effort per phase, for the GATED claude worker only (`agentik spawn`'s foreign worker
- * is untouched: there the harness does the work itself).
- *
- * `high` everywhere was paying premium thinking for phases that do not need it. The plan is the one
- * decision that conditions the whole run — a bad plan wastes every task — so it keeps `high`; act
- * and synthesize read DATA and write bounded prose at `medium`.
- *
- * The **review** keeps `high` too: it runs with `phase: "act"`, but it is the only thing that writes
- * memory and skills, and lowering its effort is a product decision, not a run-cost optimisation.
- *
- * `AGENTIK_CLAUDE_EFFORT` is the human's A/B knob: one value, everywhere, review included — it is
- * set on purpose, unlike the phase default. An unknown value is ignored with one line on stderr
- * rather than handed to the CLI, which would refuse the whole call.
+ * Reasoning effort of the GATED claude worker. Kept as a named helper (it is what the rest of the
+ * codebase and its tests speak about) but the decision itself lives in the one routing table:
+ * plan `high`, act and synthesize `medium`, review `high`, `AGENTIK_CLAUDE_EFFORT` above all.
  */
 export function claudeEffortFor(phase: Phase, opts: ClaudeEffortOptions = {}): ClaudeEffort {
-  const env = opts.env ?? process.env;
-  const raw = (env.AGENTIK_CLAUDE_EFFORT ?? "").trim().toLowerCase();
-  if (raw) {
-    if ((CLAUDE_EFFORTS as readonly string[]).includes(raw)) return raw as ClaudeEffort;
-    console.error(
-      `agentik: AGENTIK_CLAUDE_EFFORT="${raw}" is not one of ${CLAUDE_EFFORTS.join("|")} — ignored`,
-    );
-  }
-  if (opts.role === "reviewer") return "high";
-  return phase === "plan" ? "high" : "medium";
+  return routingFor("claude", phase, opts).effort ?? "high";
 }
 
 /**
@@ -498,8 +481,14 @@ export function foreignWorkerArgs(
  * codex serves structured output; a local proxy such as opencodex (responses adapter) dies with
  * `adapter_eof` on it. See `CodexBackend.complete` and codex-capabilities.ts.
  */
-export function codexCliArgs(prompt: string, cwd?: string, schemaPath?: string): string[] {
+export function codexCliArgs(prompt: string, cwd?: string, schemaPath?: string, routing: Routing = {}): string[] {
   const args = ["exec", "--yolo", "--skip-git-repo-check", "--ephemeral", "--json"];
+  // `-m <MODEL>` and `-c model_reasoning_effort=<VALUE>` are what `codex exec --help` documents
+  // (`-c` overrides one key of ~/.codex/config.toml, the same key the user's own config sets).
+  // The value is validated by `routingFor` before it gets here: codex parses it as TOML and a
+  // rejected key would kill the call.
+  if (routing.model) args.push("-m", routing.model);
+  if (routing.effort) args.push("-c", `model_reasoning_effort=${routing.effort}`);
   if (schemaPath) args.push("--output-schema", schemaPath);
   if (cwd) args.push("--cd", cwd);
   args.push(prompt);
@@ -628,32 +617,50 @@ export class ClaudeBackend implements Backend {
     this.run = opts.runner ?? ((cmd, args, t, cwd) => spawnCapture(cmd, args, t, cwd));
   }
 
+  /**
+   * The MODEL follows the phase now (opus plans, sonnet works), not the slot. Consequence, stated
+   * plainly: the `claude-sonnet` and `claude-opus` entries of `autoCycle` become the same worker in
+   * practice. The rotation is left alone on purpose — it still spreads work over harnesses, and
+   * `Backend.id` keeps the two names so a report reads as before — but the id no longer *implies*
+   * the model, so every invocation records the model and effort it really ran with
+   * (`WorkerMessage.routing` → `WorkerInvocation.routing`, printed by `formatReport`).
+   * A backend constructed with an explicit model still wins over the table for the review, which
+   * passes `role: "reviewer"` and gets no model override at all.
+   */
   async complete(request: CompleteRequest): Promise<WorkerMessage> {
     const prompt = renderCompletePrompt(request);
-    const args = claudeCliArgs(prompt, this.model, claudeEffortFor(request.phase, { role: request.role }));
+    const routing = routingFor("claude", request.phase, { role: request.role });
+    const model = routing.model ?? this.model;
+    const effort = routing.effort ?? "high";
+    const args = claudeCliArgs(prompt, model, effort);
     const res = await this.run("claude", args, this.timeoutMs, request.workspace);
     const err = classifyExit(this.id, "claude -p", res, this.timeoutMs);
     if (err) throw err;
-    return { ...decodeClaudeStdout(res.stdout), usage: extractUsage("claude", res.stdout) };
+    return { ...decodeClaudeStdout(res.stdout), usage: extractUsage("claude", res.stdout), routing: { model, effort } };
   }
 }
 
 export class GrokBackend implements Backend {
   readonly id = "grok";
   readonly timeoutMs: number;
+  /** Injectable like the other two: the argv (routing included) is testable without a real grok. */
+  private readonly run: SpawnRunner;
 
-  constructor(timeoutMs = DEFAULT_STEP_TIMEOUT_MS) {
+  constructor(timeoutMs = DEFAULT_STEP_TIMEOUT_MS, opts: { runner?: SpawnRunner } = {}) {
     this.timeoutMs = timeoutMs;
+    this.run = opts.runner ?? ((cmd, args, t, cwd) => spawnCapture(cmd, args, t, cwd));
   }
 
   async complete(request: CompleteRequest): Promise<WorkerMessage> {
     const prompt = renderCompletePrompt(request);
-    const args = grokCliArgs(prompt, request.workspace);
-    const res = await spawnCapture("grok", args, this.timeoutMs, request.workspace);
+    // The table leaves grok's model alone (the user's default) and only sets the effort.
+    const routing = routingFor("grok", request.phase, { role: request.role });
+    const args = grokCliArgs(prompt, request.workspace, routing);
+    const res = await this.run("grok", args, this.timeoutMs, request.workspace);
     const err = classifyExit(this.id, "grok --yolo --single", res, this.timeoutMs);
     if (err) throw err;
     // Usage is read from the envelope BEFORE it is unwrapped (GROK_ENVELOPE_KEYS stays as is).
-    return { ...decodeGrokStdout(res.stdout), usage: extractUsage("grok", res.stdout) };
+    return { ...decodeGrokStdout(res.stdout), usage: extractUsage("grok", res.stdout), ...(routing.model || routing.effort ? { routing } : {}) };
   }
 }
 
@@ -682,10 +689,13 @@ export class CodexBackend implements Backend {
     const prompt = renderCompletePrompt(request);
     const baseUrl = await readCodexBaseUrl();
     const tryS = await shouldTryStructuredOutput({ home: this.home, baseUrl });
+    // One routing for the whole call, so the schema retry runs on the SAME model and effort as the
+    // first attempt (a retry that silently changed model would make the learned capability wrong).
+    const routing = routingFor("codex", request.phase, { role: request.role });
     let res: SpawnResult;
     if (tryS) {
       const schemaPath = await writeWorkerSchema(request.workspace);
-      res = await this.run("codex", codexCliArgs(prompt, request.workspace, schemaPath), this.timeoutMs, request.workspace);
+      res = await this.run("codex", codexCliArgs(prompt, request.workspace, schemaPath, routing), this.timeoutMs, request.workspace);
       const failed = res.exitCode !== 0 && !res.timedOut && looksLikeStructuredOutputFailure(res.stdout, res.stderr);
       if (failed) {
         await saveCodexCapabilities(
@@ -697,12 +707,12 @@ export class CodexBackend implements Backend {
           },
           this.home,
         );
-        res = await this.run("codex", codexCliArgs(prompt, request.workspace), this.timeoutMs, request.workspace);
+        res = await this.run("codex", codexCliArgs(prompt, request.workspace, undefined, routing), this.timeoutMs, request.workspace);
       } else if (res.exitCode === 0) {
         await saveCodexCapabilities({ baseUrl, structuredOutput: "ok", checkedAt: new Date().toISOString() }, this.home);
       }
     } else {
-      res = await this.run("codex", codexCliArgs(prompt, request.workspace), this.timeoutMs, request.workspace);
+      res = await this.run("codex", codexCliArgs(prompt, request.workspace, undefined, routing), this.timeoutMs, request.workspace);
     }
     // codex's real failure reason is a JSONL `error` / `turn.failed` line on stdout; stderr
     // is MCP and transport noise ("Reading additional input from stdin...").
@@ -713,7 +723,7 @@ export class CodexBackend implements Backend {
       this.timeoutMs,
     );
     if (err) throw err;
-    return { ...decodeCodexStdout(res.stdout), usage: extractUsage("codex", res.stdout) };
+    return { ...decodeCodexStdout(res.stdout), usage: extractUsage("codex", res.stdout), ...(routing.model || routing.effort ? { routing } : {}) };
   }
 }
 

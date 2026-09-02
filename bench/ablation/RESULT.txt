@@ -1,0 +1,9 @@
+median over the repetitions; Δ = what REMOVING that lever costs vs all levers on
+
+variant                     n   wall s    cost $    out k    inv   Δwall    Δcost    done
+all levers on               3   98.4      0.4151    12.7     8     —        —        2/2
+best                        3   91.5      0.3127    10.9     7     -7%      -25%     2/2
+− final-message budget      3   104.3     0.4596    12.5     8     6%       11%      2/2
+− toolless synthesis        3   111.7     0.3454    13.8     7     14%      -17%     2/2
+− per-phase effort          3   92.1      0.2512    10.4     6     -6%      -39%     2/2
+− batch independent calls   3   71.4      0.1857    8.5      7     -27%     -55%     2/2

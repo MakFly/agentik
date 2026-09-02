@@ -299,6 +299,13 @@ export interface WorkerInvocation {
   durationMs?: number;
   /** What the CLI reported for this call, when it did. */
   usage?: { inputTokens: number; cachedInputTokens?: number; outputTokens: number; costUsd?: number; turns: number; durationMs?: number };
+  /**
+   * Model and reasoning effort this call really ran with (`src/routing.ts`). `backend` is the slot's
+   * id and no longer implies the model — claude plans with opus and works with sonnet under both
+   * `claude-sonnet` and `claude-opus` — so a run report that says `worker_a (claude-sonnet) plan`
+   * would be unreadable without this.
+   */
+  routing?: { model?: string; effort?: string };
 }
 
 /** A bounded task that ran out of usable answers instead of finishing. */
@@ -427,6 +434,8 @@ export interface WorkerMessage {
   newGoal?: string;
   /** Filled by live backends from the CLI's own output; never by the model. */
   usage?: WorkerInvocation["usage"];
+  /** Filled by live backends from the argv they built; never by the model. */
+  routing?: WorkerInvocation["routing"];
 }
 
 /** The review's bounded task: same shape as a worker task, assignee `reviewer`. */

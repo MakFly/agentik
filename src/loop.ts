@@ -27,6 +27,7 @@ import type {
   StalledTask,
   TaskResult,
   ToolCall,
+  WorkerInvocation,
   WorkerMessage,
   WorkerRole,
 } from "./types.ts";
@@ -250,6 +251,8 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
         workerCount,
       });
       if (msg.usage) invocation.usage = msg.usage;
+      // The model/effort the backend really used: `backend` is the slot id, the routing is the truth.
+      if (msg.routing) invocation.routing = msg.routing;
       addRunUsage(usage, msg.usage);
       return msg;
     } finally {
@@ -743,6 +746,15 @@ function fmtDuration(ms: number): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
 }
 
+/**
+ * ` [opus/high]` after the backend id. Needed since the model follows the PHASE: the id of the slot
+ * (`claude-sonnet`) no longer tells the reader which model planned the run.
+ */
+function formatRouting(r: WorkerInvocation["routing"]): string {
+  if (!r || (!r.model && !r.effort)) return "";
+  return ` [${[r.model, r.effort].filter(Boolean).join("/")}]`;
+}
+
 export function formatReport(r: RunReport): string {
   const lines = [
     "agentik 3-role run",
@@ -752,7 +764,7 @@ export function formatReport(r: RunReport): string {
     `original_goal: ${r.originalGoalText}`,
     "workers:",
     ...r.workersInvoked.map(
-      (w) => `  - ${w.role} (${w.backend}) ${w.phase}${w.taskId ? " " + w.taskId : ""}${w.durationMs !== undefined ? ` ${fmtDuration(w.durationMs)}` : ""}${w.usage ? ` in=${w.usage.inputTokens} out=${w.usage.outputTokens}${w.usage.costUsd !== undefined ? ` $${w.usage.costUsd.toFixed(4)}` : ""}` : ""}`,
+      (w) => `  - ${w.role} (${w.backend}) ${w.phase}${w.taskId ? " " + w.taskId : ""}${formatRouting(w.routing)}${w.durationMs !== undefined ? ` ${fmtDuration(w.durationMs)}` : ""}${w.usage ? ` in=${w.usage.inputTokens} out=${w.usage.outputTokens}${w.usage.costUsd !== undefined ? ` $${w.usage.costUsd.toFixed(4)}` : ""}` : ""}`,
     ),
     `plan: ${r.planSource}${r.planProblems.length ? ` (${r.planProblems.length} problem(s) with the model plan)` : ""}`,
     "tasks:",
