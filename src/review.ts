@@ -82,6 +82,8 @@ export async function reviewAfterRun(opts: {
   workspace?: string;
   profile?: string;
   verdict?: unknown;
+  /** Tokens / cost the conductor reports (`harvest --usage '<json>'`). */
+  usage?: Record<string, unknown>;
 }): Promise<ReviewResult> {
   const home = agentikHome(opts.home, opts.profile);
   const session = await recordSession(
@@ -93,6 +95,7 @@ export async function reviewAfterRun(opts: {
       verdict: opts.verdict,
       artifacts: opts.report.artifacts,
       summary: summarizeRun(opts.report),
+      usage: opts.usage,
     },
     { home },
   );

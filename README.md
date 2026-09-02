@@ -188,6 +188,12 @@ project-specific `./scripts/test.sh` reads as "other".
 worker edited — and that line opens the incident, so the next conductor knows whether partial work
 is on disk.
 
+**Every worker run is a session.** `agentik spawn` records a `kind=spawn` session (status, verdict,
+evidence, artifacts, usage) after its verdict. They stay out of the default `RELATED SESSIONS` and
+of `agentik review` without `--session`; `agentik memory search "<q>" --all` shows them as
+`[spawn] … · $0.004 · 11k tok`. `agentik harvest --usage '{"inputTokens":…}'` keeps the conductor's
+own cost on its session.
+
 **What it cost.** Every `agentik spawn` ends with `usage: in=11.1k (5.8k cached) out=42
 cost=$0.0043 turns=1 dur=12s`, read from the harness's own stream (claude `result`, grok `end` —
 dollars or ticks — codex `turn.completed`), and the line is stored on every incident.

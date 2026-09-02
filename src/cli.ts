@@ -24,7 +24,7 @@ import {
   untouchedArtifacts,
   type ArtifactSnapshot,
 } from "./artifacts.ts";
-import { consumeVerdictLine, describeEvidence, floorViolations, formatUsage, newVerdict, summarizeVerdict, verdictArgs, verdictProblem } from "./verdict.ts";
+import { consumeVerdictLine, describeEvidence, evidenceOf, floorViolations, formatUsage, newVerdict, summarizeVerdict, verdictArgs, verdictProblem } from "./verdict.ts";
 import { formatReport, runLoop } from "./loop.ts";
 import { defaultFetchImpl } from "./tools.ts";
 import { retainNote, readHot } from "./memory.ts";
@@ -42,7 +42,7 @@ import {
   type IncidentRecord,
 } from "./incidents.ts";
 import { formatIncidentForReview, formatReviewOutcome, runReview, type ReviewOutcome } from "./reviewer.ts";
-import { getSession, latestSession } from "./sessions.ts";
+import { getSession, latestSession, recordSession } from "./sessions.ts";
 import { readFile } from "node:fs/promises";
 import { recallBeforeRun, reviewAfterRun, type SessionStatus } from "./review.ts";
 import {
@@ -763,24 +763,51 @@ async function spawnForeign(args: string[]): Promise<number> {
       : `${harness} killed after ${Math.round(timeoutMs / 1000)}s (timeout) — the task did NOT finish, partial work may be on disk`;
   const timedOutMsg = (idle = false) => `agentik spawn: ${timedOutSymptom(idle)}`;
 
+  // Every worker invocation is a session (kind=spawn): searchable with `memory search --all`,
+  // never picked by `agentik review` without --session, never in the default RELATED SESSIONS.
+  // Recording never changes the exit code.
+  const recordSpawn = async (code: number, extra: { verdict?: Record<string, unknown>; artifacts?: string[]; usage?: Record<string, unknown> } = {}) => {
+    const status = code === 0 ? "completed" : code === 124 ? "timeout" : "failed";
+    try {
+      await recordSession(
+        {
+          goal,
+          workspace,
+          profile: flags.profile ?? process.env.AGENTIK_PROFILE ?? "default",
+          status,
+          kind: "spawn",
+          verdict: { harness, role: flags.role, exitCode: code, ...extra.verdict },
+          artifacts: extra.artifacts ?? expected,
+          summary: `${harness}${flags.role ? ` as ${flags.role}` : ""}: exit ${code}${extra.verdict?.evidence ? ` · evidence=${String(extra.verdict.evidence)}` : ""}`,
+          usage: extra.usage,
+        },
+        { home: homeFor(flags) },
+      );
+    } catch (err) {
+      console.error(`agentik spawn: could not record session: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return code;
+  };
+
   if (flags.raw) {
     // Opt-out: the harness's own rendering, no verdict.
     const { bin, args: rawArgs } = foreignWorkerArgs(harness, prompt, workspace, [], { allowHighBlast: !floor });
     if (floor) console.error("agentik spawn: --raw reads no stream — floor violations cannot be detected after the fact on this run");
     if (idleMs > 0) console.error("agentik spawn: --idle-timeout is ignored with --raw (no stream to watch)");
     const res = await spawnCapture(bin, rawArgs, timeoutMs, workspace, { stream: true });
+    const rawVerdict = { raw: true, stopReason: res.timedOut ? "timeout" : undefined };
     if (res.timedOut) {
       console.error(timedOutMsg());
-      return fail(124, timedOutSymptom());
+      return recordSpawn(await fail(124, timedOutSymptom()), { verdict: rawVerdict });
     }
-    if (res.exitCode !== 0) return fail(1, `${harness} exited ${res.exitCode}`);
+    if (res.exitCode !== 0) return recordSpawn(await fail(1, `${harness} exited ${res.exitCode}`), { verdict: rawVerdict });
     const untouchedRaw = await untouchedArtifacts(workspace, before);
     if (untouchedRaw.length > 0) {
       const symptom = describeUntouched(untouchedRaw);
       console.error(`agentik spawn: ${symptom}`);
-      return fail(125, symptom);
+      return recordSpawn(await fail(125, symptom), { verdict: rawVerdict });
     }
-    return 0;
+    return recordSpawn(0, { verdict: rawVerdict });
   }
 
   // Read the harness's own event stream. Exit code alone cannot tell a worker that did the
@@ -843,9 +870,30 @@ async function spawnForeign(args: string[]): Promise<number> {
     console.error(`agentik spawn: ${line}`);
     return { stopReason: verdict.stopReason, errors: [line, describeEvidence(verdict), usageLine, ...verdict.errors] };
   };
+  const touchedPaths = async () => {
+    try {
+      return (await diffArtifacts(workspace, before, editedPaths, startedAt)).touched;
+    } catch {
+      return [];
+    }
+  };
+  const sessionOf = async (code: number) =>
+    recordSpawn(code, {
+      verdict: {
+        stopReason: verdict.stopReason,
+        turns: verdict.turns,
+        toolCalls: verdict.toolCalls,
+        evidence: evidenceOf(verdict).evidence,
+        idle: Boolean(res.idle),
+        completed: verdict.completed,
+        errors: verdict.errors.slice(0, 5),
+      },
+      artifacts: [...new Set([...expected, ...(await touchedPaths())])],
+      usage: verdict.usage as Record<string, unknown> | undefined,
+    });
   if (res.timedOut) {
     console.error(timedOutMsg(res.idle));
-    return fail(124, timedOutSymptom(res.idle), await unfinished());
+    return sessionOf(await fail(124, timedOutSymptom(res.idle), await unfinished()));
   }
   if (res.exitCode !== 0) {
     if (res.stderr.trim()) process.stderr.write(res.stderr);
@@ -853,26 +901,26 @@ async function spawnForeign(args: string[]): Promise<number> {
     if (floor && verdict.eventCount === 0 && Date.now() - startedAt < 5_000 && ARGV_REJECTED.test(res.stderr)) {
       const symptom = `${harness} rejected the deny rules (argv) — exit ${res.exitCode}; the floor could not be installed`;
       console.error(`agentik spawn: ${symptom}`);
-      return fail(1, symptom, { ...detail, errors: [res.stderr.trim().split("\n")[0].slice(0, 200), ...verdict.errors] });
+      return sessionOf(await fail(1, symptom, { ...detail, errors: [res.stderr.trim().split("\n")[0].slice(0, 200), ...verdict.errors] }));
     }
-    return fail(1, `${harness} exited ${res.exitCode}`, detail);
+    return sessionOf(await fail(1, `${harness} exited ${res.exitCode}`, detail));
   }
   const problem = verdictProblem(verdict, { requireTools: flags.requireTools, requireEvidence: flags.requireEvidence });
   if (problem) {
     console.error(`agentik spawn: ${problem} — treating this as unfinished, not as success`);
-    return fail(125, problem, await unfinished());
+    return sessionOf(await fail(125, problem, await unfinished()));
   }
   // The stream proves tools ran; only the filesystem proves the deliverable moved.
   const untouched = await untouchedArtifacts(workspace, before);
   if (untouched.length > 0) {
     const symptom = describeUntouched(untouched);
     console.error(`agentik spawn: ${symptom} — treating this as unfinished, not as success`);
-    return fail(125, symptom, await unfinished());
+    return sessionOf(await fail(125, symptom, await unfinished()));
   }
   if (expected.length > 0) {
     console.error(`agentik spawn: ${expected.length} expected artifact(s) verified on disk`);
   }
-  return 0;
+  return sessionOf(0);
 }
 
 /**
@@ -947,6 +995,7 @@ export function parseRun(args: string[]): {
     incident?: string;
     since?: string;
     target?: string;
+    usage?: string;
   };
 } {
   const flags: Record<string, string | boolean> = {};
@@ -1057,6 +1106,7 @@ export function parseRun(args: string[]): {
       incident: str(flags.incident),
       since: str(flags.since),
       target: str(flags.target),
+      usage: str(flags.usage),
     },
   };
 }
@@ -1146,7 +1196,8 @@ function nonNegative(v: string | boolean | undefined): number | undefined {
 
 const HARVEST_USAGE =
   'usage: agentik harvest "<goal>" [--workspace DIR] [--artifact PATH] [--step TEXT] [--transcript FILE]\n' +
-  "       [--status completed|failed|partial] [--cause TEXT]   (failed|partial require --cause)";
+  "       [--status completed|failed|partial] [--cause TEXT]   (failed|partial require --cause)\n" +
+  "       [--usage '<json object>']   tokens / cost of the run, kept on the session";
 
 const HARVEST_STATUSES = new Set<SessionStatus>(["completed", "failed", "partial"]);
 
@@ -1180,6 +1231,17 @@ async function harvestCmd(args: string[]): Promise<number> {
     return { tool: tool || "step", args: {}, output: s, artifact };
   });
   const workspace = resolve(flags.workspace ?? process.cwd());
+  let usage: Record<string, unknown> | undefined;
+  if (flags.usage !== undefined) {
+    try {
+      const parsed = JSON.parse(flags.usage) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not a JSON object");
+      usage = parsed as Record<string, unknown>;
+    } catch (err) {
+      console.error(`agentik harvest: --usage must be a JSON object ({"inputTokens":…,"outputTokens":…,"costUsd":…}): ${err instanceof Error ? err.message : String(err)}`);
+      return 2;
+    }
+  }
   const harvested = await reviewAfterRun({
     goal: harvestGoal,
     report: {
@@ -1192,6 +1254,7 @@ async function harvestCmd(args: string[]): Promise<number> {
     // workspace-filtered search.
     workspace,
     profile: flags.profile,
+    usage,
   });
   console.log(`memory: ${harvested.memoryLayer} #${harvested.sessionId}`);
   if (status !== "completed") {

@@ -21,7 +21,9 @@ the README and this file disagree; this file wins for agents.
      │                                                 --transcript /tmp/ak-transcript.md
      ├─ USER PROFILE  ← memory/USER.md   (cap 1375)     │
      ├─ MEMORY        ← memory/MEMORY.md (cap 2200)     ├─ recordSession → sessions.sqlite
-     │      GLOBAL: true in every project                │     goal, workspace, profile, status,
+     │      GLOBAL: true in every project                │     goal, workspace, profile, status, kind
+     │                                                  │     (run | spawn), usage — every agentik
+     │                                                  │     spawn records kind=spawn after its verdict
      │      entries "§"-separated, secrets/injections    │     verdict, artifacts, summary
      │      masked [BLOCKED] at load, kept on disk       │
      ├─ PROJECT       ← memory/projects/<slug>/MEMORY.md │
@@ -236,6 +238,15 @@ command × level table (~80 rows) and the benign-neighbour check for every rule.
   more`) on stderr and **first** in the `errors` of the incident, then `evidence=…`, then `usage: …`.
   `touched` = paths of the stream's edit events, workspace-relative via `resolveSafe` (escapes ignored),
   mtime ≥ start. Verdict and exit code unchanged.
+- **Sessions of workers**: `sessions.kind TEXT NOT NULL DEFAULT 'run'`, `sessions.usage TEXT` (added
+  in place by `ensureColumn`; an FTS index created over an already-populated table is rebuilt once).
+  `agentik spawn` records `kind=spawn` on every exit after the verdict (raw path included; never on a
+  preflight refusal): status `completed|timeout|failed`, verdict `{harness, role, exitCode, evidence,
+  idle, stopReason, turns, toolCalls}`, artifacts = expected ∪ touched, usage. `searchSessions` filters
+  `kind='run'` unless `--all`; `latestSession` excludes spawn (so `agentik review` without `--session`
+  never reviews a worker run); `getSession(id)` returns anything; `formatSessionHit` prefixes `[spawn]`
+  and appends ` · $0.004 · 11k tok`. `harvest --usage '<json object>'` (else exit 2) stores the
+  conductor's own usage.
 - `agentik spawn --harness X` reads the harness event stream (verdict): exit `0` done · `1` CLI
   failed · `2` unusable harness · `124` timeout (default 1800 s) · `125` finished without doing the
   work (`--require-tools`, `--expect-artifact PATH`).

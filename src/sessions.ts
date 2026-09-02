@@ -14,6 +14,18 @@ import { agentikHome, memoryPaths } from "./home.ts";
  * it belongs to the session that produced it.
  */
 
+/** `run`: a conductor run / harvest. `spawn`: one worker invocation (`agentik spawn`). */
+export type SessionKind = "run" | "spawn";
+
+export interface SessionUsage {
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  costUsd?: number;
+  turns?: number;
+  durationMs?: number;
+}
+
 export interface SessionInput {
   goal: string;
   workspace?: string;
@@ -22,6 +34,10 @@ export interface SessionInput {
   verdict?: unknown;
   artifacts?: string[];
   summary?: string;
+  /** Default `run`. */
+  kind?: SessionKind;
+  /** Tokens / cost, as reported; any JSON object is accepted and kept. */
+  usage?: SessionUsage | Record<string, unknown>;
 }
 
 export interface SessionRecord {
@@ -34,6 +50,8 @@ export interface SessionRecord {
   artifacts: string[];
   summary: string;
   createdAt: string;
+  kind: SessionKind;
+  usage: SessionUsage | null;
 }
 
 export interface SessionHit extends SessionRecord {
@@ -44,6 +62,7 @@ export interface SessionHit extends SessionRecord {
 export interface SearchOptions {
   home?: string;
   workspace?: string;
+  /** Every workspace AND every kind (spawn sessions included). */
   all?: boolean;
   limit?: number;
 }
@@ -62,6 +81,8 @@ interface Row {
   artifacts: string;
   summary: string;
   created_at: string;
+  kind: string;
+  usage: string | null;
 }
 
 export async function recordSession(
@@ -131,6 +152,8 @@ export async function searchSessions(query: string, opts?: SearchOptions): Promi
       // A session of unknown workspace ("" — migrated from the old stores) is never hidden by
       // the filter; only sessions that belong to another workspace are.
       .filter((h) => !wantWorkspace || h.workspace === "" || h.workspace === wantWorkspace)
+      // Worker invocations are noise next to runs: `--all` shows them.
+      .filter((h) => opts?.all || h.kind === "run")
       .sort((a, b) => b.score - a.score || b.createdAt.localeCompare(a.createdAt) || b.id - a.id)
       .slice(0, limit);
   } finally {
@@ -138,9 +161,17 @@ export async function searchSessions(query: string, opts?: SearchOptions): Promi
   }
 }
 
-/** `[2026-09-01] <goal> — <summary>` */
-export function formatSessionHit(hit: Pick<SessionRecord, "createdAt" | "goal" | "summary">): string {
-  return `[${hit.createdAt.slice(0, 10)}] ${hit.goal} — ${hit.summary}`;
+/** `[2026-09-01] <goal> — <summary>`; a spawn session is prefixed `[spawn]` and shows ` · $0.004 · 11k tok`. */
+export function formatSessionHit(hit: Pick<SessionRecord, "createdAt" | "goal" | "summary"> & Partial<Pick<SessionRecord, "kind" | "usage">>): string {
+  const prefix = hit.kind === "spawn" ? "[spawn] " : "";
+  const bits: string[] = [];
+  const u = hit.usage;
+  if (u) {
+    if (typeof u.costUsd === "number") bits.push(`$${u.costUsd < 0.01 ? u.costUsd.toFixed(4) : u.costUsd.toFixed(3)}`);
+    const tok = (u.inputTokens ?? 0) + (u.outputTokens ?? 0);
+    if (tok > 0) bits.push(`${tok >= 1000 ? `${Math.round(tok / 1000)}k` : tok} tok`);
+  }
+  return `${prefix}[${hit.createdAt.slice(0, 10)}] ${hit.goal} — ${hit.summary}${bits.length ? ` · ${bits.join(" · ")}` : ""}`;
 }
 
 export async function getSession(id: number, opts?: { home?: string }): Promise<SessionRecord | null> {
@@ -165,13 +196,14 @@ export async function latestSession(opts?: { home?: string; workspace?: string }
   const db = await openSessions(home);
   try {
     const ws = opts?.workspace ? resolve(opts.workspace) : "";
+    // Runs only: `agentik review` without --session must never pick up a worker invocation.
     const row = ws
       ? db
           .query<Row, [string]>(
-            "SELECT * FROM sessions WHERE workspace = ? OR workspace = '' ORDER BY created_at DESC, id DESC LIMIT 1",
+            "SELECT * FROM sessions WHERE kind = 'run' AND (workspace = ? OR workspace = '') ORDER BY created_at DESC, id DESC LIMIT 1",
           )
           .get(ws)
-      : db.query<Row, []>("SELECT * FROM sessions ORDER BY created_at DESC, id DESC LIMIT 1").get();
+      : db.query<Row, []>("SELECT * FROM sessions WHERE kind = 'run' ORDER BY created_at DESC, id DESC LIMIT 1").get();
     return row ? toRecord(row) : null;
   } finally {
     db.close();
@@ -396,13 +428,18 @@ async function openSessions(home: string): Promise<Database> {
     created_at TEXT NOT NULL
   )`);
   db.run("CREATE INDEX IF NOT EXISTS sessions_workspace ON sessions(workspace, created_at)");
+  ensureColumn(db, "sessions", "kind", "TEXT NOT NULL DEFAULT 'run'");
+  ensureColumn(db, "sessions", "usage", "TEXT");
   for (const [name, tokenizer] of [
     ["sessions_fts", "unicode61 remove_diacritics 2"],
     ["sessions_fts_tri", "trigram"],
   ] as const) {
+    const existed = db.query<{ n: number }, [string]>("SELECT count(*) AS n FROM sqlite_master WHERE name = ?").get(name)?.n ?? 0;
     db.run(
       `CREATE VIRTUAL TABLE IF NOT EXISTS ${name} USING fts5(goal, summary, artifacts, content='sessions', content_rowid='id', tokenize='${tokenizer}')`,
     );
+    // An index created over an already-populated table starts empty: rebuild it once.
+    if (!existed) db.run(`INSERT INTO ${name}(${name}) VALUES ('rebuild')`);
     db.run(`CREATE TRIGGER IF NOT EXISTS ${name}_ai AFTER INSERT ON sessions BEGIN
       INSERT INTO ${name}(rowid, goal, summary, artifacts) VALUES (new.id, new.goal, new.summary, new.artifacts);
     END`);
@@ -417,6 +454,17 @@ async function openSessions(home: string): Promise<Database> {
   return db;
 }
 
+/**
+ * Add a column to an existing table when it is missing (`PRAGMA table_info` then `ALTER TABLE ADD
+ * COLUMN`). Idempotent; the FTS tables index goal/summary/artifacts only and are untouched.
+ */
+export function ensureColumn(db: Database, table: string, column: string, type: string): boolean {
+  const cols = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
+  if (cols.some((c) => c.name === column)) return false;
+  db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  return true;
+}
+
 function insertSession(db: Database, input: SessionInput, createdAt?: string): SessionRecord {
   const artifacts = input.artifacts ?? [];
   const row = {
@@ -428,10 +476,12 @@ function insertSession(db: Database, input: SessionInput, createdAt?: string): S
     artifacts: JSON.stringify(artifacts),
     summary: (input.summary ?? "").replace(/\s+/g, " ").trim(),
     created_at: createdAt ?? new Date().toISOString(),
+    kind: input.kind ?? "run",
+    usage: input.usage && typeof input.usage === "object" ? JSON.stringify(input.usage) : null,
   };
   const res = db.run(
-    "INSERT INTO sessions (goal, workspace, profile, status, verdict, artifacts, summary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    [row.goal, row.workspace, row.profile, row.status, row.verdict, row.artifacts, row.summary, row.created_at],
+    "INSERT INTO sessions (goal, workspace, profile, status, verdict, artifacts, summary, created_at, kind, usage) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [row.goal, row.workspace, row.profile, row.status, row.verdict, row.artifacts, row.summary, row.created_at, row.kind, row.usage],
   );
   return toRecord({ id: Number(res.lastInsertRowid), ...row });
 }
@@ -450,6 +500,12 @@ function toRecord(r: Row): SessionRecord {
   } catch {
     artifacts = [];
   }
+  let usage: SessionUsage | null = null;
+  try {
+    usage = r.usage ? (JSON.parse(r.usage) as SessionUsage) : null;
+  } catch {
+    usage = null;
+  }
   return {
     id: r.id,
     goal: r.goal,
@@ -460,6 +516,8 @@ function toRecord(r: Row): SessionRecord {
     artifacts,
     summary: r.summary,
     createdAt: r.created_at,
+    kind: r.kind === "spawn" ? "spawn" : "run",
+    usage,
   };
 }
 
