@@ -202,6 +202,18 @@ is fed by the loop when the gate releases a call, and the executor runs nothing 
 in it. `credential_use` keeps no executor; `server_admin` stays a local receipt (both said in the
 catalogue: out of scope).
 
+## Run persistence (`agentik run`)
+
+`src/runs.ts`: `runId = <YYYYMMDDTHHMMSSZ>-<6hex>`, `writeRun(record, {home})` → `<home>/runs/<id>.json`
+`{id, at, goal, workspace, profile, status, exitCode, backend, workers, durationMs, report}` with every
+string leaf through the memory scan (`[BLOCKED: …]`, never a raw token). Written for **every** status
+(`planned` included), before the session/incidents/review, in try/catch: a failure is one stderr line
+(`could not write the run file`) and the exit code is unchanged. `run: <path>` is printed; `--json`
+adds `runId` / `runPath`. An `awaiting_approval` run prints its approval ids and the relaunch hint
+(same goal with `--approve-high-blast` or `--yolo`; `runs resume` with a frozen call hash is F2).
+`agentik runs ls [--limit N] [--workspace DIR] [--json] | show <id|prefix> [--json]` (read-only, exempt
+from the config preflight). `.agentik-run` is no longer ignored by git (it was never written).
+
 ## Tool output spill (`agentik run`)
 
 `src/tool-results.ts`: a tool output over `TOOL_OUTPUT_INLINE_MAX` (8000 chars) is written whole

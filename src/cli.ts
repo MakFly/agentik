@@ -42,6 +42,7 @@ import {
   type IncidentRecord,
 } from "./incidents.ts";
 import { formatIncidentForReview, formatReviewOutcome, runReview, type ReviewOutcome } from "./reviewer.ts";
+import { formatRunLine, listRuns, readRun, writeRun, type RunRecord } from "./runs.ts";
 import { getSession, latestSession, recordSession } from "./sessions.ts";
 import { readFile } from "node:fs/promises";
 import { recallBeforeRun, reviewAfterRun, type SessionStatus } from "./review.ts";
@@ -109,6 +110,11 @@ Commands:
                                Exit codes: 0 done · 1 the CLI failed · 2 unusable harness
                                · 124 killed by --timeout, the task did NOT finish
                                · 125 the harness ended without doing the work.
+  agentik runs ls [--limit N] [--workspace DIR] [--json] | show <id|prefix> [--json]
+                               Every run is persisted to <home>/runs/<id>.json whatever its
+                               status (string leaves masked); "run: <path>" is printed. An
+                               awaiting_approval run is relaunched with the same goal and
+                               --approve-high-blast (or --yolo).
   agentik context [--workspace DIR] [--profile P] ["<goal>"]
   agentik review ["<goal>"] [--transcript FILE | --session ID | --incident ID] [--backend sonnet|codex|claude]
                                Background review: a model reads what happened and decides what
@@ -246,6 +252,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (cmd === "context") return contextCmd(argv.slice(1));
   if (cmd === "review") return reviewCmd(argv.slice(1));
   if (cmd === "postmortem") return postmortemCmd(argv.slice(1));
+  if (cmd === "runs") return runsCmd(argv.slice(1));
 
   const runArgv = cmd === "run" ? argv.slice(1) : argv;
   const { goal, flags } = parseRun(runArgv);
@@ -326,6 +333,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       console.log(`memory recall:\n${hits.map((h) => `- ${h}`).join("\n")}`);
     }
   }
+  const runStartedAt = Date.now();
   const report = await runLoop({
     goal,
     workspace,
@@ -346,14 +354,43 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     },
   });
 
+  // Persist the run, whatever its status, before anything else can fail. A run that cannot be
+  // written is one stderr line; the exit code never changes because of it.
+  const exitCode = flags.planOnly ? 0 : exitCodeFor(report);
+  let persisted: { id: string; path: string } | undefined;
+  try {
+    persisted = await writeRun(
+      {
+        goal,
+        workspace,
+        profile: flags.profile ?? process.env.AGENTIK_PROFILE ?? "default",
+        status: report.status,
+        exitCode,
+        backend: backendSpec,
+        workers: workerCount,
+        durationMs: Date.now() - runStartedAt,
+        report,
+      },
+      { home },
+    );
+  } catch (err) {
+    console.error(`agentik: could not write the run file: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const jsonOut = () => JSON.stringify({ ...report, ...(persisted ? { runId: persisted.id, runPath: persisted.path } : {}) }, null, 2);
+
   if (flags.planOnly) {
-    if (flags.json) console.log(JSON.stringify(report, null, 2));
+    if (flags.json) console.log(jsonOut());
+    else if (persisted) console.log(`run: ${persisted.path}`);
     return 0;
   }
   if (flags.json) {
-    console.log(JSON.stringify(report, null, 2));
+    console.log(jsonOut());
   } else {
     console.log(formatReport(report));
+    if (persisted) console.log(`run: ${persisted.path}`);
+    if (report.status === "awaiting_approval") {
+      console.log(`awaiting approval: ${report.pendingApprovals.map((a) => `${a.id} (${a.toolCall.tool})`).join(", ")} — relaunch the same goal with --approve-high-blast (or --yolo) to release, --reject-high-blast to refuse`);
+    }
   }
 
   const harvested = await reviewAfterRun({
@@ -389,7 +426,53 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     }
   }
 
-  return exitCodeFor(report);
+  return exitCode;
+}
+
+const RUNS_USAGE = "usage: agentik runs ls [--limit N] [--workspace DIR] [--json] | show <id|prefix> [--json]";
+
+/** `agentik runs ls | show`: the persisted runs of this home. Read-only. */
+async function runsCmd(args: string[]): Promise<number> {
+  const sub = args[0];
+  const { goal, flags } = parseRun(args.slice(1));
+  const home = homeFor(flags);
+  if (sub === "ls" || sub === "list") {
+    const runs = await listRuns({ home, limit: flags.limit ?? 20, workspace: flags.workspace ? resolve(flags.workspace) : undefined });
+    if (flags.json) console.log(JSON.stringify(runs, null, 2));
+    else console.log(runs.length ? runs.map(formatRunLine).join("\n") : "(no runs yet)");
+    return 0;
+  }
+  if (sub === "show") {
+    const id = goal.trim();
+    if (!id) {
+      console.error(RUNS_USAGE);
+      return 2;
+    }
+    const found = await readRun(id, { home });
+    if (!found) {
+      console.error(`agentik runs: no run matching "${id}"`);
+      return 1;
+    }
+    if (Array.isArray(found)) {
+      console.error(`agentik runs: "${id}" matches ${found.length} runs:`);
+      for (const r of found) console.error(`  ${formatRunLine(r)}`);
+      return 1;
+    }
+    const rec: RunRecord = found;
+    if (flags.json) {
+      console.log(JSON.stringify(rec, null, 2));
+      return 0;
+    }
+    console.log(`run ${rec.id} · ${rec.at} · status ${rec.status} · exit ${rec.exitCode} · ${rec.backend} × ${rec.workers} · ${Math.round(rec.durationMs / 1000)}s`);
+    console.log(`workspace: ${rec.workspace}`);
+    console.log(formatReport(rec.report));
+    if (rec.report.pendingApprovals?.length) {
+      console.log(`awaiting approval: ${rec.report.pendingApprovals.map((a) => `${a.id} (${a.toolCall.tool})`).join(", ")}`);
+    }
+    return 0;
+  }
+  console.error(RUNS_USAGE);
+  return 2;
 }
 
 /**
@@ -1151,8 +1234,8 @@ async function skillBodyProblem(name: string, home: string): Promise<string | un
   }
 }
 
-const CONFIG_EXEMPT = new Set(["probe", "context", "postmortem"]);
-const KNOWN_COMMANDS = new Set(["probe", "spawn", "memory", "skill", "skills", "harvest", "context", "review", "postmortem", "run"]);
+const CONFIG_EXEMPT = new Set(["probe", "context", "postmortem", "runs"]);
+const KNOWN_COMMANDS = new Set(["probe", "spawn", "memory", "skill", "skills", "harvest", "context", "review", "postmortem", "run", "runs"]);
 
 /** Exit 2 with the depth message; the refusal is an incident so the conductor sees it next time. */
 async function refuseNested(cmd: "spawn" | "run", argv: string[]): Promise<number> {

@@ -210,6 +210,11 @@ non-destructive check command). One `PLAN_REJECTED` reprompt, then the regex pla
 `plan: model | model_repaired | fallback` and lists the problems; `--plan-only` prints the plan and
 stops.
 
+**Every run is on disk.** `<home>/runs/<id>.json` holds the goal, status, exit code, timings and
+the full report (secrets masked) for every run, `awaiting_approval` and stalled ones included; the
+CLI prints `run: <path>`. `agentik runs ls` lists them, `agentik runs show <id|prefix>` replays the
+report. An `awaiting_approval` run is relaunched with the same goal and `--approve-high-blast`.
+
 **Tasks run in parallel along the plan's dependencies.** A pure scheduler starts every task whose
 dependencies are done, up to `--concurrency N` (default: the worker count) and never two runs of
 the same worker at once; a task blocked on an approval holds back only its dependants.
