@@ -162,6 +162,10 @@ The wall clock is `--timeout` seconds (default 1800, `0` = unbounded).
 returned a bare failure with nothing saying the work had been cut off mid-task. Treat 124 as
 "the task did not finish, partial work may be on disk".
 
+`--idle-timeout S` (off by default) kills a harness whose event stream is silent for S seconds —
+exit 124 with its own symptom, distinct from the wall clock. Leave it off for claude `--effort
+high`, which can think for minutes without a line.
+
 Live models only **propose** JSON `toolCalls`. The orchestrator gates and executes.
 
 **Spawned workers have a floor.** `agentik spawn` runs the harness in yolo mode for everything

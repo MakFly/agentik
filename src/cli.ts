@@ -182,6 +182,9 @@ Options:
   --yolo                       Session approval (you launched yolo) + live CLIs
   --max-steps N                Auto-run cap per worker task (default: 8)
   --timeout SECONDS            Wall clock for agentik spawn (default 1800, 0 = unbounded)
+  --idle-timeout SECONDS       spawn: kill the harness when its stream is silent for that long
+                               (default 0 = off; 600 is a sane value). Exit 124, symptom
+                               "idle for Ns (no stream event)". Ignored with --raw (no stream).
   --step-timeout SECONDS       Wall clock for one worker-CLI invocation (default 600)
   --refresh-backends           Re-probe the harnesses instead of reading the 15min cache
   --strict-backend             Fail instead of rerouting when a named harness is unusable
@@ -751,14 +754,18 @@ async function spawnForeign(args: string[]): Promise<number> {
     return 2;
   }
   const timeoutMs = (flags.timeout ?? DEFAULT_SPAWN_TIMEOUT_S) * 1000;
-  const timedOutSymptom = () =>
-    `${harness} killed after ${Math.round(timeoutMs / 1000)}s (timeout) — the task did NOT finish, partial work may be on disk`;
-  const timedOutMsg = () => `agentik spawn: ${timedOutSymptom()}`;
+  const idleMs = (flags.idleTimeout ?? 0) * 1000;
+  const timedOutSymptom = (idle = false) =>
+    idle
+      ? `${harness} idle for ${Math.round(idleMs / 1000)}s (no stream event) — killed, the task did NOT finish, partial work may be on disk`
+      : `${harness} killed after ${Math.round(timeoutMs / 1000)}s (timeout) — the task did NOT finish, partial work may be on disk`;
+  const timedOutMsg = (idle = false) => `agentik spawn: ${timedOutSymptom(idle)}`;
 
   if (flags.raw) {
     // Opt-out: the harness's own rendering, no verdict.
     const { bin, args: rawArgs } = foreignWorkerArgs(harness, prompt, workspace, [], { allowHighBlast: !floor });
     if (floor) console.error("agentik spawn: --raw reads no stream — floor violations cannot be detected after the fact on this run");
+    if (idleMs > 0) console.error("agentik spawn: --idle-timeout is ignored with --raw (no stream to watch)");
     const res = await spawnCapture(bin, rawArgs, timeoutMs, workspace, { stream: true });
     if (res.timedOut) {
       console.error(timedOutMsg());
@@ -779,11 +786,17 @@ async function spawnForeign(args: string[]): Promise<number> {
   const { bin, args: streamArgs } = foreignWorkerArgs(harness, prompt, workspace, verdictArgs(harness), { allowHighBlast: !floor });
   const verdict = newVerdict(harness);
   const startedAt = Date.now();
-  const res = await spawnLines(bin, streamArgs, timeoutMs, workspace, (line) =>
-    consumeVerdictLine(verdict, line, {
-      onText: (chunk) => process.stdout.write(chunk),
-      onTool: (name, detail) => process.stderr.write(`  ⟩ ${name}${detail ? ` ${detail}` : ""}\n`),
-    }),
+  const res = await spawnLines(
+    bin,
+    streamArgs,
+    timeoutMs,
+    workspace,
+    (line) =>
+      consumeVerdictLine(verdict, line, {
+        onText: (chunk) => process.stdout.write(chunk),
+        onTool: (name, detail) => process.stderr.write(`  ⟩ ${name}${detail ? ` ${detail}` : ""}\n`),
+      }),
+    { idleMs },
   );
   process.stdout.write("\n");
   console.error(`agentik spawn: ${summarizeVerdict(verdict)}`);
@@ -817,8 +830,8 @@ async function spawnForeign(args: string[]): Promise<number> {
   const detail = { stopReason: verdict.stopReason, errors: [usageLine, ...verdict.errors] };
   const detail125 = { stopReason: verdict.stopReason, errors: [describeEvidence(verdict), usageLine, ...verdict.errors] };
   if (res.timedOut) {
-    console.error(timedOutMsg());
-    return fail(124, timedOutSymptom(), detail);
+    console.error(timedOutMsg(res.idle));
+    return fail(124, timedOutSymptom(res.idle), detail);
   }
   if (res.exitCode !== 0) {
     if (res.stderr.trim()) process.stderr.write(res.stderr);
@@ -905,6 +918,7 @@ export function parseRun(args: string[]): {
     transcript?: string;
     session?: string;
     noReview?: boolean;
+    idleTimeout?: number;
     allowHighBlast?: boolean;
     requireEvidence?: boolean;
     maxIterations?: number;
@@ -998,6 +1012,7 @@ export function parseRun(args: string[]): {
       agentikHome: str(flags["agentik-home"]),
       goalFlag: str(flags.goal),
       timeout: nonNegative(flags.timeout),
+      idleTimeout: nonNegative(flags["idle-timeout"]),
       stepTimeout: nonNegative(flags["step-timeout"]),
       refreshBackends: Boolean(flags.refreshBackends),
       strictBackend: Boolean(flags.strictBackend),

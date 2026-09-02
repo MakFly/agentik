@@ -225,6 +225,12 @@ command × level table (~80 rows) and the benign-neighbour check for every rule.
   `GROK_ENVELOPE_KEYS` (gated-mode unwrapper) is untouched. `agentik spawn` always prints
   `agentik spawn: usage: in=11.1k (5.8k cached) out=42 cost=$0.0043 turns=1 dur=12s` (or "none
   reported") and adds that line to the `errors` of every 1/124/125 incident.
+- **Idle timeout**: `spawnLines(…, {idleMs})` re-arms a timer on every stdout line (stderr does not
+  count); expiry → `idle=true, timedOut=true`, same SIGTERM → `KILL_GRACE_MS` → SIGKILL. `agentik spawn
+  --idle-timeout S` (default 0 = off; 600 is sane) → exit 124, symptom `<harness> idle for Ns (no stream
+  event) — killed, the task did NOT finish` (a distinct incident line from the wall clock). Ignored with
+  `--raw` (said on stderr). Default off because claude `--effort high` can stay silent for minutes
+  inside one model call.
 - `agentik spawn --harness X` reads the harness event stream (verdict): exit `0` done · `1` CLI
   failed · `2` unusable harness · `124` timeout (default 1800 s) · `125` finished without doing the
   work (`--require-tools`, `--expect-artifact PATH`).

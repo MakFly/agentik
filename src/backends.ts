@@ -623,6 +623,8 @@ export interface SpawnResult {
   exitCode: number;
   /** The timeout fired. Independent of `exitCode` — see below. */
   timedOut: boolean;
+  /** The idle timer fired (no stdout line for `idleMs`); `timedOut` is set too. */
+  idle?: boolean;
   signal: string | null;
 }
 
@@ -674,24 +676,44 @@ export function killManaged(proc: Bun.Subprocess, signal: "SIGTERM" | "SIGKILL" 
  * as it arrives. Needed to read a harness's NDJSON event stream live instead of waiting for a
  * possibly-30-minute run to end before knowing anything about it.
  */
+export interface SpawnLinesOptions {
+  /**
+   * Kill the child when no stdout line arrived for this long (0 = off). Re-armed on every line;
+   * stderr does not count. A harness that is thinking hard can stay silent for minutes inside
+   * one model call (claude `--effort high`), which is why the default is off.
+   */
+  idleMs?: number;
+}
+
 export async function spawnLines(
   cmd: string,
   args: string[],
   timeoutMs: number,
   cwd: string | undefined,
   onLine: (line: string) => void,
+  opts: SpawnLinesOptions = {},
 ): Promise<SpawnResult> {
   const proc = spawnManaged(cmd, args, { stdout: "pipe", stderr: "pipe", cwd });
   let timedOut = false;
+  let idle = false;
   let term: ReturnType<typeof setTimeout> | undefined;
   let hard: ReturnType<typeof setTimeout> | undefined;
-  if (timeoutMs > 0) {
-    term = setTimeout(() => {
-      timedOut = true;
-      killManaged(proc);
-      hard = setTimeout(() => killManaged(proc, "SIGKILL"), KILL_GRACE_MS);
-    }, timeoutMs);
-  }
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const cutOff = (why: "wall" | "idle") => {
+    if (timedOut) return;
+    timedOut = true;
+    idle = why === "idle";
+    killManaged(proc);
+    hard = setTimeout(() => killManaged(proc, "SIGKILL"), KILL_GRACE_MS);
+  };
+  if (timeoutMs > 0) term = setTimeout(() => cutOff("wall"), timeoutMs);
+  const idleMs = opts.idleMs ?? 0;
+  const armIdle = () => {
+    if (idleMs <= 0) return;
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => cutOff("idle"), idleMs);
+  };
+  armIdle();
   const decoder = new TextDecoder();
   let buffered = "";
   const pump = (async () => {
@@ -699,6 +721,7 @@ export async function spawnLines(
       buffered += decoder.decode(chunk, { stream: true });
       let nl = buffered.indexOf("\n");
       while (nl >= 0) {
+        armIdle();
         onLine(buffered.slice(0, nl));
         buffered = buffered.slice(nl + 1);
         nl = buffered.indexOf("\n");
@@ -713,7 +736,8 @@ export async function spawnLines(
   await pump;
   if (term) clearTimeout(term);
   if (hard) clearTimeout(hard);
-  return { stdout: "", stderr, exitCode, timedOut, signal: proc.signalCode };
+  if (idleTimer) clearTimeout(idleTimer);
+  return { stdout: "", stderr, exitCode, timedOut, idle, signal: proc.signalCode };
 }
 
 export interface SpawnOptions {
