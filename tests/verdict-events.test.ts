@@ -103,7 +103,8 @@ describe("agentik spawn --require-evidence", () => {
     expect(stale.stderr).toContain("evidence=none");
     const incidents = await listIncidents({ home, workspace: ws });
     expect(incidents).toHaveLength(1);
-    expect(incidents[0].errors[0]).toBe("evidence=none");
+    expect(incidents[0].errors[0]).toStartWith("changed: ");
+    expect(incidents[0].errors[1]).toBe("evidence=none");
     // Without the flag the same run is a success (default off).
     expect((await spawnCli([...base, "create b.txt"], bin)).code).toBe(0);
     await fakeClaude(bin, [edit, test_, JSON.stringify(claudeDone)]);

@@ -231,6 +231,11 @@ command × level table (~80 rows) and the benign-neighbour check for every rule.
   event) — killed, the task did NOT finish` (a distinct incident line from the wall clock). Ignored with
   `--raw` (said on stderr). Default off because claude `--effort high` can stay silent for minutes
   inside one model call.
+- **Artifact diff on 124/125** (`diffArtifacts(workspace, before, streamPaths, startedAt)` in
+  `src/artifacts.ts`): `changed: [a] / untouched: [b] / touched (per stream): [c]` (10 per list, `+N
+  more`) on stderr and **first** in the `errors` of the incident, then `evidence=…`, then `usage: …`.
+  `touched` = paths of the stream's edit events, workspace-relative via `resolveSafe` (escapes ignored),
+  mtime ≥ start. Verdict and exit code unchanged.
 - `agentik spawn --harness X` reads the harness event stream (verdict): exit `0` done · `1` CLI
   failed · `2` unusable harness · `124` timeout (default 1800 s) · `125` finished without doing the
   work (`--require-tools`, `--expect-artifact PATH`).

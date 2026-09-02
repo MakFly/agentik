@@ -71,6 +71,7 @@ describe("agentik spawn prints the usage line and stores it on incidents", () =>
     const incidents = await listIncidents({ home, workspace: ws });
     expect(incidents).toHaveLength(1);
     expect(incidents[0].errors).toContain("usage: in=11.1k (5.8k cached) out=42 cost=$0.0043 turns=1 dur=3s");
-    expect(incidents[0].errors[0]).toBe("evidence=none");
+    expect(incidents[0].errors[0]).toStartWith("changed: ");
+    expect(incidents[0].errors[1]).toBe("evidence=none");
   });
 });

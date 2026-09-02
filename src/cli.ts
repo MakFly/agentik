@@ -17,7 +17,9 @@ import {
   loadAvailability,
   type HarnessName, helpSupportsDenyRules } from "./availability.ts";
 import {
+  describeArtifactDiff,
   describeUntouched,
+  diffArtifacts,
   snapshotArtifacts,
   untouchedArtifacts,
   type ArtifactSnapshot,
@@ -824,14 +826,26 @@ async function spawnForeign(args: string[]): Promise<number> {
     }
   }
 
-  // Every incident carries what the run cost; every 125 says what evidence there was — the
-  // incident line is what the conductor reads next time.
+  // Every incident carries what the run cost; every 124/125 says what moved on disk and what
+  // evidence there was — the incident line is what the conductor reads next time.
   const usageLine = formatUsage(verdict.usage);
   const detail = { stopReason: verdict.stopReason, errors: [usageLine, ...verdict.errors] };
-  const detail125 = { stopReason: verdict.stopReason, errors: [describeEvidence(verdict), usageLine, ...verdict.errors] };
+  const editedPaths = verdict.events.flatMap((e) => (e.kind === "edit" ? e.paths ?? [] : []));
+  const diffLine = async () => {
+    try {
+      return describeArtifactDiff(await diffArtifacts(workspace, before, editedPaths, startedAt));
+    } catch (err) {
+      return `artifact diff unavailable: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  };
+  const unfinished = async () => {
+    const line = await diffLine();
+    console.error(`agentik spawn: ${line}`);
+    return { stopReason: verdict.stopReason, errors: [line, describeEvidence(verdict), usageLine, ...verdict.errors] };
+  };
   if (res.timedOut) {
     console.error(timedOutMsg(res.idle));
-    return fail(124, timedOutSymptom(res.idle), detail);
+    return fail(124, timedOutSymptom(res.idle), await unfinished());
   }
   if (res.exitCode !== 0) {
     if (res.stderr.trim()) process.stderr.write(res.stderr);
@@ -846,14 +860,14 @@ async function spawnForeign(args: string[]): Promise<number> {
   const problem = verdictProblem(verdict, { requireTools: flags.requireTools, requireEvidence: flags.requireEvidence });
   if (problem) {
     console.error(`agentik spawn: ${problem} — treating this as unfinished, not as success`);
-    return fail(125, problem, detail125);
+    return fail(125, problem, await unfinished());
   }
   // The stream proves tools ran; only the filesystem proves the deliverable moved.
   const untouched = await untouchedArtifacts(workspace, before);
   if (untouched.length > 0) {
     const symptom = describeUntouched(untouched);
     console.error(`agentik spawn: ${symptom} — treating this as unfinished, not as success`);
-    return fail(125, symptom, detail125);
+    return fail(125, symptom, await unfinished());
   }
   if (expected.length > 0) {
     console.error(`agentik spawn: ${expected.length} expected artifact(s) verified on disk`);

@@ -183,6 +183,11 @@ other, and prints `evidence=fresh|stale(n edits after last test)|none`. `agentik
 unverified"); off by default, because a research task legitimately edits nothing. Limit: a
 project-specific `./scripts/test.sh` reads as "other".
 
+**What moved on disk.** On 124 and 125 the run also prints `changed: [a] / untouched: [b] / touched
+(per stream): [c]` — expected artifacts that did or did not move, and the files the stream says the
+worker edited — and that line opens the incident, so the next conductor knows whether partial work
+is on disk.
+
 **What it cost.** Every `agentik spawn` ends with `usage: in=11.1k (5.8k cached) out=42
 cost=$0.0043 turns=1 dur=12s`, read from the harness's own stream (claude `result`, grok `end` —
 dollars or ticks — codex `turn.completed`), and the line is stored on every incident.
