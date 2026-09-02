@@ -355,8 +355,8 @@ export interface RunReport {
   artifacts: string[];
   synthesis: string;
   events: OrchEvent[];
-  /** Where the plan came from: the model, the model after one PLAN_REJECTED reprompt, or the regex planner. */
-  planSource: "model" | "model_repaired" | "fallback";
+  /** Where the plan came from: the model, the model after one PLAN_REJECTED reprompt, the regex planner, or a resumed run. */
+  planSource: "model" | "model_repaired" | "fallback" | "resumed";
   /** Why the model plan(s) were rejected, when they were. */
   planProblems: string[];
   /** One structured result per planned task, in plan order. */

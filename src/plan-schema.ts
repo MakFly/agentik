@@ -185,7 +185,7 @@ export function findCycle(tasks: Array<Pick<BoundedTask, "id" | "dependsOn">>): 
   return [...indeg.entries()].filter(([, n]) => n > 0).map(([id]) => id);
 }
 
-export type PlanSource = "model" | "model_repaired" | "fallback";
+export type PlanSource = "model" | "model_repaired" | "fallback" | "resumed";
 
 /** The plan as the human reads it before ACT. */
 export function formatPlan(tasks: BoundedTask[], source: PlanSource, problems: string[] = []): string {

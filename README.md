@@ -217,7 +217,7 @@ out · $0.31` and the report lists per-worker and per-tool durations.
 **Every run is on disk.** `<home>/runs/<id>.json` holds the goal, status, exit code, timings and
 the full report (secrets masked) for every run, `awaiting_approval` and stalled ones included; the
 CLI prints `run file: <path>`. `agentik runs ls` lists them, `agentik runs show <id|prefix>` replays the
-report. An `awaiting_approval` run is relaunched with the same goal and `--approve-high-blast`.
+report. An `awaiting_approval` run is resumed with `agentik runs resume <id> --approve <approvalId|all>`: only the blocked tasks replay, exactly the approved calls are released (frozen by hash of tool + arguments), and the resume is refused if the workspace moved since. `--approve-high-blast` on a fresh run stays the blunt alternative.
 
 **Tasks run in parallel along the plan's dependencies.** A pure scheduler starts every task whose
 dependencies are done, up to `--concurrency N` (default: the worker count) and never two runs of

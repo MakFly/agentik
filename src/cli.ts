@@ -17,6 +17,7 @@ import {
   loadAvailability,
   type HarnessName, helpSupportsDenyRules } from "./availability.ts";
 import {
+  artifactChanged,
   describeArtifactDiff,
   describeUntouched,
   diffArtifacts,
@@ -25,7 +26,7 @@ import {
   type ArtifactSnapshot,
 } from "./artifacts.ts";
 import { consumeVerdictLine, describeEvidence, evidenceOf, floorViolations, formatUsage, newVerdict, summarizeVerdict, verdictArgs, verdictProblem } from "./verdict.ts";
-import { formatReport, runLoop } from "./loop.ts";
+import { formatReport, runLoop, type LoopConfig } from "./loop.ts";
 import { defaultFetchImpl } from "./tools.ts";
 import { retainNote, readHot } from "./memory.ts";
 import { memoryFileLabel, memoryFilePath, memoryRemoveEntry, resealMemory, type MemoryTarget } from "./memory-store.ts";
@@ -43,6 +44,7 @@ import {
 } from "./incidents.ts";
 import { formatIncidentForReview, formatReviewOutcome, runReview, type ReviewOutcome } from "./reviewer.ts";
 import { formatRunLine, listRuns, readRun, writeRun, type RunRecord } from "./runs.ts";
+import { callHash } from "./guardrails.ts";
 import { formatMemoryOp, listMemoryOps } from "./memory-log.ts";
 import { resolveWorkspaceRoot } from "./workspace.ts";
 import { formatEvalResult, runReviewEval } from "./review-eval.ts";
@@ -117,6 +119,12 @@ Commands:
                                · 124 killed by --timeout, the task did NOT finish
                                · 125 the harness ended without doing the work.
   agentik runs ls [--limit N] [--workspace DIR] [--json] | show <id|prefix> [--json]
+  agentik runs resume <id|prefix> --approve <approvalId|all>
+                               Replay ONLY the tasks of an awaiting_approval run that were blocked
+                               on those approvals, releasing exactly the approved calls (frozen
+                               by hash of tool + args: approving THIS call, not the tool). Refused
+                               (exit 3) when the run's artifacts moved since. Writes a new run
+                               file with resumedFrom.
                                Every run is persisted to <home>/runs/<id>.json whatever its
                                status (string leaves masked); "run: <id> · 84.2s · tokens 12.3k
                                in / 4.1k out · $0.31" and "run file: <path>" are printed. An
@@ -291,6 +299,16 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (cmd === "runs") return runsCmd(argv.slice(1));
 
   const runArgv = cmd === "run" ? argv.slice(1) : argv;
+  return runMain(runArgv);
+}
+
+/** What `runs resume` hands to the run: the stored plan, the tasks to replay, the frozen approvals. */
+interface ResumePayload {
+  id: string;
+  plan: NonNullable<LoopConfig["resume"]>;
+}
+
+async function runMain(runArgv: string[], resume?: ResumePayload): Promise<number> {
   const { goal, flags } = parseRun(runArgv);
   if (!goal) {
     console.error("missing goal");
@@ -372,6 +390,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     }
   }
   const runStartedAt = Date.now();
+  const resumedFrom = resume?.id;
   const report = await runLoop({
     goal,
     workspace,
@@ -380,6 +399,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     workers,
     workerCount,
     decisions,
+    resume: resume?.plan,
     fetchImpl: live ? defaultFetchImpl() : undefined,
     autoApproveHighBlast: Boolean(flags.yolo || flags.approveHighBlast),
     maxSteps: flags.maxSteps,
@@ -408,6 +428,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         workers: workerCount,
         durationMs: Date.now() - runStartedAt,
         report,
+        artifactSnapshot: await runArtifactSnapshot(workspace, report),
+        ...(resumedFrom ? { resumedFrom } : {}),
       },
       { home },
     );
@@ -473,7 +495,21 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   return exitCode;
 }
 
-const RUNS_USAGE = "usage: agentik runs ls [--limit N] [--workspace DIR] [--json] | show <id|prefix> [--json]";
+const RUNS_USAGE = "usage: agentik runs ls [--limit N] [--workspace DIR] [--json] | show <id|prefix> [--json] | resume <id|prefix> --approve <approvalId|all>";
+
+/** Snapshot of the deliverables at the end of a run (produced artifacts + planned acceptance artifacts). */
+async function runArtifactSnapshot(workspace: string, report: RunReport): Promise<ArtifactSnapshot[]> {
+  const paths = [...new Set([...report.artifacts, ...report.tasks.flatMap((t) => t.acceptance?.expectArtifacts ?? [])])].filter((p) => !/^https?:\/\//.test(p) && !p.startsWith("incident:"));
+  const out: ArtifactSnapshot[] = [];
+  for (const p of paths) {
+    try {
+      out.push(...(await snapshotArtifacts(workspace, [p])));
+    } catch {
+      /* a path outside the workspace is not a deliverable */
+    }
+  }
+  return out;
+}
 
 /** `agentik runs ls | show`: the persisted runs of this home. Read-only. */
 async function runsCmd(args: string[]): Promise<number> {
@@ -485,6 +521,52 @@ async function runsCmd(args: string[]): Promise<number> {
     if (flags.json) console.log(JSON.stringify(runs, null, 2));
     else console.log(runs.length ? runs.map(formatRunLine).join("\n") : "(no runs yet)");
     return 0;
+  }
+  if (sub === "resume") {
+    const id = goal.trim().split(/\s+/)[0] ?? "";
+    const approve = flags.approve;
+    if (!id || !approve) {
+      console.error("usage: agentik runs resume <id|prefix> --approve <approvalId|all> [--backend …]");
+      return 2;
+    }
+    const found = await readRun(id, { home });
+    if (!found || Array.isArray(found)) {
+      console.error(!found ? `agentik runs: no run matching "${id}"` : `agentik runs: "${id}" matches ${found.length} runs`);
+      return 1;
+    }
+    const rec: RunRecord = found;
+    const pending = rec.report.pendingApprovals ?? [];
+    if (rec.status !== "awaiting_approval" || pending.length === 0) {
+      console.error(`agentik runs resume: run ${rec.id} is ${rec.status} with ${pending.length} pending approval(s) — nothing to resume`);
+      return 2;
+    }
+    const chosen = approve === "all" ? pending : pending.filter((a) => a.id === approve);
+    if (chosen.length === 0) {
+      console.error(`agentik runs resume: no pending approval "${approve}" (have: ${pending.map((a) => a.id).join(", ")})`);
+      return 2;
+    }
+    // The deliverables must be as the run left them: otherwise "approve this call" means something else now.
+    if (rec.artifactSnapshot?.length) {
+      const moved = (await snapshotArtifacts(rec.workspace, rec.artifactSnapshot.map((a) => a.path))).filter((after, i) => artifactChanged(rec.artifactSnapshot![i], after)).map((a) => a.path);
+      if (moved.length) {
+        console.error(`agentik runs resume: the workspace moved since run ${rec.id} (${moved.join(", ")}) — an approval given then does not apply now; rerun the goal instead`);
+        return 3;
+      }
+    }
+    const approvedIds = new Set(chosen.map((a) => a.id));
+    const onlyTaskIds = rec.report.taskResults.filter((t) => t.pendingApprovalIds.some((p) => approvedIds.has(p))).map((t) => t.taskId);
+    const payload: ResumePayload = {
+      id: rec.id,
+      plan: {
+        tasks: rec.report.tasks,
+        onlyTaskIds,
+        priorResults: rec.report.taskResults,
+        approvedCallHashes: new Set(chosen.map((a) => callHash(a.toolCall.tool, a.toolCall.args))),
+      },
+    };
+    console.error(`agentik runs resume: replaying ${onlyTaskIds.join(", ") || "(no task)"} of run ${rec.id} with ${chosen.length} frozen approval(s): ${chosen.map((a) => `${a.id} → ${a.toolCall.tool}`).join(", ")}`);
+    const argv = [rec.goal, "--workspace", rec.workspace, "--backend", flags.backend ?? rec.backend, "--workers", String(rec.workers), ...(flags.agentikHome ? ["--agentik-home", flags.agentikHome] : []), ...(flags.profile ? ["--profile", flags.profile] : []), ...(flags.json ? ["--json"] : []), "--no-review"];
+    return runMain(argv, payload);
   }
   if (sub === "show") {
     const id = goal.trim();
@@ -1166,6 +1248,7 @@ export function parseRun(args: string[]): {
     n?: number;
     eval?: string;
     case?: string;
+    approve?: string;
   };
 } {
   const flags: Record<string, string | boolean> = {};
@@ -1287,6 +1370,7 @@ export function parseRun(args: string[]): {
       n: positive(flags.n),
       eval: str(flags.eval),
       case: str(flags.case),
+      approve: str(flags.approve),
     },
   };
 }

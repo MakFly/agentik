@@ -276,6 +276,13 @@ adds `runId` / `runPath`. An `awaiting_approval` run prints its approval ids and
 (same goal with `--approve-high-blast` or `--yolo`; `runs resume` with a frozen call hash is F2).
 `agentik runs ls [--limit N] [--workspace DIR] [--json] | show <id|prefix> [--json]` (read-only, exempt
 from the config preflight). `.agentik-run` is no longer ignored by git (it was never written).
+**Resume**: `agentik runs resume <id|prefix> --approve <approvalId|all>` replays ONLY the tasks that
+were blocked on those approvals (`LoopConfig.resume {tasks, onlyTaskIds, priorResults,
+approvedCallHashes}`): no plan phase (`planSource: resumed`), the other tasks keep their stored
+results as DATA, and a high-blast call is released only when `callHash(tool, args)` is in the frozen
+set — approving THIS call, once, not the tool. Refused (exit 3) when the run's `artifactSnapshot`
+(produced artifacts + acceptance artifacts, taken at `writeRun`) moved since; a completed run or an
+unknown approval id exits 2. The new run file carries `resumedFrom`.
 
 ## Tool output spill (`agentik run`)
 

@@ -3,6 +3,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { agentikHome } from "./home.ts";
 import { memoryContentProblem } from "./memory-store.ts";
+import type { ArtifactSnapshot } from "./artifacts.ts";
 import type { RunReport } from "./types.ts";
 
 /**
@@ -27,6 +28,10 @@ export interface RunRecord {
   workers: number;
   durationMs: number;
   report: RunReport;
+  /** The deliverables as they were when the run ended: `runs resume` refuses if they moved since. */
+  artifactSnapshot?: ArtifactSnapshot[];
+  /** The run this one resumed (approvals replayed by call hash). */
+  resumedFrom?: string;
 }
 
 export interface RunSummary {
