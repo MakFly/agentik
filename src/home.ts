@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { resolveWorkspaceRoot } from "./workspace.ts";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
@@ -58,7 +59,12 @@ export function memoryPaths(home: string) {
  * never share a file; the `.workspace` file next to it holds the full path for humans.
  */
 export function projectSlug(workspace: string): string {
-  const abs = resolve(workspace);
+  return legacyProjectSlug(resolveWorkspaceRoot(resolve(workspace)));
+}
+
+/** The slug formula on a path as given (no root resolution): what pre-C4 files were named after. */
+export function legacyProjectSlug(path: string): string {
+  const abs = resolve(path);
   const base = basename(abs).toLowerCase().replace(/[^a-z0-9._-]/g, "-") || "root";
   const hash = createHash("sha256").update(abs).digest("hex").slice(0, 10);
   return `${base}-${hash}`;

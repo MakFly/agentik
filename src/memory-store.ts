@@ -1,8 +1,9 @@
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { readConfig } from "./config.ts";
-import { agentikHome, memoryPaths, projectMemoryPath } from "./home.ts";
+import { agentikHome, legacyProjectSlug, memoryPaths, projectMemoryPath, projectSlug } from "./home.ts";
+import { resolveWorkspaceRoot } from "./workspace.ts";
 import { detectInjection } from "./injection.ts";
 import { logMemoryOp, type MemoryOpActor } from "./memory-log.ts";
 import { newPendingId, stagePending, type PendingMemoryOp } from "./pending.ts";
@@ -184,7 +185,49 @@ export function usageOf(entries: string[], target: MemoryTarget): MemoryUsage {
   return { used, cap, percent: Math.round((used / cap) * 100) };
 }
 
+/**
+ * Before C4 a worktree had its own project file (slug of its absolute path). Now the key is the
+ * repository root: a legacy file is moved under the root slug (`.bak` kept, `.migrated-from`
+ * written), or merged entry by entry into an existing root file (dedup, cap, journaled `by:
+ * migration`), the legacy folder renamed `<slug>.merged.<ts>`. Once per (home, workspace) per
+ * process; a workspace that is its own root has nothing to migrate.
+ */
+const migrated = new Set<string>();
+export async function migrateProjectMemory(home: string, workspace: string): Promise<void> {
+  const abs = resolve(workspace);
+  const root = resolveWorkspaceRoot(abs);
+  if (root === abs) return;
+  const key = `${home}\n${abs}`;
+  if (migrated.has(key)) return;
+  migrated.add(key);
+  const projectDir = memoryPaths(home).projectDir;
+  const legacyDir = join(projectDir, legacyProjectSlug(abs));
+  const rootDir = join(projectDir, projectSlug(abs));
+  if (!existsSync(join(legacyDir, "MEMORY.md")) || legacyDir === rootDir) return;
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  if (!existsSync(join(rootDir, "MEMORY.md"))) {
+    await mkdir(projectDir, { recursive: true });
+    await copyFile(join(legacyDir, "MEMORY.md"), `${join(legacyDir, "MEMORY.md")}.bak.${stamp}`);
+    await rename(legacyDir, rootDir);
+    await writeFile(join(rootDir, ".workspace"), `${root}\n`, "utf8");
+    await writeFile(join(rootDir, ".migrated-from"), `${abs}\n${legacyProjectSlug(abs)}\n`, "utf8");
+    console.error(`agentik: project memory of ${abs} moved under the repository root ${root} (${projectSlug(abs)})`);
+    return;
+  }
+  const legacy = parseEntries(await readFile(join(legacyDir, "MEMORY.md"), "utf8"));
+  const leftovers: string[] = [];
+  for (const entry of legacy) {
+    const res = await memoryApply("project", [{ action: "add", content: entry }], { home, workspace: root, by: "migration", bypassApproval: true });
+    if (!res.ok && !/already present|duplicate/i.test(res.message)) leftovers.push(entry);
+  }
+  await rename(legacyDir, `${legacyDir}.merged.${stamp}`);
+  console.error(
+    `agentik: project memory of ${abs} merged into the repository root's (${projectSlug(abs)}): ${legacy.length - leftovers.length}/${legacy.length} entries${leftovers.length ? `; not merged (cap or scan): ${leftovers.map((e) => `"${e.slice(0, 40)}"`).join(", ")}` : ""}; legacy kept as ${legacyProjectSlug(abs)}.merged.${stamp}`,
+  );
+}
+
 export async function readEntries(target: MemoryTarget, home?: string, opts?: { workspace?: string }): Promise<string[]> {
+  if (target === "project" && opts?.workspace) await migrateProjectMemory(agentikHome(home), opts.workspace);
   const { file } = pathFor(target, home, opts?.workspace);
   try {
     return parseEntries(await readFile(file, "utf8"));
@@ -197,8 +240,8 @@ async function writeEntries(target: MemoryTarget, entries: string[], home?: stri
   const { file, dir } = pathFor(target, home, workspace);
   await mkdir(dir, { recursive: true });
   if (target === "project" && workspace) {
-    // A human browsing memory/projects/ can tell which checkout a slug belongs to.
-    await writeFile(join(dir, ".workspace"), `${resolve(workspace)}\n`, "utf8");
+    // A human browsing memory/projects/ can tell which repository a slug belongs to.
+    await writeFile(join(dir, ".workspace"), `${resolveWorkspaceRoot(resolve(workspace))}\n`, "utf8");
   }
   await writeFile(file, entries.length ? `${entries.join(ENTRY_SEPARATOR)}\n` : "", "utf8");
 }
@@ -302,6 +345,7 @@ export async function memoryApply(
 ): Promise<MemoryOpResult> {
   const action = ops.length === 1 ? ops[0].action : "batch";
   const workspace = target === "project" ? opts?.workspace : undefined;
+  if (workspace) await migrateProjectMemory(agentikHome(opts?.home), workspace);
   const before = await readEntries(target, opts?.home, { workspace });
   const usageBefore = usageOf(before, target);
   if (ops.length === 0) {

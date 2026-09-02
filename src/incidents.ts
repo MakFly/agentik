@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { agentikHome, memoryPaths } from "./home.ts";
+import { resolveWorkspaceRoot, workspaceKeys } from "./workspace.ts";
 import { memoryContentProblem } from "./memory-store.ts";
 import { openSessionsDb } from "./sessions.ts";
 
@@ -125,7 +126,8 @@ export async function recordIncident(input: IncidentInput, opts?: { home?: strin
   const db = await openIncidents(home);
   try {
     const now = new Date().toISOString();
-    const workspace = input.workspace ? resolve(input.workspace) : "";
+    // Keyed on the repository root: the same failure in two worktrees is one incident (seen+1).
+    const workspace = input.workspace ? resolveWorkspaceRoot(resolve(input.workspace)) : "";
     const harness = input.harness ?? "";
     const symptom = maskIncidentText(input.symptom);
     if (!symptom) throw new Error("incident: a symptom is required");
@@ -231,11 +233,11 @@ export async function searchIncidents(query: string, opts?: IncidentSearchOption
       }
     }
 
-    const wantWorkspace = opts?.workspace ? resolve(opts.workspace) : undefined;
+    const wantWorkspace = opts?.workspace ? new Set(workspaceKeys(opts.workspace)) : undefined;
     return [...scores.entries()]
       .map(([id, score]) => ({ ...toRecord(rows.get(id)!), score }))
       // An incident of unknown workspace ("") is never hidden by the filter.
-      .filter((h) => !wantWorkspace || h.workspace === "" || h.workspace === wantWorkspace)
+      .filter((h) => !wantWorkspace || h.workspace === "" || wantWorkspace.has(h.workspace))
       .filter((h) => !opts?.harness || h.harness === opts.harness)
       .filter((h) => !unresolvedOnly || h.resolvedAt === null)
       .filter((h) => h.seen >= minSeen)
@@ -259,13 +261,13 @@ export async function listIncidents(opts?: IncidentListOptions): Promise<Inciden
   if (!existsSync(memoryPaths(home).sessionsDb)) return [];
   const db = await openIncidents(home);
   try {
-    const wantWorkspace = opts?.workspace ? resolve(opts.workspace) : undefined;
+    const wantWorkspace = opts?.workspace ? new Set(workspaceKeys(opts.workspace)) : undefined;
     const since = opts?.since ?? "";
     return db
       .query<Row, []>("SELECT * FROM incidents ORDER BY last_at DESC, id DESC")
       .all()
       .map(toRecord)
-      .filter((r) => !wantWorkspace || r.workspace === "" || r.workspace === wantWorkspace)
+      .filter((r) => !wantWorkspace || r.workspace === "" || wantWorkspace.has(r.workspace))
       .filter((r) => opts?.includeResolved || r.resolvedAt === null)
       .filter((r) => !since || r.lastAt >= since)
       .slice(0, opts?.limit ?? 200);

@@ -27,8 +27,9 @@ the README and this file disagree; this file wins for agents.
      │      entries "§"-separated, secrets/injections    │     verdict, artifacts, summary
      │      masked [BLOCKED] at load, kept on disk       │
      ├─ PROJECT       ← memory/projects/<slug>/MEMORY.md │
-     │      cap 2200, THIS workspace only; slug =        │
-     │      basename-sha10, .workspace = abs path;       │
+     │      cap 2200, THIS repository only; slug =       │
+     │      basename-sha10 of the git ROOT (a worktree   │
+     │      shares the main checkout's file);            │
      │      same masking/dedup/cap; the reviewer         │
      │      chooses the level (target project); shown    │
      │      in context only when non-empty; agentik      │
@@ -98,10 +99,19 @@ Invariants (tests enforce them):
 - Harness symlinks (`~/.claude|.grok|.codex/skills`) are opt-in: `agentik skills pin <n>` then
   `link <n>`. `agentik skills unlink` / `archive` undo the old pollution, idempotent, nothing deleted.
 - The cap is a consolidation forcing function, not an overflow. There is no WARM store.
-- Project memory is per workspace (`memory/projects/<slug>/MEMORY.md`, slug = sanitized basename +
-  10 hex of sha256(abs path), `.workspace` next to it), never mixed into another workspace's
-  context (`agentik context --workspace DIR` prints PROJECT MEMORY only when that file has entries);
-  `project` without a workspace is an error, never a fallback to MEMORY.md.
+- Project memory is **per repository** (`memory/projects/<slug>/MEMORY.md`, slug = sanitized basename +
+  10 hex of sha256 of the **root**, `.workspace` next to it holds the root). `src/workspace.ts`
+  `resolveWorkspaceRoot(ws)` (memoized, `git rev-parse --show-toplevel`): a git worktree resolves to the
+  main checkout (first `worktree` line of `git worktree list --porcelain`); a directory that is not a
+  git toplevel — a plain folder, a subdirectory, every test workspace under `<repo>/.tmp/` — keeps its
+  absolute path. `projectSlug` is the only caller, so every store follows; the main checkout keeps its
+  historical slug (`agentik-9b2ca92428`). Legacy per-worktree files are migrated on first read/write
+  (`migrateProjectMemory`: alone → moved + `.bak` + `.migrated-from`; both → merged entry by entry,
+  journaled `by: migration`, legacy renamed `<slug>.merged.<ts>`, one stderr line). Sessions and
+  incidents are written with the root and read with `{root, abs}` (incident dedup is repo-wide).
+  `agentik memory where [--workspace]` → given / root / slug / file / exists; `memory hot` warns on
+  stderr from a worktree. Never mixed into another repository's context; `project` without a
+  workspace is an error, never a fallback to MEMORY.md.
 - `agentik memory remove` is the human's pen: exact text or unique prefix, no approval staging, a
   `MEMORY.md.bak.<ts>` copy first; zero or several matches exit 1 and list the candidates.
 - USER.md holds only what the user said explicitly. Never inferred from a goal.

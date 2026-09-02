@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { agentikHome, memoryPaths } from "./home.ts";
+import { resolveWorkspaceRoot, workspaceKeys } from "./workspace.ts";
 
 /**
  * Sessions are the searchable memory. One row per run: goal, workspace, profile, status,
@@ -146,12 +147,14 @@ export async function searchSessions(query: string, opts?: SearchOptions): Promi
       }
     }
 
-    const wantWorkspace = opts?.workspace && !opts.all ? resolve(opts.workspace) : undefined;
+    // Rows written before C4 carry the absolute path, rows after it the repository root: both
+    // are this workspace.
+    const wantWorkspace = opts?.workspace && !opts.all ? new Set(workspaceKeys(opts.workspace)) : undefined;
     return [...scores.entries()]
       .map(([id, score]) => ({ ...toRecord(rows.get(id)!), score }))
       // A session of unknown workspace ("" — migrated from the old stores) is never hidden by
       // the filter; only sessions that belong to another workspace are.
-      .filter((h) => !wantWorkspace || h.workspace === "" || h.workspace === wantWorkspace)
+      .filter((h) => !wantWorkspace || h.workspace === "" || wantWorkspace.has(h.workspace))
       // Worker invocations are noise next to runs: `--all` shows them.
       .filter((h) => opts?.all || h.kind === "run")
       .sort((a, b) => b.score - a.score || b.createdAt.localeCompare(a.createdAt) || b.id - a.id)
@@ -195,14 +198,14 @@ export async function latestSession(opts?: { home?: string; workspace?: string }
   if (!existsSync(memoryPaths(home).sessionsDb)) return null;
   const db = await openSessions(home);
   try {
-    const ws = opts?.workspace ? resolve(opts.workspace) : "";
+    const keys = workspaceKeys(opts?.workspace);
     // Runs only: `agentik review` without --session must never pick up a worker invocation.
-    const row = ws
+    const row = keys.length
       ? db
-          .query<Row, [string]>(
-            "SELECT * FROM sessions WHERE kind = 'run' AND (workspace = ? OR workspace = '') ORDER BY created_at DESC, id DESC LIMIT 1",
+          .query<Row, [string, string]>(
+            "SELECT * FROM sessions WHERE kind = 'run' AND (workspace = ? OR workspace = ? OR workspace = '') ORDER BY created_at DESC, id DESC LIMIT 1",
           )
-          .get(ws)
+          .get(keys[0], keys[1] ?? keys[0])
       : db.query<Row, []>("SELECT * FROM sessions WHERE kind = 'run' ORDER BY created_at DESC, id DESC LIMIT 1").get();
     return row ? toRecord(row) : null;
   } finally {
@@ -469,7 +472,7 @@ function insertSession(db: Database, input: SessionInput, createdAt?: string): S
   const artifacts = input.artifacts ?? [];
   const row = {
     goal: input.goal.replace(/\s+/g, " ").trim(),
-    workspace: input.workspace ? resolve(input.workspace) : "",
+    workspace: input.workspace ? resolveWorkspaceRoot(resolve(input.workspace)) : "",
     profile: input.profile ?? "",
     status: input.status,
     verdict: input.verdict === undefined || input.verdict === null ? null : JSON.stringify(input.verdict),

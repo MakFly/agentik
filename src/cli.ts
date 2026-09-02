@@ -44,9 +44,11 @@ import {
 import { formatIncidentForReview, formatReviewOutcome, runReview, type ReviewOutcome } from "./reviewer.ts";
 import { formatRunLine, listRuns, readRun, writeRun, type RunRecord } from "./runs.ts";
 import { formatMemoryOp, listMemoryOps } from "./memory-log.ts";
+import { resolveWorkspaceRoot } from "./workspace.ts";
 import { undoSkillWrite } from "./skill-write.ts";
 import { formatRunUsage } from "./usage.ts";
 import { getSession, latestSession, recordSession } from "./sessions.ts";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { recallBeforeRun, reviewAfterRun, type SessionStatus } from "./review.ts";
 import {
@@ -60,7 +62,7 @@ import {
   unlinkHarnessSkills,
   updateSkill,
 } from "./skill-factory.ts";
-import { memoryPaths, agentikHome } from "./home.ts";
+import { agentikHome, memoryPaths, projectMemoryPath, projectSlug } from "./home.ts";
 import { join } from "node:path";
 import { approveMemory, approveSkillOps, formatPendingMemory, formatPendingSkills, rejectPending, type ApprovalOutcome } from "./approval.ts";
 import { curateSkills, formatCurateResult, rollbackSkills } from "./curator.ts";
@@ -148,6 +150,10 @@ Commands:
                                one entry by exact text or unique prefix — the human's pen: no
                                approval queue, a MEMORY.md.bak.<ts> copy is taken first; no
                                match or several matches exit 1 and list the candidates.
+  agentik memory where [--workspace DIR] [--json]
+                               The project file for a workspace: per repository (a git worktree
+                               resolves to its main checkout; a directory that is not a git
+                               toplevel keeps its absolute path as key), slug, file, exists.
   agentik memory log [--target memory|user|project] [--workspace DIR] [-n N] [--json]
                                Journal of every memory write (table memory_ops): who (reviewer,
                                human, approval, migration), which file, before → after.
@@ -1434,6 +1440,7 @@ async function harvestCmd(args: string[]): Promise<number> {
 const MEMORY_USAGE =
   'usage: agentik memory search "<query>" [--workspace DIR] [--all] [--limit N] | recall (alias)\n' +
   '       agentik memory hot | retain <fact> | remove "<exact entry or unique prefix>"  [--target memory|user|project] [--workspace DIR]\n' +
+  "       agentik memory where [--workspace DIR] [--json]   (which project file: given, root, slug, file)\n" +
   "       agentik memory pending | approve <id|all> | reject <id|all>";
 
 /** `--target` (default memory); `project` scopes to `--workspace` or the cwd. */
@@ -1449,6 +1456,20 @@ async function memoryCmd(args: string[]): Promise<number> {
   const sub = args[0];
   const { goal, flags } = parseRun(args.slice(1));
   const home = homeFor(flags);
+  if (sub === "where") {
+    const given = resolve(flags.workspace ?? process.cwd());
+    const root = resolveWorkspaceRoot(given);
+    const file = projectMemoryPath(home, given);
+    const info = { given, root, slug: projectSlug(given), file, exists: existsSync(file) };
+    if (flags.json) console.log(JSON.stringify(info, null, 2));
+    else {
+      console.log(`given: ${info.given}`);
+      console.log(`root:  ${info.root}${root !== given ? "  (git worktree → main checkout)" : ""}`);
+      console.log(`slug:  ${info.slug}`);
+      console.log(`file:  ${info.file}${info.exists ? "" : "  (does not exist yet)"}`);
+    }
+    return 0;
+  }
   if (sub === "log") {
     const ops = await listMemoryOps({
       home,
@@ -1468,6 +1489,9 @@ async function memoryCmd(args: string[]): Promise<number> {
     }
     const { target, workspace } = scope;
     if (sub === "hot") {
+      if (target === "project" && workspace && resolveWorkspaceRoot(workspace) !== workspace) {
+        console.error(`agentik memory hot: ${workspace} is a git worktree — showing the repository's file (root ${resolveWorkspaceRoot(workspace)})`);
+      }
       if (target === "memory") {
         process.stdout.write((await readHot({ home })) || "(empty HOT MEMORY.md)\n");
         return 0;
