@@ -68,3 +68,21 @@ describe("review bounds", () => {
     expect(p).toContain("Transient or environment-dependent failures go to the incident log, not to memory");
   });
 });
+
+describe("a failing review tool never ends the review (seen live)", () => {
+  test("read_file on a missing file is a refusal the reviewer reads; the next iteration still runs", async () => {
+    const home = await makeWorkspace("rb-enoent-");
+    const ws = await makeWorkspace("rb-enoent-ws-");
+    const backend = new ScriptedReviewer([
+      { text: "look", toolCalls: [{ tool: "read_file", args: { path: "CLAUDE.md" } }] },
+      { text: "remember", toolCalls: [{ tool: "memory", args: { target: "memory", action: "add", content: "Bun runs the tests here, not jest." } }] },
+      { text: "done", toolCalls: [] },
+    ]);
+    const out = await runReview({ goal: "g", transcript: "t", workspace: ws, home, backend });
+    expect(out.stoppedBecause).toBe("no_more_tool_calls");
+    expect(out.trace[0]).toMatchObject({ tool: "read_file", ok: false });
+    expect(out.trace[0].output).toContain("does not exist in the workspace");
+    expect(out.memoryOps).toBe(1);
+    expect(out.iterations).toBe(3);
+  });
+});

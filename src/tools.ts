@@ -190,7 +190,13 @@ export async function executeTool(call: ToolCall, host: ToolHost): Promise<ToolR
 async function readFileTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {
   const rel = String(call.args.path ?? "");
   const full = resolveSafe(host.workspace, rel);
-  const body = await readFile(full, "utf8");
+  let body: string;
+  try {
+    body = await readFile(full, "utf8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return { callId: call.id, ok: false, output: code === "ENOENT" ? `read_file: ${rel} does not exist in the workspace` : `read_file: cannot read ${rel}: ${err instanceof Error ? err.message : String(err)}` };
+  }
   const offsetRaw = Number(call.args.offset ?? 0);
   const limitRaw = call.args.limit === undefined ? undefined : Number(call.args.limit);
   const offset = Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.min(Math.floor(offsetRaw), body.length) : 0;

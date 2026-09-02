@@ -22,8 +22,11 @@ export function normalizeClaims(
 ): Claim[] {
   const origins = new Set(sources.map((s) => s.url));
   const byUrl = new Map(sources.map((s) => [s.url, s]));
-  return drafts.map((d) => {
-    const url = d.sourceUrl?.trim() || undefined;
+  // A live model's claim is DATA: one without a string `text` (seen live: {sourceUrl} alone, or a
+  // number) is dropped, not crashed on downstream.
+  const usable = drafts.filter((d): d is ClaimDraft & { text: string } => Boolean(d) && typeof d === "object" && typeof d.text === "string" && d.text.trim().length > 0);
+  return usable.map((d) => {
+    const url = typeof d.sourceUrl === "string" ? d.sourceUrl.trim() || undefined : undefined;
     if (!url) {
       return { text: d.text, verified: false };
     }

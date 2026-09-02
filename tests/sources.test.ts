@@ -64,3 +64,16 @@ describe("verified-source research path", () => {
     expect(claims[2].verified).toBe(false);
   });
 });
+
+describe("claims without a text (seen live) never crash the report", () => {
+  test("normalizeClaims drops them; formatReport tolerates a bad claim", async () => {
+    const { normalizeClaims } = await import("../src/sources.ts");
+    const { formatReport } = await import("../src/loop.ts");
+    const claims = normalizeClaims([{ text: "ok" }, { sourceUrl: "https://x" } as never, { text: 42 } as never, null as never, { text: "   " }], []);
+    expect(claims.map((c) => c.text)).toEqual(["ok"]);
+    const report = {
+      status: "completed", goal: null, originalGoalText: "g", workersInvoked: [], tasks: [], executedTools: [], blockedTools: [], stalledTasks: [], backendSwitches: [], pendingApprovals: [], findings: [], claims: [{ verified: false } as never], sources: [], artifacts: [], synthesis: "", events: [], planSource: "model", planProblems: [], taskResults: [], durationMs: 1,
+    } as never;
+    expect(formatReport(report)).toContain("unverified (no source) ::");
+  });
+});

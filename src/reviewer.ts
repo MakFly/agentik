@@ -265,7 +265,14 @@ export async function runReview(input: ReviewInput): Promise<ReviewOutcome> {
         envelopes.push(wrapUntrusted(output, `tool:${draft.tool}`, "tool_output"));
         continue;
       }
-      const result = await executeTool(call, host);
+      // A tool that throws (a missing file, a broken store) is a refusal the reviewer reads, not
+      // the end of the review — seen live: read_file on an absent CLAUDE.md killed a whole eval.
+      let result;
+      try {
+        result = await executeTool(call, host);
+      } catch (err) {
+        result = { callId: call.id, ok: false, output: `${call.tool} failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
       outcome.trace.push({ tool: call.tool, args: call.args, ok: result.ok, output: result.output });
       envelopes.push(wrapUntrusted(result.output, `tool:${call.tool}`, "tool_output"));
       outcome.events.push(`${call.tool}${call.args.action ? ` ${String(call.args.action)}` : ""}: ${result.ok ? "ok" : "refused"} — ${result.output.split("\n")[0].slice(0, 100)}`);
