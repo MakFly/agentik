@@ -656,7 +656,8 @@ async function runsCmd(args: string[]): Promise<number> {
     if (rec.report.shaping) console.log(`shaping: ${rec.report.shaping.calls} calls · −${rec.report.shaping.savedChars} chars`);
     if (rec.report.codeIndex) {
       const ci = rec.report.codeIndex;
-      console.log(ci.reason ? `code index: none (${ci.reason}${ci.files ? `, ${ci.files}+ files` : ""})` : `code index: ${ci.files} files · ${ci.chunks} chunks · ${ci.built ? "built this run" : `${ci.changed} changed`} · ${ci.ms}ms`);
+      // Run files written before the auto-build carry neither `built` nor `ms`.
+      console.log(ci.reason ? `code index: none (${ci.reason}${ci.files ? `, ${ci.files}+ files` : ""})` : `code index: ${ci.files} files · ${ci.chunks} chunks · ${ci.built ? "built this run" : `${ci.changed} changed`}${typeof ci.ms === "number" ? ` · ${ci.ms}ms` : ""}`);
     }
     console.log(formatReport(rec.report));
     if (rec.report.pendingApprovals?.length) {
