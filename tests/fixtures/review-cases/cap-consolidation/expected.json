@@ -3,7 +3,7 @@
     {
       "kind": "memory",
       "target": "memory",
-      "contains": "drawer"
+      "contains": "600"
     }
   ],
   "stoppedNot": [

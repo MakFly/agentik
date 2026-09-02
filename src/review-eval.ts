@@ -129,10 +129,12 @@ async function ruleHolds(rule: EvalRule, trace: Trace, home: string, workspace: 
     }
     case "skill":
       return okCalls.some((t) => t.tool === "skill_manage" && (!rule.action || t.args.action === rule.action) && (!rule.name || t.args.name === rule.name) && (!rule.contains || JSON.stringify(t.args).includes(rule.contains)));
+    // The tool refuses a bad name, a long description or a create before view: those refused
+    // attempts are guidance the reviewer read, not writes. Score what landed.
     case "skill_name_valid":
-      return trace.filter((t) => t.tool === "skill_manage" && t.args.action === "create").every((t) => !skillNameProblem(String(t.args.name ?? "")) && !skillDescriptionProblem(String(t.args.description ?? "")));
+      return okCalls.filter((t) => t.tool === "skill_manage" && t.args.action === "create").every((t) => !skillNameProblem(String(t.args.name ?? "")) && !skillDescriptionProblem(String(t.args.description ?? "")));
     case "view_before_create":
-      return trace.every((t, i) => !(t.tool === "skill_manage" && t.args.action === "create") || trace.slice(0, i).some((v) => v.tool === "skill_manage" && v.args.action === "view" && v.args.name === t.args.name));
+      return trace.every((t, i) => !(t.ok && t.tool === "skill_manage" && t.args.action === "create") || trace.slice(0, i).some((v) => v.ok && v.tool === "skill_manage" && v.args.action === "view" && v.args.name === t.args.name));
     case "max_creates":
       return okCalls.filter((t) => t.tool === "skill_manage" && t.args.action === "create").length <= rule.n;
     case "incident":

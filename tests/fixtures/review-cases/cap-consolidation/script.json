@@ -7,7 +7,7 @@
         "args": {
           "target": "memory",
           "action": "add",
-          "content": "The PWA drawer closes on an 80px swipe within 450ms; Safari needs pointer events."
+          "content": "The Acme billing API allows 600 requests/min per token and answers 429 with Retry-After."
         }
       }
     ]
@@ -30,7 +30,7 @@
             },
             {
               "action": "add",
-              "content": "The PWA drawer closes on an 80px swipe within 450ms; Safari needs pointer events."
+              "content": "The Acme billing API allows 600 requests/min per token and answers 429 with Retry-After."
             }
           ]
         }

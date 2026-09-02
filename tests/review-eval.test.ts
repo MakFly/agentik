@@ -62,8 +62,10 @@ describe("reviewer eval (scripted, deterministic)", () => {
       { text: "done", toolCalls: [] },
     ];
     const sk = await runReviewEval(CASES, { backend: new ScriptedReviewer(badName), cases: ["skill-class-name"] });
-    expect(sk.cases[0].failures).toContain('must: {"kind":"skill","action":"create"}');
-    expect(sk.cases[0].failures).toContain('must: {"kind":"skill_name_valid"}');
+    // The tool refuses the session-title name, so nothing lands: the case fails on "a skill was created",
+    // not on skill_name_valid (refused attempts are guidance the reviewer read, not writes).
+    expect(sk.cases[0].failures).toEqual(['must: {"kind":"skill","action":"create"}']);
+    expect(sk.cases[0].outcome.refused).toBe(2); // the name is refused at the gate scan too
   });
 
   test("agentik review --eval DIR replays the scripts (exit 0) and reports a failing case (exit 1) with --backend mock", async () => {

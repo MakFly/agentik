@@ -147,7 +147,7 @@ describe("runReview: bounded, judged, honest about what it did", () => {
     await runReview({ goal: "g", transcript: "t", workspace: ws, home, backend });
     const req = backend.seen[0];
     const origins = req.envelopes.map((e) => e.origin);
-    expect(origins).toEqual(["memory:snapshot", "project:snapshot", "user:snapshot", "skills:index", "workspace:claude-md", "run:transcript"]);
+    expect(origins).toEqual(["memory:snapshot", "project:snapshot", "user:snapshot", "skills:index", "workspace:claude-md", "run:transcript", "incidents:known"]);
     const env = req.envelopes.find((e) => e.origin === "workspace:claude-md")!;
     expect(env.body).toBe("# project\nTests: `bun test`. Typecheck: `bunx tsc --noEmit`.");
     expect(env.trust).toBe("untrusted");
@@ -160,7 +160,7 @@ describe("runReview: bounded, judged, honest about what it did", () => {
     const backend2 = new ScriptedReviewer([{ text: "nothing", toolCalls: [] }]);
     await runReview({ goal: "g", transcript: "t", workspace: bare, home, backend: backend2 });
     expect(backend2.seen[0].envelopes.map((e) => e.origin)).not.toContain("workspace:claude-md");
-    expect(backend2.seen[0].envelopes.map((e) => e.origin)).toEqual(["memory:snapshot", "project:snapshot", "user:snapshot", "skills:index", "run:transcript"]);
+    expect(backend2.seen[0].envelopes.map((e) => e.origin)).toEqual(["memory:snapshot", "project:snapshot", "user:snapshot", "skills:index", "run:transcript", "incidents:known"]);
   });
 
   test("the reviewer routes a repo fact to target project: it lands in the workspace's file, not MEMORY.md; the project snapshot is DATA", async () => {

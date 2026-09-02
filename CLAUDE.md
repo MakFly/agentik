@@ -45,6 +45,8 @@ the README and this file disagree; this file wins for agents.
                                                               skills index + workspace CLAUDE.md (≤6000
                                                               chars, never memory) + transcript
                                                               DATA also: project:snapshot (this workspace)
+                                                              DATA also: incidents:known (unresolved, this
+                                                              workspace, with ids → incident classify)
                                                               tools: memory · skill_manage · incident · read_file
                                                                  │
                                         ┌────────────────────────┴────────────────────────┐
@@ -155,7 +157,8 @@ claudeMd?, skills?, incidents?}, expected.json {must[], mustNot[], maxRefused?, 
 (view before create, `skillNameProblem`, description ≤60) · one-create-per-review. `src/review-eval.ts`
 `runReviewEval(dir, {backend?, cases?})` materializes a temporary home + workspace per case, runs the
 **real** `runReview`, scores rules (`memory | file | skill | skill_name_valid | view_before_create |
-max_creates | incident | any_write`) against `ReviewOutcome.trace` and the final files.
+max_creates | incident | any_write`) against `ReviewOutcome.trace` and the final files; the skill rules
+score only writes that landed (a create the tool refused is guidance, not a write).
 `agentik review --eval DIR [--backend mock|sonnet|codex|grok] [--case] [--json]`, exit 1 on a failed
 rule, never `~/.agentik`; without `--backend` each case replays its `script.json` (what `bun test`
 does; a wrong script fails on the expected rule). Live: `AGENTIK_EVAL_LIVE=sonnet bun test` or the CLI.
