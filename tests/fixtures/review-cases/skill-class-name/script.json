@@ -1,0 +1,32 @@
+[
+  {
+    "text": "view first",
+    "toolCalls": [
+      {
+        "tool": "skill_manage",
+        "args": {
+          "action": "view",
+          "name": "pwa-drawer-swipe"
+        }
+      }
+    ]
+  },
+  {
+    "text": "create",
+    "toolCalls": [
+      {
+        "tool": "skill_manage",
+        "args": {
+          "action": "create",
+          "name": "pwa-drawer-swipe",
+          "description": "Close a PWA drawer on a horizontal swipe.",
+          "body": "## When to use\nA PWA drawer that must close on a horizontal swipe.\n\n## Procedure\n1. Listen to pointerdown/pointermove on the drawer element, never the body.\n2. Close when dx < -80px within 450ms.\n\n## Pitfalls\nSafari needs pointer events, not touch events.\n\n## Verification\nSwipe on iOS Safari and Android Chrome."
+        }
+      }
+    ]
+  },
+  {
+    "text": "nothing more",
+    "toolCalls": []
+  }
+]

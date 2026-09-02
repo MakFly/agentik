@@ -1,0 +1,10 @@
+{
+  "memory": [],
+  "incidents": [
+    {
+      "symptom": "codex binary not on PATH",
+      "harness": "codex",
+      "seen": 2
+    }
+  ]
+}

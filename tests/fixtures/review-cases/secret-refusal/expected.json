@@ -1,0 +1,8 @@
+{
+  "mustNot": [
+    {
+      "kind": "any_write"
+    }
+  ],
+  "maxRefused": 1
+}

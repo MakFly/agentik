@@ -1,0 +1,27 @@
+[
+  {
+    "text": "one global, one project",
+    "toolCalls": [
+      {
+        "tool": "memory",
+        "args": {
+          "target": "memory",
+          "action": "add",
+          "content": "grok 1.0.13: the deny flag is --disallowed-tools, not --disallowedTools."
+        }
+      },
+      {
+        "tool": "memory",
+        "args": {
+          "target": "project",
+          "action": "add",
+          "content": "Tests run with bun test; there is no jest in this repo."
+        }
+      }
+    ]
+  },
+  {
+    "text": "nothing more",
+    "toolCalls": []
+  }
+]

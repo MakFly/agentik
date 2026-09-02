@@ -27,6 +27,7 @@ export { parseForeignHarness, parseSlotHarnesses } from "./foreign-harness.ts";
 export { classifyGoal, buildPlan } from "./plan.ts";
 export { validatePlan, formatPlan, findCycle, type PlanSource } from "./plan-schema.ts";
 export { runDag } from "./scheduler.ts";
+export { runReviewEval, scoreCase, materializeCase, listEvalCases, formatEvalResult, ScriptedReviewer, type EvalRule, type EvalExpected } from "./review-eval.ts";
 export { checkSeal, sealFile, sealContent, sealKey, DIVERGED_BODY, type SealStatus } from "./memory-seal.ts";
 export { resolveWorkspaceRoot, workspaceKeys } from "./workspace.ts";
 export { logMemoryOp, listMemoryOps, formatMemoryOp, type MemoryOpRecord } from "./memory-log.ts";

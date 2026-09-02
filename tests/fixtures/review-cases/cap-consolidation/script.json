@@ -1,0 +1,44 @@
+[
+  {
+    "text": "add",
+    "toolCalls": [
+      {
+        "tool": "memory",
+        "args": {
+          "target": "memory",
+          "action": "add",
+          "content": "The PWA drawer closes on an 80px swipe within 450ms; Safari needs pointer events."
+        }
+      }
+    ]
+  },
+  {
+    "text": "over the cap: consolidate in one batch",
+    "toolCalls": [
+      {
+        "tool": "memory",
+        "args": {
+          "target": "memory",
+          "operations": [
+            {
+              "action": "remove",
+              "old": "Long filler fact number 15 about"
+            },
+            {
+              "action": "remove",
+              "old": "Long filler fact number 16 about"
+            },
+            {
+              "action": "add",
+              "content": "The PWA drawer closes on an 80px swipe within 450ms; Safari needs pointer events."
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "text": "nothing more",
+    "toolCalls": []
+  }
+]

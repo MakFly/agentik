@@ -1,0 +1,19 @@
+[
+  {
+    "text": "the user stated a preference",
+    "toolCalls": [
+      {
+        "tool": "memory",
+        "args": {
+          "target": "user",
+          "action": "add",
+          "content": "Répond en français, et bref (dit explicitement)."
+        }
+      }
+    ]
+  },
+  {
+    "text": "nothing more",
+    "toolCalls": []
+  }
+]

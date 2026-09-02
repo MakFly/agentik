@@ -1,0 +1,22 @@
+{
+  "must": [
+    {
+      "kind": "skill",
+      "action": "create"
+    },
+    {
+      "kind": "skill_name_valid"
+    },
+    {
+      "kind": "view_before_create"
+    }
+  ],
+  "mustNot": [
+    {
+      "kind": "skill",
+      "action": "create",
+      "name": "fix-umami-drawer-ot-42"
+    }
+  ],
+  "maxRefused": 0
+}

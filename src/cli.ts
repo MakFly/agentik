@@ -45,6 +45,7 @@ import { formatIncidentForReview, formatReviewOutcome, runReview, type ReviewOut
 import { formatRunLine, listRuns, readRun, writeRun, type RunRecord } from "./runs.ts";
 import { formatMemoryOp, listMemoryOps } from "./memory-log.ts";
 import { resolveWorkspaceRoot } from "./workspace.ts";
+import { formatEvalResult, runReviewEval } from "./review-eval.ts";
 import { undoSkillWrite } from "./skill-write.ts";
 import { formatRunUsage } from "./usage.ts";
 import { getSession, latestSession, recordSession } from "./sessions.ts";
@@ -122,6 +123,12 @@ Commands:
                                awaiting_approval run is relaunched with the same goal and
                                --approve-high-blast (or --yolo).
   agentik context [--workspace DIR] [--profile P] ["<goal>"]
+  agentik review --eval DIR [--backend mock|sonnet|codex|grok] [--case NAME] [--json]
+                               Reviewer eval: each case of DIR (transcript.md + snapshot.json +
+                               expected.json [+ script.json]) runs the real review in a temporary
+                               home/workspace and is scored on the tool trace and the final files.
+                               Without --backend the case's script.json replays; exit 1 if a rule
+                               fails. Never touches ~/.agentik. Cases: tests/fixtures/review-cases.
   agentik review ["<goal>"] [--transcript FILE | --session ID | --incident ID] [--backend sonnet|codex|claude]
                                Background review: a model reads what happened and decides what
                                to remember (MEMORY.md / USER.md) or which skill to patch/create.
@@ -520,6 +527,25 @@ async function runsCmd(args: string[]): Promise<number> {
 async function reviewCmd(args: string[]): Promise<number> {
   const { goal, flags } = parseRun(args);
   const home = homeFor(flags);
+  if (flags.eval) {
+    // The eval never touches this home: every case gets a temporary home and workspace. The
+    // backend is the only thing taken from here (auth). No --backend → the scripted reviewer
+    // of each case (script.json); --backend mock|sonnet|codex|grok → the real thing.
+    const dir = resolve(flags.eval);
+    let backend;
+    if (flags.backend) {
+      try {
+        backend = await pickReviewBackend(flags.backend, home, flags.stepTimeout);
+      } catch (err) {
+        console.error(`agentik review --eval: ${err instanceof Error ? err.message : String(err)}`);
+        return 2;
+      }
+    }
+    const result = await runReviewEval(dir, { backend, cases: flags.case ? [flags.case] : undefined, maxIterations: flags.maxIterations });
+    if (flags.json) console.log(JSON.stringify(result.cases.map((c) => ({ name: c.name, ok: c.ok, failures: c.failures, outcome: c.outcome })), null, 2));
+    else console.log(formatEvalResult(result));
+    return result.ok ? 0 : 1;
+  }
   let workspace = resolve(flags.workspace ?? process.cwd());
   let transcript = "";
   let reviewGoal = goal;
@@ -1138,6 +1164,8 @@ export function parseRun(args: string[]): {
     usage?: string;
     section?: string;
     n?: number;
+    eval?: string;
+    case?: string;
   };
 } {
   const flags: Record<string, string | boolean> = {};
@@ -1257,6 +1285,8 @@ export function parseRun(args: string[]): {
       usage: str(flags.usage),
       section: str(flags.section),
       n: positive(flags.n),
+      eval: str(flags.eval),
+      case: str(flags.case),
     },
   };
 }

@@ -1,0 +1,19 @@
+{
+  "must": [
+    {
+      "kind": "incident",
+      "action": "classify"
+    }
+  ],
+  "mustNot": [
+    {
+      "kind": "memory",
+      "contains": "codex"
+    },
+    {
+      "kind": "memory",
+      "contains": "PATH"
+    }
+  ],
+  "maxRefused": 0
+}

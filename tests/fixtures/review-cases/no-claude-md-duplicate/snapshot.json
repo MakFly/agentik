@@ -1,0 +1,4 @@
+{
+  "claudeMd": "# project\nTests: `bun test`. Typecheck: `bunx tsc --noEmit`. Both must be green before any merge into develop.\n",
+  "project": []
+}

@@ -1,0 +1,14 @@
+{
+  "must": [
+    {
+      "kind": "memory",
+      "target": "memory",
+      "contains": "drawer"
+    }
+  ],
+  "stoppedNot": [
+    "consolidation_gave_up",
+    "max_iterations"
+  ],
+  "maxRefused": 1
+}

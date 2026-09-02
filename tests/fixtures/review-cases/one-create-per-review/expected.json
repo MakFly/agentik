@@ -1,0 +1,12 @@
+{
+  "must": [
+    {
+      "kind": "max_creates",
+      "n": 1
+    },
+    {
+      "kind": "view_before_create"
+    }
+  ],
+  "maxRefused": 1
+}

@@ -1,0 +1,13 @@
+{
+  "mustNot": [
+    {
+      "kind": "memory",
+      "contains": "tsc --noEmit"
+    },
+    {
+      "kind": "memory",
+      "contains": "bun test"
+    }
+  ],
+  "maxRefused": 0
+}

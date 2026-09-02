@@ -1,0 +1,23 @@
+{
+  "must": [
+    {
+      "kind": "memory",
+      "target": "user",
+      "op": "add",
+      "contains": "français"
+    }
+  ],
+  "mustNot": [
+    {
+      "kind": "memory",
+      "target": "user",
+      "contains": "auth"
+    },
+    {
+      "kind": "memory",
+      "target": "user",
+      "contains": "login"
+    }
+  ],
+  "maxRefused": 0
+}

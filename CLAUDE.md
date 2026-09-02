@@ -146,6 +146,20 @@ Invariants (tests enforce them):
   call `{tool, args, ok, output}` for evals. Environment failures (missing binary, unconfigured credential,
   "X does not work today") are incidents, never memory (guidance).
 
+## Reviewer eval
+
+`tests/fixtures/review-cases/<case>/{transcript.md, snapshot.json {memory[], user[], project[],
+claudeMd?, skills?, incidents?}, expected.json {must[], mustNot[], maxRefused?, stoppedNot?}, script.json?}`
+— 8 cases: global-vs-project · user-explicit-only · no-claude-md-duplicate · cap-consolidation
+(`stoppedNot: consolidation_gave_up`) · secret-refusal · transient-failure-to-incident · skill-class-name
+(view before create, `skillNameProblem`, description ≤60) · one-create-per-review. `src/review-eval.ts`
+`runReviewEval(dir, {backend?, cases?})` materializes a temporary home + workspace per case, runs the
+**real** `runReview`, scores rules (`memory | file | skill | skill_name_valid | view_before_create |
+max_creates | incident | any_write`) against `ReviewOutcome.trace` and the final files.
+`agentik review --eval DIR [--backend mock|sonnet|codex|grok] [--case] [--json]`, exit 1 on a failed
+rule, never `~/.agentik`; without `--backend` each case replays its `script.json` (what `bun test`
+does; a wrong script fails on the expected rule). Live: `AGENTIK_EVAL_LIVE=sonnet bun test` or the CLI.
+
 ## Postmortem — failures are recorded so they surface next time (Murphy)
 
 ```

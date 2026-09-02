@@ -1,0 +1,39 @@
+[
+  {
+    "text": "view both",
+    "toolCalls": [
+      {
+        "tool": "skill_manage",
+        "args": {
+          "action": "view",
+          "name": "pwa-drawer-swipe"
+        }
+      },
+      {
+        "tool": "skill_manage",
+        "args": {
+          "action": "view",
+          "name": "opentrack-us-redaction"
+        }
+      }
+    ]
+  },
+  {
+    "text": "create one",
+    "toolCalls": [
+      {
+        "tool": "skill_manage",
+        "args": {
+          "action": "create",
+          "name": "pwa-drawer-swipe",
+          "description": "Close a PWA drawer on a horizontal swipe.",
+          "body": "## When to use\nA PWA drawer.\n\n## Procedure\n1. Listen on the drawer.\n2. Close on dx < -80px within 450ms.\n\n## Pitfalls\nPointer events.\n\n## Verification\nSwipe on iOS Safari."
+        }
+      }
+    ]
+  },
+  {
+    "text": "nothing more",
+    "toolCalls": []
+  }
+]

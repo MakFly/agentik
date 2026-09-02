@@ -1,0 +1,29 @@
+{
+  "must": [
+    {
+      "kind": "memory",
+      "target": "memory",
+      "op": "add",
+      "contains": "grok"
+    },
+    {
+      "kind": "memory",
+      "target": "project",
+      "op": "add",
+      "contains": "bun test"
+    }
+  ],
+  "mustNot": [
+    {
+      "kind": "memory",
+      "target": "memory",
+      "contains": "bun test"
+    },
+    {
+      "kind": "memory",
+      "target": "project",
+      "contains": "grok"
+    }
+  ],
+  "maxRefused": 0
+}

@@ -1,0 +1,19 @@
+[
+  {
+    "text": "transient, goes to the log",
+    "toolCalls": [
+      {
+        "tool": "incident",
+        "args": {
+          "action": "classify",
+          "id": 1,
+          "cause": "codex is not installed on this machine's PATH"
+        }
+      }
+    ]
+  },
+  {
+    "text": "nothing more",
+    "toolCalls": []
+  }
+]
