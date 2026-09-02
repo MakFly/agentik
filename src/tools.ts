@@ -9,6 +9,7 @@ import { classifyIncident, mergeIncidents, resolveIncident } from "./incidents.t
 import { memoryApply, type MemoryOperation, type MemoryTarget } from "./memory-store.ts";
 import { newPendingId, stagePending, type PendingSkillOp } from "./pending.ts";
 import { applySkillCreate, applySkillPatch, skillCreateProblem, skillFile, viewSkill } from "./skill-ops.ts";
+import { shapeOutput } from "./shape.ts";
 import { skillNameProblem } from "./skill-factory.ts";
 import { hasIndex, indexKey } from "./code-index.ts";
 import { formatSearch, searchCode } from "./code-search.ts";
@@ -248,9 +249,22 @@ async function runCommandTool(call: ToolCall, host: ToolHost): Promise<ToolResul
   ]);
   clearTimeout(term);
   const head = timedOut ? `timeout after ${timeoutS}s (killed)\nexit ${exit}` : `exit ${exit}`;
-  const output = `${head}\n${stdout}${stderr ? "\nstderr:\n" + stderr : ""}`;
-  const env = wrapUntrusted(output, `tool:run_command`, "tool_output");
-  return { callId: call.id, ok: exit === 0 && !timedOut, output: env.body };
+  const tail = stderr ? "\nstderr:\n" + stderr : "";
+  const raw = `${head}\n${stdout}${tail}`;
+  // Shaping (src/shape.ts) sees stdout only: the exit line stays first and stderr stays verbatim,
+  // outside the shaper. Without a shaper the result is byte for byte what it always was.
+  const shaped = shapeOutput(argv, stdout, stderr, timedOut ? null : exit);
+  if (!shaped.shaper) {
+    const env = wrapUntrusted(raw, `tool:run_command`, "tool_output");
+    return { callId: call.id, ok: exit === 0 && !timedOut, output: env.body };
+  }
+  return {
+    callId: call.id,
+    ok: exit === 0 && !timedOut,
+    output: `${head}\n${shaped.text}${tail}`,
+    raw,
+    shaped: { shaper: shaped.shaper, savedChars: shaped.savedChars },
+  };
 }
 
 /** Drain a stream into a string, keeping at most `max` bytes; the rest is read and dropped. */

@@ -266,7 +266,11 @@ stamps every `WorkerInvocation` with `durationMs` and `usage`, every tool call w
 (`evidence.calls`), and aggregates `RunReport.usage {inputTokens, cachedInputTokens, outputTokens,
 costUsd?, invocations, callsWithoutUsage}` + `RunReport.durationMs`. The CLI prints
 `run: <id> · 84.2s · tokens 12.3k in / 4.1k out · $0.31` then `run file: <path>`; a mock run says
-`tokens (none reported)`.
+`tokens (none reported)`. `RunReport.shaping {calls, savedChars}` (always set, NOT under `usage`)
+aggregates every shaped `run_command` of the run (workers, synthesize phase and acceptance
+commands); `ExecutedTool.shaped` / `TaskCallEvidence.shaped` carry it per call;
+`formatRunUsage(u, durationMs, shaping?)` appends ` · shaped −41.0k chars` when `savedChars > 0`;
+`agentik runs show` prints `shaping: N calls · −X chars` when the record has it.
 
 ## Run persistence (`agentik run`)
 
@@ -297,6 +301,25 @@ replaced by `[BLOCKED: …]`, the rest byte for byte); the envelope keeps head 3
 the **full** body, so a payload padded into the omitted middle is still a finding. `read_file` takes
 `offset` / `limit` in chars and prefixes a paged read with `[path chars a-b of n; next offset …]`.
 
+**Shaping** (`src/shape.ts`, pure, "rtk"-style): `shapeOutput(argv, stdout, stderr, exitCode) →
+{text, savedChars, shaper?}` rewrites the STDOUT of a recognised `run_command` for the model:
+`git status` grouped by state with counters (porcelain or not), `git diff` without the
+`diff --git`/`index`/`---`/`+++` headers (one `### path` line, hunks kept, cap 200 lines then
+`…[N lines omitted]`), `git log` one `hash subject` per commit (`--oneline` untouched), test
+runners (bun test, vitest, jest, npm|pnpm|yarn test, pytest, go test, cargo test: passes collapsed
+to `N passed`, failures + assertion + 5 stack lines + counters kept), `tsc` grouped per file
+(`src/x.ts: 3 errors` then `  L12 error TS2322: …` cut at 160), `rg`/`grep` grouped per file (160
+chars per line, cap 40 files), `ls`/`find` compact tree per directory (cap 60 entries), and a
+generic `line ×N` merge of strictly identical consecutive lines. Invariants (tests): **inline =
+shaped, disk = raw** — `runCommandTool` returns `ToolResult.output` (shaped) + `raw` + `shaped
+{shaper, savedChars}`, and `spillToolResult(…, {inline, force, shaped})` scans and masks the RAW,
+always writes it (`force`), and ends the inline with `[shaped by <shaper>: −N chars; full output in
+<path>]`; a shaper never removes the `exit N` line, stderr, nor a line matching `FAILURE_LINE_RE`
+(FAIL, FAILED, ERROR, `error TS…`, ✗, ×, `(fail)`, panicked, Traceback, AssertionError — a dropped
+one is appended back); **fail-open**: exit ≠ 0 with no failure line in stdout → raw, no shaper;
+a shaped text that is not shorter → raw; `savedChars` never negative. The guard (`ToolGuard.after`)
+sees the raw. Without a shaper `ToolResult` is byte for byte what it was (no `raw`, no `shaped`).
+The acceptance command goes through the same `executeTool` and is shaped too.
 ## Code index (`agentik index` / `agentik search`)
 
 `src/code-index.ts` + `src/code-chunker.ts` + `src/code-search.ts`. One sqlite file per **checkout**
@@ -391,7 +414,11 @@ command × level table (~80 rows) and the benign-neighbour check for every rule.
 ## Backends and spawn
 
 - `agentik probe` = real auth checks, no model tokens (`claude auth status`, `codex login status`
-  on stderr, `grok models`), cached 15 min in `backends.json`. `--version` is not a probe.
+  on stderr, `grok models`), cached 15 min in `backends.json`. `--version` is not a probe. It also
+  prints `rtk: on PATH (<path>) | not found` (`Bun.which("rtk")`, never cached, exit code and the
+  harness JSON unchanged; `rtk` is added to the `--json` object): agentik shapes its own
+  `run_command` outputs but cannot filter the tool outputs inside a spawned claude/grok/codex —
+  rtk does that through its hook.
 - **`auto` is the default** (`backendSpec = flags.backend ?? "auto"`); `--yolo` is a session approval
   only; no authenticated harness → exit 2 « run `agentik probe`, or pass --backend mock »; mock is
   explicit only (every test passes `--backend mock`).

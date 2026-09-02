@@ -63,6 +63,9 @@ describe("agentik run persists every run", () => {
     expect(rec.status).toBe("completed");
     expect(rec.exitCode).toBe(0);
     expect(rec.report.taskResults.length).toBeGreaterThan(0);
+    expect(rec.report.shaping).toBeDefined();
+    expect(rec.report.shaping.calls).toBeGreaterThanOrEqual(0);
+    expect(rec.report.shaping.savedChars).toBeGreaterThanOrEqual(0);
     const j = await capture(() => main(["--backend", "mock", "--json", "--workspace", ws, "--agentik-home", home, "Create src/greet.txt containing AGENTIK_OK"]));
     const parsed = JSON.parse(j.out.slice(j.out.indexOf("{")));
     expect(parsed.runId).toMatch(/^\d{8}T\d{6}Z-[0-9a-f]{6}$/);
@@ -75,6 +78,7 @@ describe("agentik run persists every run", () => {
     expect(show.code).toBe(0);
     expect(show.out).toContain(`run ${parsed.runId}`);
     expect(show.out).toContain("status: completed");
+    expect(show.out).toContain(`shaping: ${rec.report.shaping.calls} calls · −${rec.report.shaping.savedChars} chars`);
     expect((await capture(() => main(["runs", "show", "zzz", "--agentik-home", home]))).code).toBe(1);
     expect((await capture(() => main(["runs", "bogus", "--agentik-home", home]))).code).toBe(2);
   });

@@ -200,14 +200,21 @@ export interface ToolCall {
   taskId?: string;
 }
 
+/** A run_command output rewritten by a shaper (src/shape.ts): which one, and how many chars it saved. */
+export interface ShapedInfo {
+  shaper: string;
+  savedChars: number;
+}
+
 export interface ExecutedTool {
   tool: string;
   args: Record<string, unknown>;
   artifact?: string;
-  /** Inline output (head + pointer + tail when spilled). */
+  /** Inline output (head + pointer + tail when spilled; the shaped text when a shaper applied). */
   output: string;
-  /** Workspace-relative file holding the full output, when it exceeded the inline cap. */
+  /** Workspace-relative file holding the full raw output, when it exceeded the inline cap or was shaped. */
   outputPath?: string;
+  shaped?: ShapedInfo;
 }
 
 export interface BlockedTool {
@@ -219,8 +226,12 @@ export interface BlockedTool {
 export interface ToolResult {
   callId: string;
   ok: boolean;
+  /** What the worker sees inline (the shaped text when `shaped` is set). */
   output: string;
   artifact?: string;
+  /** The unshaped output (exit line + stdout + stderr), only when a shaper applied. */
+  raw?: string;
+  shaped?: ShapedInfo;
 }
 
 export interface ClaimDraft {
@@ -302,6 +313,7 @@ export interface TaskCallEvidence {
   artifact?: string;
   durationMs: number;
   outputPath?: string;
+  shaped?: ShapedInfo;
 }
 
 export interface TaskAcceptanceResult {
@@ -365,6 +377,8 @@ export interface RunReport {
   taskResults: TaskResult[];
   /** Tokens / cost over every model invocation of the run (undefined when nothing was reported). */
   usage?: { inputTokens: number; cachedInputTokens: number; outputTokens: number; costUsd?: number; invocations: number; callsWithoutUsage: number };
+  /** run_command outputs rewritten by a shaper over the whole run (acceptance commands included). */
+  shaping?: { calls: number; savedChars: number };
   /** Wall clock of the whole run. */
   durationMs: number;
 }

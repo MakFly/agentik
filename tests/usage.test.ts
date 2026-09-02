@@ -42,6 +42,9 @@ describe("extractUsage", () => {
     expect(u).toEqual({ inputTokens: 12_300, cachedInputTokens: 300, outputTokens: 4_100, costUsd: 0.31, invocations: 2, callsWithoutUsage: 1 });
     expect(formatRunUsage(u, 84_200)).toBe("84.2s · tokens 12.3k in (300 cached) / 4.1k out · $0.31 · 1 call(s) without usage");
     expect(formatRunUsage(undefined, 250)).toBe("250ms · tokens (none reported)");
+    expect(formatRunUsage(u, 84_200, { calls: 3, savedChars: 41_000 })).toBe("84.2s · tokens 12.3k in (300 cached) / 4.1k out · $0.31 · 1 call(s) without usage · shaped −41.0k chars");
+    expect(formatRunUsage(undefined, 250, { calls: 0, savedChars: 0 })).toBe("250ms · tokens (none reported)");
+    expect(formatRunUsage(undefined, 250, { calls: 1, savedChars: 12 })).toBe("250ms · tokens (none reported) · shaped −12 chars");
   });
 });
 

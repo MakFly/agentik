@@ -117,8 +117,11 @@ function kilo(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
-/** `84.2s · tokens 12.3k in / 4.1k out · $0.31` (+ ` · 2 calls without usage` when relevant). */
-export function formatRunUsage(u: RunUsage | undefined, durationMs: number): string {
+/**
+ * `84.2s · tokens 12.3k in / 4.1k out · $0.31` (+ ` · 2 calls without usage` when relevant,
+ * + ` · shaped −41.0k chars` when a shaper saved anything).
+ */
+export function formatRunUsage(u: RunUsage | undefined, durationMs: number, shaping?: { calls: number; savedChars: number }): string {
   const bits = [durationMs >= 1000 ? `${(durationMs / 1000).toFixed(1)}s` : `${durationMs}ms`];
   if (u && u.invocations > 0) {
     bits.push(`tokens ${kilo(u.inputTokens)} in${u.cachedInputTokens ? ` (${kilo(u.cachedInputTokens)} cached)` : ""} / ${kilo(u.outputTokens)} out`);
@@ -127,5 +130,6 @@ export function formatRunUsage(u: RunUsage | undefined, durationMs: number): str
     bits.push("tokens (none reported)");
   }
   if (u && u.callsWithoutUsage > 0 && u.invocations > 0) bits.push(`${u.callsWithoutUsage} call(s) without usage`);
+  if (shaping && shaping.savedChars > 0) bits.push(`shaped −${kilo(shaping.savedChars)} chars`);
   return bits.join(" · ");
 }

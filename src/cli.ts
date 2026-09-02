@@ -243,6 +243,11 @@ Commands:
   agentik postmortem classify <id> "<cause>" | resolve <id> "<fix>" | review <id>
                                review <id> = agentik review --incident <id>.
   agentik probe [--json] [--refresh-backends]
+                               Also says whether rtk is on PATH: agentik shapes the outputs of
+                               its own run_command (git status/diff/log, test runners, tsc, rg,
+                               ls/find: shorter for the model, the raw body on disk, never a
+                               failure line dropped) but cannot filter the tool outputs inside
+                               a spawned claude/grok/codex — rtk does that through its hook.
 
 Options:
   --workspace DIR              Workspace root (default: cwd); stored on the session
@@ -470,7 +475,7 @@ async function runMain(runArgv: string[], resume?: ResumePayload): Promise<numbe
   }
   const jsonOut = () => JSON.stringify({ ...report, ...(persisted ? { runId: persisted.id, runPath: persisted.path } : {}) }, null, 2);
 
-  const runLine = `run: ${persisted?.id ?? "(not persisted)"} · ${formatRunUsage(report.usage, report.durationMs)}`;
+  const runLine = `run: ${persisted?.id ?? "(not persisted)"} · ${formatRunUsage(report.usage, report.durationMs, report.shaping)}`;
   if (flags.planOnly) {
     if (flags.json) console.log(jsonOut());
     else {
@@ -623,6 +628,7 @@ async function runsCmd(args: string[]): Promise<number> {
     }
     console.log(`run ${rec.id} · ${rec.at} · status ${rec.status} · exit ${rec.exitCode} · ${rec.backend} × ${rec.workers} · ${Math.round(rec.durationMs / 1000)}s`);
     console.log(`workspace: ${rec.workspace}`);
+    if (rec.report.shaping) console.log(`shaping: ${rec.report.shaping.calls} calls · −${rec.report.shaping.savedChars} chars`);
     console.log(formatReport(rec.report));
     if (rec.report.pendingApprovals?.length) {
       console.log(`awaiting approval: ${rec.report.pendingApprovals.map((a) => `${a.id} (${a.toolCall.tool})`).join(", ")}`);
@@ -1249,12 +1255,17 @@ async function probe(args: string[] = []): Promise<number> {
     home: homeFor(flags),
     refresh: flags.refreshBackends ?? true,
   });
+  // rtk (Rust Token Killer) filters the outputs INSIDE a spawned claude/grok/codex through its own
+  // hook; agentik only shapes its own run_command. Looked up every time, never cached, never a
+  // verdict on the exit code.
+  const rtk = Bun.which("rtk");
   if (flags.json) {
-    console.log(JSON.stringify(map, null, 2));
+    console.log(JSON.stringify({ ...map, rtk }, null, 2));
   } else {
     for (const h of HARNESSES) {
       console.log(`${h}: ${describeStatus(map[h])} — ${map[h].detail}`);
     }
+    console.log(rtk ? `rtk: on PATH (${rtk})` : "rtk: not found");
   }
   return HARNESSES.some((h) => map[h].loggedIn) ? 0 : 1;
 }

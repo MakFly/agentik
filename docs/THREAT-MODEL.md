@@ -47,6 +47,13 @@ Untrusted content is **data**, never the instruction channel. High-blast-radius 
    per call like a `read_file`; the planner and a spawned worker get the repo map (paths and
    exported symbols, never a body line) as DATA, and the spawn hint line is static agentik text
    that interpolates only the human-given root.
+10. **Output shaping is a view, not a filter** (`src/shape.ts`): the shorter text a worker sees
+   for `git status`, a test run, `tsc`, `rg`… is derived from stdout only; shaping keeps the exit
+   line, stderr and every failure line; the raw body is always on disk
+   (`.agentik/tool-results/<callId>.txt`) and is what the injection scan, the secret masking,
+   the guardrails and the run file work on. A non-zero exit in an unrecognised format is passed
+   raw (fail-open), so a shaper can neither hide a failure nor launder an injection padded into
+   the lines it drops.
 
 ## Sources (retrieved and attributed)
 

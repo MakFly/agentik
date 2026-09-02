@@ -113,7 +113,7 @@ An unknown backend name is an error — it used to become a mock that fabricated
 run.
 
 ```
-agentik probe --json      # absent / present but not authenticated / ok, per harness
+agentik probe --json      # absent / present but not authenticated / ok, per harness (+ rtk on PATH or not)
 ```
 
 ### spawn
@@ -243,6 +243,21 @@ executor; `server_admin` still writes a local receipt only.
 **Big tool outputs go to disk.** Over 8000 chars, a tool result is written to
 `.agentik/tool-results/<callId>.txt` (secrets and injections masked per line) and the model sees head +
 a `read_file {path, offset, limit}` pointer + tail; the injection scan still covers the whole body.
+
+**Command outputs are shaped, never censored.** In the spirit of rtk (Rust Token Killer), the
+stdout of a recognised `run_command` is rewritten for the model: `git status` grouped by state with
+counters, `git diff` without its `diff --git`/`index`/`---`/`+++` headers (hunks kept, 200 lines
+max), `git log` one `hash subject` per commit, test runners (bun test, vitest, jest, npm test,
+pytest, go test, cargo test) with passes collapsed to `N passed` and every failure, assertion, stack
+and counter kept, `tsc` grouped per file, `rg`/`grep` grouped per file, `ls`/`find` as a compact tree,
+and identical consecutive lines merged into `line ×N`. What the model sees is the shaped text; the
+raw output is always on disk (`[shaped by <shaper>: −N chars; full output in <path>]` closes the
+envelope) and is what the injection scan, the guardrails and the run file work on. A shaper never
+drops the `exit N` line, stderr, or a line that reads as a failure (`FAIL`, `ERROR`, `error TS…`,
+`(fail)`, `panicked`, `Traceback`…); a non-zero exit in a format no shaper recognises is passed raw.
+The run line ends with ` · shaped −41.0k chars` and `agentik runs show` prints `shaping: N calls ·
+−X chars`. agentik cannot filter the outputs *inside* a spawned claude/grok/codex worker; rtk does
+that through its own hook — `agentik probe` says whether `rtk` is on PATH.
 
 **Command policy.** `run_command` executes one argv with no shell (pipes, `;`, `&&`, redirections
 and `$(…)` are refused: "one command per call"), with a 30 s default timeout (`timeout_s`, max 120),
