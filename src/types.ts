@@ -13,6 +13,24 @@ export type Role = "orchestrator" | "reviewer" | WorkerRole;
 /** Auto-run steps per bounded task. Four was never enough for real work. */
 export const DEFAULT_MAX_STEPS = 8;
 
+/**
+ * A task summary the synthesizer (and a dependent task) reads: prose is capped, never the whole log.
+ *
+ * It lives here, in a leaf module, because BOTH ends need it: `loop.ts` truncates the last text to
+ * it, and `backends.ts` tells the worker the budget in the act prompt — measured live, the final
+ * tool-less invocation of a task spent 34-42s writing 4k output tokens of which more than half was
+ * cut here and paid for anyway. `loop.ts` re-exports it, so no existing import moves.
+ */
+export const TASK_SUMMARY_MAX = 2000;
+
+/**
+ * Longest instruction a plan may give a task. Here, in the same leaf, for the same reason: the
+ * validator (`plan-schema.ts`, which re-exports it) enforces it and the planner prompt
+ * (`backends.ts`) announces it, and `backends.ts` cannot import `plan-schema.ts` — that would close
+ * the cycle backends → plan-schema → tools → backends.
+ */
+export const INSTRUCTION_MAX = 2000;
+
 export function clampSubagentCount(n: number): number {
   if (!Number.isFinite(n)) return 2;
   return Math.min(MAX_SUBAGENTS, Math.max(1, Math.floor(n)));

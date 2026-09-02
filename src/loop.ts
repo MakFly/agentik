@@ -8,6 +8,7 @@ import { buildPlan } from "./plan.ts";
 import { formatPlan, validatePlan, type PlanSource } from "./plan-schema.ts";
 import { runDag } from "./scheduler.ts";
 import { normalizeClaims } from "./sources.ts";
+import { workerToolNames } from "./tool-catalog.ts";
 import { spillToolResult } from "./tool-results.ts";
 import { addRunUsage, emptyRunUsage } from "./usage.ts";
 import { executeTool } from "./tools.ts";
@@ -34,12 +35,16 @@ import {
   DEFAULT_MAX_STEPS,
   MAX_SUBAGENTS,
   SUBAGENT_ROLES,
+  TASK_SUMMARY_MAX,
 } from "./types.ts";
 
 export { DEFAULT_MAX_STEPS };
 
-/** A task summary the synthesizer (and a dependent task) reads: prose is capped, never the whole log. */
-export const TASK_SUMMARY_MAX = 2000;
+/**
+ * Re-exported from `types.ts` (a leaf): `backends.ts` names the same budget in the act prompt, and
+ * `loop.ts` already imports `backends.ts` — owning the constant here would close an import cycle.
+ */
+export { TASK_SUMMARY_MAX };
 
 export interface LoopConfig {
   goal: string;
@@ -153,6 +158,25 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
     if (r.stats) codeIndex = { files: r.stats.files, chunks: r.stats.chunks, changed: r.stats.added + r.stats.updated + r.stats.removed, built: r.built, ms: r.ms };
     else if (r.reason && r.reason !== "disabled" && r.reason !== "empty") codeIndex = { files: r.files ?? 0, chunks: 0, changed: 0, built: false, ms: r.ms, reason: r.reason };
   }
+  /**
+   * Is `search_code` usable AT ALL this run? The flag is not the answer: `--no-index` is only one of
+   * the ways the tool ends up refusing every call. A checkout over the auto-build cap (`too_big`), a
+   * build that failed (`failed`), an empty or absent index — all of them leave the executor with
+   * nothing to read, and a worker discovering that costs a round-trip per attempt (6 measured on one
+   * run). So the verdict is taken AFTER ensureIndex, on chunks that really exist.
+   *
+   * Consequences: the tool is out of the planner's list, out of the fallback plan, and stripped from
+   * a model plan that asks for it anyway — stripping, not rejecting: a plan is not wrong because it
+   * hoped for an index, and a rejected plan costs a whole reprompt. A task left with no tool at all
+   * would fail every acceptance, so `read_file` takes the empty slot.
+   */
+  const indexOn = opts.codeIndex !== false && (codeIndex?.chunks ?? 0) > 0;
+  const planTools = workerToolNames().filter((n) => indexOn || n !== "search_code");
+  const dropSearchCode = (t: BoundedTask): BoundedTask => {
+    if (indexOn || !t.allowedTools.includes("search_code")) return t;
+    const allowedTools = t.allowedTools.filter((n) => n !== "search_code");
+    return { ...t, allowedTools: allowedTools.length ? allowedTools : ["read_file"] };
+  };
   const bits = (synth: string): Parameters<typeof report>[1] => ({
     usage,
     shaping,
@@ -218,8 +242,8 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
         task,
         envelopes: context.filter((e) => e.trust === "untrusted"),
         system: extra?.nudge
-          ? `${systemPromptFor(role, workerCount)}\n${extra.nudge}`
-          : systemPromptFor(role, workerCount),
+          ? `${systemPromptFor(role, workerCount, { tools: planTools })}\n${extra.nudge}`
+          : systemPromptFor(role, workerCount, { tools: planTools }),
         workspace: opts.workspace,
         step: extra?.step,
         maxSteps: extra?.maxSteps ?? task?.maxSteps,
@@ -602,7 +626,7 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
   if (!planRes.ok) {
     stalled.push({ taskId: "plan", assignee: planner, backend: planRes.backend, reason: planRes.reason });
   }
-  const fallback = buildPlan(orch.goalText(), workerCount);
+  const fallback = buildPlan(orch.goalText(), workerCount, { codeIndex: indexOn });
   // The model's plan is DATA until it passes the schema. One reprompt names the problems; a second
   // bad plan hands over to the regex planner, and the report says so.
   let tasks: BoundedTask[] = fallback;
@@ -631,6 +655,9 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
       }
     }
   }
+  // One place for every plan source (model, repaired, fallback, resumed): a run without an index
+  // never hands a worker a tool that can only be refused.
+  tasks = tasks.map(dropSearchCode);
   orch.delegate(tasks);
   opts.onPlan?.(formatPlan(tasks, planSource, planProblems), tasks, planSource, planProblems);
   if (opts.planOnly) {
@@ -690,8 +717,10 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
   const synthContext: Envelope[] = [...taskResults.map(taskResultEnvelope), ...sources.map((s) => s.envelope)];
   const synthRes = await invoke(synthesizer, "synthesize", synthContext);
   if (synthRes.ok) {
+    // The synthesis message's own toolCalls are NOT run: the final text is already written, so a
+    // call made now cannot change it — it only costs a gate pass, an execution and a spill. The
+    // synthesize prompt says so (`phaseDirective`), and the tools of every ACT step still run.
     synthesis = synthRes.msg.text;
-    await handleMessageTools(synthRes.msg, undefined, synthesizer, synthContext, undefined);
   } else {
     synthesis = `synthesis unavailable: ${synthRes.reason}`;
     stalled.push({ taskId: "synthesize", assignee: synthesizer, backend: synthRes.backend, reason: synthRes.reason });

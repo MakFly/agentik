@@ -23,7 +23,21 @@ export function classifyGoal(text: string): GoalClass {
   };
 }
 
-export function defaultAllowedTools(cls: GoalClass): string[] {
+/**
+ * `codeIndex: false` (`agentik run --no-index`) drops `search_code` from every plan: its executor
+ * refuses every call in that mode, and a refusal only teaches the worker after it has paid for the
+ * round-trip (6 refused calls measured on one live run).
+ */
+export interface PlanOptions {
+  codeIndex?: boolean;
+}
+
+/** The tool list minus what this run cannot use. Keeps `search_code` unless the index is off. */
+function usable(tools: string[], opts: PlanOptions): string[] {
+  return opts.codeIndex === false ? tools.filter((t) => t !== "search_code") : tools;
+}
+
+export function defaultAllowedTools(cls: GoalClass, opts: PlanOptions = {}): string[] {
   const tools = new Set<string>(["read_file", "search_code"]);
   if (cls.code || (!cls.ops && !cls.research && !cls.highBlast)) {
     tools.add("write_file");
@@ -39,10 +53,10 @@ export function defaultAllowedTools(cls: GoalClass): string[] {
     tools.add("fs_destructive");
     tools.add("credential_use");
   }
-  return [...tools];
+  return usable([...tools], opts);
 }
 
-export function buildPlan(goalText: string, workerCount = 2): BoundedTask[] {
+export function buildPlan(goalText: string, workerCount = 2, opts: PlanOptions = {}): BoundedTask[] {
   const n = clampSubagentCount(workerCount);
   const cls = classifyGoal(goalText);
   const tasks: BoundedTask[] = [];
@@ -57,7 +71,7 @@ export function buildPlan(goalText: string, workerCount = 2): BoundedTask[] {
       id: `task-${letter}`,
       assignee,
       instruction,
-      allowedTools: tools,
+      allowedTools: usable(tools, opts),
       maxSteps: DEFAULT_MAX_STEPS,
       ...(dependsOn.length ? { dependsOn } : {}),
     });

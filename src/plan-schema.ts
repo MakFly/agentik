@@ -5,6 +5,7 @@ import { resolveSafe } from "./tools.ts";
 import {
   clampSubagentCount,
   DEFAULT_MAX_STEPS,
+  INSTRUCTION_MAX,
   MAX_SUBAGENTS,
   resolveWorkerRole,
   type BoundedTask,
@@ -20,7 +21,8 @@ import {
  */
 
 export const TASK_ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
-export const INSTRUCTION_MAX = 2000;
+/** Owned by `types.ts` (a leaf) so the planner prompt can name the same number. Re-exported here. */
+export { INSTRUCTION_MAX };
 export const MAX_STEPS_CAP = 16;
 
 export interface ValidatePlanOptions {

@@ -1,0 +1,20 @@
+{
+  "root": "/tmp/agentik-bench-target",
+  "slug": "agentik-bench-target-c51c94da61",
+  "path": "/home/kev/.agentik/index/agentik-bench-target-c51c94da61.sqlite",
+  "mode": "git",
+  "files": 203,
+  "chunks": 1353,
+  "added": 0,
+  "updated": 0,
+  "removed": 0,
+  "skipped": 21,
+  "ms": 26,
+  "builtAt": "2026-09-02T21:37:07.864Z",
+  "refreshedAt": "2026-09-02T21:48:22.666Z",
+  "built": false,
+  "ignoreFiles": [
+    ".agentikignore"
+  ],
+  "dirty": 0
+}

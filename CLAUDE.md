@@ -232,6 +232,28 @@ orchestrator` (medium only, validated by the plan schema); a failed acceptance i
 as DATA. `formatReport` prints the whole synthesis and a `tasks:` block with status, duration, steps,
 ran, acceptance.
 
+**Cost of a run** (measured on a live claude-sonnet run: 116 s = plan 24 s + act ≤74 s + synthèse 18 s;
+the LAST invocation of each task called no tool and spent 34–42 s / 4.0–4.4k output tokens on prose
+`loop.ts` then cut at 2000 chars). `src/backends.ts` `phaseDirective(phase, role)` is the one line per phase
+in `renderCompletePrompt`: **act** = propose the next toolCalls, emit every INDEPENDENT call in ONE
+message (one worker spread 5 calls over 3 invocations; an avoided invocation is 5–40 s), and when the
+task is done return an empty `toolCalls` with the answer in `text` within `TASK_SUMMARY_MAX`
+characters — facts, paths with line ranges, quotes, no restatement, no markdown headings; **synthesize**
+= no tools, the answer rests only on the DATA. `TASK_SUMMARY_MAX` (2000) lives in `src/types.ts` (a
+leaf: `loop.ts` imports `backends.ts`, so the constant cannot live in `loop.ts`) and is re-exported by
+`loop.ts` for existing importers (same pattern for `INSTRUCTION_MAX`, which the plan line of
+`systemPromptFor` now quotes instead of a second literal `2000`; `backends.ts` cannot import
+`plan-schema.ts` — that would close the cycle backends → plan-schema → tools → backends). The loop
+does **not** run the toolCalls of the synthesize message (a call made after the final text is written
+cannot improve it); ACT tools are unchanged, and the general system line says so
+("In the ACT phase the orchestrator auto-runs … In the SYNTHESIZE phase nothing runs").
+**The review is not a worker**: `reviewer.ts` calls the backend with `phase: "act"` and
+`role: "reviewer"`, so `phaseDirective` gives it `REVIEW_ACT_DIRECTIVE` — the act line as it was
+before this work — and `claudeEffortFor` keeps it at `high`. None of the three act rules holds there:
+`ReviewOutcome.summary` is never truncated, batching independent calls would break
+`view_before_create`, and the review's effort is a product decision (it is the only thing that writes
+memory and skills), not a run-cost knob. The evals replay `script.json` and would not catch any of it.
+
 ## DAG scheduler (`agentik run`)
 
 `src/scheduler.ts` (pure): `runDag(tasks, {concurrency, keyOf, run, blocked, shouldStop, skipped})`.
@@ -415,7 +437,15 @@ symbols` lines ≤140 chars + `hot spots (>700 lines): …` — identifiers and 
 (`CODE_CONTEXT_CAP` 2500), and `codeHintLine(root)` — static text, only the human-given root interpolated — goes in
 the TRUSTED `bounded` text; `--no-index` removes both (context, run, spawn) AND turns the `search_code` tool off
 for the run (`ToolHost.codeIndex = false` → `ok: false` naming `--no-index`), so an A/B with and without the index
-measures the index (`bench/index-ab/`: live claude-sonnet runs, before/after each fix).
+measures the index (`bench/index-ab/`: live claude-sonnet runs, before/after each fix). A run without a
+**usable** index never *proposes* the tool either: `runLoop` decides `indexOn = opts.codeIndex !== false &&
+(codeIndex?.chunks ?? 0) > 0` **after** `ensureIndex` — the flag is one cause among several (`too_big` over the
+5000-file cap, `failed`, `disabled`, no index at all all leave the executor with nothing to read) — then builds
+`planTools = workerToolNames()` minus `search_code` for `systemPromptFor(role, count, {tools})`, calls
+`buildPlan(goal, n, {codeIndex: false})` (`defaultAllowedTools` follows), and strips `search_code` from the
+allowlist of every task whatever the plan source (a task left with nothing keeps `read_file`) — stripping, not
+rejecting: `validatePlan` still accepts the name (a plan is not invalid because it hoped for an index, and a
+rejection would cost a whole reprompt). Measured: 6 refused `search_code` calls on one `--no-index` run.
 
 Invariants (tests enforce them):
 - The index is a **cache**: never memory, never sealed, never a trust source; no source text lives in
@@ -477,6 +507,14 @@ command × level table (~80 rows) and the benign-neighbour check for every rule.
   (it expires 2026-11-16). Unknown backend name = error, never a mock. Dead backend mid-run →
   failover + `backendSwitches` in the report. `MockBackend` lives in `src/mock-backend.ts` (the only
   backend-side module importing `plan.ts`); `backends.ts` never imports the planner.
+- Gated claude worker: effort **per phase** (`claudeEffortFor(phase, {role, env})`, passed to
+  `claudeCliArgs(prompt, model, effort)`): plan `high` (a bad plan wastes the whole run), act and
+  synthesize `medium`, **`role: "reviewer"` always `high`**. `AGENTIK_CLAUDE_EFFORT=low|medium|high|xhigh|max`
+  (the values `claude --effort bogus --version` itself lists) forces one level everywhere for an A/B,
+  review included — it is set on purpose, unlike the phase default; anything else is ignored with one
+  stderr line, never handed to the CLI. `ClaudeBackend` takes an injectable `runner` (like
+  `CodexBackend`) so the argv the CLI really receives is testable without claude.
+  `foreignWorkerArgs` (`agentik spawn`) keeps `--effort high`.
 - Gated claude worker: `--restricted --tools "" --disallowedTools …` (NO built-in tool: a deny list alone let
   Grep/Glob explore the repository for 17 turns outside the gate — the first live A/B in `bench/index-ab/before-fix`
   cited exact line numbers with zero gated call), **never** `--dangerously-skip-permissions`

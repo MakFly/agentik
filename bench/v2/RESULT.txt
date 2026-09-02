@@ -1,0 +1,16 @@
+median [min–max] over the repetitions
+
+                            baseline (n=3)          opt (n=3)               
+wall clock s                123.8 [104.4–295.4]     74.2 [59.4–106.7]       
+cost $                      0.5527 [0.3897–0.9274]  0.2645 [0.2087–0.4154]  
+output tokens k             15.8 [15.7–41.2]        7.4 [7.2–10.7]          
+cached in k                 152.1 [82.5–180.8]      62.1 [49.2–73.5]        
+invocations                 9 [8–13]                7 [6–12]                
+gated calls                 22 [11–24]              14 [6–34]               
+refused calls               3 [0–12]                4 [0–10]                
+tasks done                  2 [2–2]                 2 [2–2]                 
+phase plan s                22.1 [17.0–38.1]        22.4 [16.1–25.9]        
+phase act s (longest task)  77.8 [74.5–230.1]       28.7 [22.9–61.5]        
+phase synth s               27.2 [7.7–28.9]         20.4 [19.2–23.1]        
+
+opt vs baseline: wall -40% · cost -52% · output tokens -53%
