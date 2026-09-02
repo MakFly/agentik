@@ -173,6 +173,11 @@ match that the harness did not deny itself is printed as `FLOOR VIOLATION` and l
 (exit code unchanged). `--allow-high-blast` removes the floor and says `floor DISABLED`. A claude or
 grok whose `--help` no longer advertises the deny flag is refused rather than run without the floor.
 
+**A worker never spawns workers.** Every child agentik starts inherits `AGENTIK_DEPTH`; at depth 1 or
+more, `agentik spawn` and `agentik run` refuse (exit 2, incident `nested agentik spawn refused at
+depth 1`) before probing anything. That is agent #6 by another route, and it is closed on both sides:
+the harness deny rules also cover `agentik spawn|run`.
+
 **Command policy.** `run_command` executes one argv with no shell (pipes, `;`, `&&`, redirections
 and `$(…)` are refused: "one command per call"), with a 30 s default timeout (`timeout_s`, max 120),
 a scrubbed environment (no `*_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `GH_TOKEN`, API keys) and a

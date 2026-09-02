@@ -195,6 +195,13 @@ command × level table (~80 rows) and the benign-neighbour check for every rule.
   that does not advertise it is refused (exit 2) unless `--allow-high-blast`. A CLI dying at once
   (no event, < 5 s, stderr `unknown … --settings|deny`) is the symptom `rejected the deny rules (argv)`.
   `--raw` reads no stream: no after-the-fact detection (said on stderr).
+- **Depth guard** (`src/depth.ts`): every child of `spawnManaged` (harness workers, gated backends,
+  `run_command`) inherits `AGENTIK_DEPTH` (+1) and `AGENTIK_PARENT=agentik-spawn`. At depth ≥ 1
+  `agentik spawn` and `agentik run` (prompt-first included) exit 2 before any probe — "you are already
+  an agentik worker; a worker never spawns workers (that would be agent #6)" — and record the incident
+  `nested agentik <cmd> refused at depth N`. `harvest|review|memory|context|skills|postmortem|probe`
+  stay allowed. Belt: the `agentik_nested` policy rule denies `agentik spawn|run` at the harness and
+  flags it as a floor violation in the outer verdict.
 - `agentik spawn --harness X` reads the harness event stream (verdict): exit `0` done · `1` CLI
   failed · `2` unusable harness · `124` timeout (default 1800 s) · `125` finished without doing the
   work (`--require-tools`, `--expect-artifact PATH`).

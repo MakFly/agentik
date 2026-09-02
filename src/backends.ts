@@ -7,6 +7,7 @@ import {
   shouldTryStructuredOutput,
 } from "./codex-capabilities.ts";
 import { denyFloorPrompt, renderDenyRules } from "./command-policy.ts";
+import { childEnv } from "./depth.ts";
 import { MockBackend } from "./mock-backend.ts";
 import { renderEnvelopes } from "./trust.ts";
 import {
@@ -636,6 +637,9 @@ type InheritSpawnOptions = { stdout: "inherit"; stderr: "inherit"; cwd?: string;
  * is especially painful after a timeout. `setsid` gives each worker a private
  * process group; Windows (or hosts without `setsid`) keeps the existing direct
  * spawn behaviour and falls back to killing the subprocess itself.
+ *
+ * The child's environment always carries `AGENTIK_DEPTH` (+1) and `AGENTIK_PARENT`
+ * (see src/depth.ts), so a worker that runs `agentik spawn` is refused at depth 1.
  */
 export function spawnManaged(cmd: string, args: string[], options: PipeSpawnOptions): Bun.ReadableSubprocess;
 export function spawnManaged(cmd: string, args: string[], options: InheritSpawnOptions): Bun.Subprocess<any, "inherit", "inherit">;
@@ -645,8 +649,10 @@ export function spawnManaged(
   options: PipeSpawnOptions | InheritSpawnOptions,
 ): Bun.Subprocess {
   const setsid = process.platform === "win32" ? undefined : Bun.which("setsid");
-  if (setsid) return Bun.spawn([setsid, "--", cmd, ...args], options);
-  return Bun.spawn([cmd, ...args], options);
+  // Every child is one level deeper: a worker that reaches `agentik spawn|run` is refused there.
+  const withDepth = { ...options, env: childEnv(options.env ?? process.env) };
+  if (setsid) return Bun.spawn([setsid, "--", cmd, ...args], withDepth);
+  return Bun.spawn([cmd, ...args], withDepth);
 }
 
 /** Terminate a worker and every descendant in its private process group. */

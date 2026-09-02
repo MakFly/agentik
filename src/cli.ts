@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { matchCommandRules } from "./command-policy.ts";
 import { ConfigError, formatConfigError, readConfig } from "./config.ts";
+import { currentDepth, depthProblem, nestedSymptom } from "./depth.ts";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
@@ -226,6 +227,11 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     if (problem !== undefined) return problem;
   }
   if (cmd === "probe") return probe(argv.slice(1));
+  // A worker never spawns workers. Checked before any probe or backend resolution.
+  {
+    const nesting = cmd === "spawn" ? "spawn" : cmd === "run" || !KNOWN_COMMANDS.has(cmd) ? "run" : undefined;
+    if (nesting && depthProblem(nesting)) return refuseNested(nesting, cmd === "spawn" || cmd === "run" ? argv.slice(1) : argv);
+  }
   if (cmd === "spawn") return spawnForeign(argv.slice(1));
   if (cmd === "memory") return memoryCmd(argv.slice(1));
   if (cmd === "skill" || cmd === "skills") return skillCmd(argv.slice(1));
@@ -1032,6 +1038,35 @@ function homeFor(flags: { agentikHome?: string; profile?: string }): string {
 }
 
 const CONFIG_EXEMPT = new Set(["probe", "context", "postmortem"]);
+const KNOWN_COMMANDS = new Set(["probe", "spawn", "memory", "skill", "skills", "harvest", "context", "review", "postmortem", "run"]);
+
+/** Exit 2 with the depth message; the refusal is an incident so the conductor sees it next time. */
+async function refuseNested(cmd: "spawn" | "run", argv: string[]): Promise<number> {
+  const problem = depthProblem(cmd)!;
+  console.error(`agentik: ${problem}`);
+  const parsed = parseRun(argv);
+  const workspace = resolve(parsed.flags.workspace ?? process.cwd());
+  try {
+    const rec = await recordIncident(
+      {
+        goal: parsed.goal || parsed.flags.goalFlag || `agentik ${cmd}`,
+        workspace,
+        profile: parsed.flags.profile ?? process.env.AGENTIK_PROFILE ?? "default",
+        harness: "agentik",
+        backend: parsed.flags.harness ?? parsed.flags.backend ?? "",
+        exitCode: 2,
+        stopReason: "nested",
+        errors: [problem],
+        symptom: nestedSymptom(cmd),
+      },
+      { home: homeFromArgv(argv) },
+    );
+    console.error(`agentik: incident #${rec.id} recorded (seen ${rec.seen}×, depth ${currentDepth()})`);
+  } catch (err) {
+    console.error(`agentik: could not record incident: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return 2;
+}
 
 /** The home the command will use, from the raw argv (before any subcommand parses its flags). */
 function homeFromArgv(argv: string[]): string {
