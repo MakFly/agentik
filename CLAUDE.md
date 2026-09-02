@@ -127,6 +127,29 @@ Invariants (tests enforce them):
 - Code never writes MEMORY.md, a cause, or a fix on its own: the review (a model) or a human does.
   The reviewer's memory guidance routes transient failures to the incident log, not to memory.
 
+## Command policy — one source of truth for dangerous shell commands
+
+`src/command-policy.ts` (rules) + `src/argv.ts` (shell-words tokenizer). `classifyCommand(argv|string)
+→ medium | high | hardline` runs every rule over every *view* of a line: raw, each `&& || ; |`
+segment, each segment with wrappers stripped (`VAR=x`, `env`, `nohup`, `sudo`, `xargs`, `timeout N`…),
+and the body of every `bash -c "…"`; quoted arguments are re-quoted so `grep "rm -rf" README.md`
+stays medium. `HARDLINE_RULES` (`rm -rf /|~|$HOME|/etc…`, `mkfs`/`dd of=`/`wipefs` on a block
+device, fork bomb, `chmod -R 777 /`) are refused by the gate **without an ApprovalRequest**, so
+`--yolo` / `--approve-high-blast` cannot release them. `HIGH_BLAST_DENY_RULES` (`rm -rf`, `git push
+--force`, `git reset --hard`, `git clean -f`, `git checkout .`, `find -delete`, `sudo`, `mkfs`,
+`dd` on `/dev`, `shutdown`, `chmod 777`, `curl | sh`, `drop database`, `rmtree`, `kill -9 -1`,
+`docker prune`, `terraform destroy`, `kubectl delete`, `agentik spawn|run`) each carry a `re` (gate)
+and harness `globs` (`renderDenyRules("claude") → ["Bash(rm -rf *)", …]`, grok `["--deny", …]`,
+codex `[]` — no deny flag exists). Gate order: `unknown → hardline → reviewer_only → injection+high
+→ hijack → allowlist → high-blast`.
+
+`run_command` executes **one argv, no shell**: a string is shell-split and any operator (`| ; && >
+$( \``) is refused "one command per call"; `timeout_s` clamped to [1,120] (default 30), env scrubbed
+of `*_KEY|*_TOKEN|*_SECRET|*_PASSWORD|GH_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|XAI_API_KEY…`,
+stdout/stderr capped at 2 MB each, killed via `killManaged` (process group). A high or hardline argv
+is never spawned by the executor even after routing. `tests/command-policy.test.ts` holds the
+command × level table (~80 rows) and the benign-neighbour check for every rule.
+
 ## Backends and spawn
 
 - `agentik probe` = real auth checks, no model tokens (`claude auth status`, `codex login status`

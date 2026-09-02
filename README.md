@@ -164,6 +164,17 @@ returned a bare failure with nothing saying the work had been cut off mid-task. 
 
 Live models only **propose** JSON `toolCalls`. The orchestrator gates and executes.
 
+**Command policy.** `run_command` executes one argv with no shell (pipes, `;`, `&&`, redirections
+and `$(…)` are refused: "one command per call"), with a 30 s default timeout (`timeout_s`, max 120),
+a scrubbed environment (no `*_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `GH_TOKEN`, API keys) and a
+2 MB capture cap. `src/command-policy.ts` classifies every command `medium | high | hardline` across
+all its segments and wrappers (`bash -c`, `sudo`, `env`, `xargs`…): **high** (`rm -rf`, `git push
+--force`, `git reset --hard`, `sudo`, `curl | sh`, `drop database`, `terraform destroy`, `agentik
+spawn`…) waits for your approval (`--yolo` / `--approve-high-blast` release it), **hardline**
+(`rm -rf /`, `mkfs /dev/sda`, fork bomb, `chmod -R 777 /`) is refused with no approval to grant —
+not even `--yolo` runs it. The same rules render as harness deny globs (`Bash(rm -rf *)`) for spawned
+claude/grok workers.
+
 ## Tests
 
 Gating tests drive the shipped `runLoop` (not a reimplementation):

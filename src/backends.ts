@@ -603,8 +603,8 @@ export interface SpawnResult {
   signal: string | null;
 }
 
-type PipeSpawnOptions = { stdout: "pipe"; stderr: "pipe"; cwd?: string };
-type InheritSpawnOptions = { stdout: "inherit"; stderr: "inherit"; cwd?: string };
+type PipeSpawnOptions = { stdout: "pipe"; stderr: "pipe"; cwd?: string; env?: Record<string, string | undefined> };
+type InheritSpawnOptions = { stdout: "inherit"; stderr: "inherit"; cwd?: string; env?: Record<string, string | undefined> };
 
 /**
  * Start workers in their own process group on POSIX hosts.
@@ -615,9 +615,9 @@ type InheritSpawnOptions = { stdout: "inherit"; stderr: "inherit"; cwd?: string 
  * process group; Windows (or hosts without `setsid`) keeps the existing direct
  * spawn behaviour and falls back to killing the subprocess itself.
  */
-function spawnManaged(cmd: string, args: string[], options: PipeSpawnOptions): Bun.ReadableSubprocess;
-function spawnManaged(cmd: string, args: string[], options: InheritSpawnOptions): Bun.Subprocess<any, "inherit", "inherit">;
-function spawnManaged(
+export function spawnManaged(cmd: string, args: string[], options: PipeSpawnOptions): Bun.ReadableSubprocess;
+export function spawnManaged(cmd: string, args: string[], options: InheritSpawnOptions): Bun.Subprocess<any, "inherit", "inherit">;
+export function spawnManaged(
   cmd: string,
   args: string[],
   options: PipeSpawnOptions | InheritSpawnOptions,
@@ -628,7 +628,7 @@ function spawnManaged(
 }
 
 /** Terminate a worker and every descendant in its private process group. */
-function killManaged(proc: Bun.Subprocess, signal: "SIGTERM" | "SIGKILL" = "SIGTERM"): void {
+export function killManaged(proc: Bun.Subprocess, signal: "SIGTERM" | "SIGKILL" = "SIGTERM"): void {
   const pid = proc.pid;
   if (process.platform !== "win32" && typeof pid === "number" && pid > 1 && Bun.which("setsid")) {
     try {

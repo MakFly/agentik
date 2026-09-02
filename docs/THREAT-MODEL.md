@@ -18,6 +18,11 @@ Untrusted content is **data**, never the instruction channel. High-blast-radius 
 3. **Tool allowlists** on bounded tasks (least privilege / excessive-agency control).
 4. **Blast-radius tags** on the catalog. High = `awaiting_approval` until the human decides.
 5. **Fail closed** on unknown tools, path escape, and unattended destructive executors.
+6. **Command policy** (`src/command-policy.ts`): one rule set classifies every shell command
+   `medium | high | hardline` over all its segments (`&&`, `;`, `|`, `bash -c`, `sudo`, `env`…).
+   High needs an approval; hardline (`rm -rf /`, `mkfs`/`dd` on a block device, fork bomb) is
+   refused before any ApprovalRequest exists, so a session `--yolo` cannot release it. `run_command`
+   runs a single argv with no shell, a scrubbed environment and a bounded capture.
 
 ## Sources (retrieved and attributed)
 

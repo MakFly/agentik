@@ -1,5 +1,6 @@
 import { detectInjection, isGoalHijack } from "./injection.ts";
-import { blastForCall, REVIEWER_ONLY_TOOLS, specFor } from "./tools.ts";
+import { classifyCommand } from "./command-policy.ts";
+import { blastForCall, REVIEWER_ONLY_TOOLS, runCommandInput, specFor } from "./tools.ts";
 import { wrapTrusted } from "./trust.ts";
 import type {
   ApprovalRequest,
@@ -108,6 +109,12 @@ export class Orchestrator {
     if (!spec) {
       this.emit("tool_blocked", { tool: call.tool, reason: "unknown_tool" });
       return { allowed: false, pendingApproval: false, reason: "unknown_tool", findings };
+    }
+    // Hardline commands (`rm -rf /`, `mkfs /dev/sda`, fork bomb…) never become an ApprovalRequest:
+    // there is nothing for the human — or a session `--yolo` — to release.
+    if (call.tool === "run_command" && classifyCommand(runCommandInput(call.args)) === "hardline") {
+      this.emit("tool_blocked", { tool: call.tool, reason: "hardline" });
+      return { allowed: false, pendingApproval: false, reason: "hardline", findings };
     }
     // Workers and subagents never write the agent's own memory; only the review fork does.
     if (REVIEWER_ONLY_TOOLS.has(call.tool) && call.proposedBy !== "reviewer") {

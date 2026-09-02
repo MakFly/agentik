@@ -1,9 +1,11 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
+import { parseArgv } from "./argv.ts";
+import { killManaged, spawnManaged } from "./backends.ts";
+import { classifyCommand } from "./command-policy.ts";
 import { readConfig } from "./config.ts";
 import { classifyIncident, mergeIncidents, resolveIncident } from "./incidents.ts";
-import { detectInjection } from "./injection.ts";
 import { memoryApply, type MemoryOperation, type MemoryTarget } from "./memory-store.ts";
 import { newPendingId, stagePending, type PendingSkillOp } from "./pending.ts";
 import { applySkillCreate, applySkillPatch, skillCreateProblem, skillFile, viewSkill } from "./skill-ops.ts";
@@ -23,7 +25,7 @@ export const TOOL_CATALOG: ToolSpec[] = [
   {
     name: "run_command",
     blastRadius: "medium",
-    description: "Run a debug/build command in the workspace (destructive argv upgraded to high)",
+    description: "Run ONE command in the workspace (argv, no shell: no pipes or chains; destructive argv is high-blast, rm -rf / and friends are refused outright; timeout_s ≤120)",
   },
   {
     name: "sandbox_ops",
@@ -74,8 +76,30 @@ export const REVIEWER_ONLY_TOOLS = new Set(["memory", "skill_manage", "incident"
 /** A postmortem cause is a sentence, not a transcript. */
 export const INCIDENT_CAUSE_MAX = 120;
 
-const HIGH_CMD =
-  /\b(rm\s+-[a-zA-Z]*f|sudo|mkfs|dd\s+if=|shutdown|reboot|drop\s+database|chmod\s+777|curl[^\n]*\|\s*(ba)?sh|wipe|mkfs\.\w+)\b/i;
+/** `run_command` input as the policy sees it: an argv array, or the string the model sent. */
+export function runCommandInput(args: Record<string, unknown>): string | string[] {
+  if (Array.isArray(args.argv)) return (args.argv as unknown[]).map(String);
+  const cmd = args.cmd ?? args.command;
+  return typeof cmd === "string" ? cmd : "";
+}
+
+/** Wall-clock bound of one `run_command`, seconds. */
+export const RUN_COMMAND_TIMEOUT_DEFAULT_S = 30;
+export const RUN_COMMAND_TIMEOUT_MAX_S = 120;
+/** Captured stdout/stderr cap per stream. */
+export const RUN_COMMAND_CAPTURE_MAX = 2 * 1024 * 1024;
+
+/** Env vars a workspace command never inherits. Suffix rules plus the well-known API keys. */
+const SECRET_ENV = /(_KEY|_TOKEN|_SECRET|_PASSWORD|_PASSWD|_CREDENTIALS?)$|^(GH_TOKEN|GITHUB_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY|XAI_API_KEY|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|NPM_TOKEN)$/i;
+
+export function scrubbedEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(source)) {
+    if (v === undefined || SECRET_ENV.test(k)) continue;
+    out[k] = v;
+  }
+  return out;
+}
 
 export function specFor(name: string): ToolSpec | undefined {
   return TOOL_CATALOG.find((t) => t.name === name);
@@ -84,10 +108,7 @@ export function specFor(name: string): ToolSpec | undefined {
 export function blastForCall(tool: string, args: Record<string, unknown>): BlastRadius {
   const spec = specFor(tool);
   const base = spec?.blastRadius ?? "high";
-  if (tool === "run_command") {
-    const blob = JSON.stringify(args);
-    if (HIGH_CMD.test(blob)) return "high";
-  }
+  if (tool === "run_command" && classifyCommand(runCommandInput(args)) !== "medium") return "high";
   return base;
 }
 
@@ -181,35 +202,63 @@ async function writeFileTool(call: ToolCall, host: ToolHost): Promise<ToolResult
 }
 
 async function runCommandTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {
-  const argv = Array.isArray(call.args.argv)
-    ? (call.args.argv as unknown[]).map(String)
-    : String(call.args.cmd ?? "pwd").split(/\s+/);
-  if (argv.length === 0) {
-    return { callId: call.id, ok: false, output: "empty command" };
-  }
-  if (blastForCall("run_command", call.args) === "high") {
+  const parsed = parseArgv(Array.isArray(call.args.argv) ? (call.args.argv as unknown[]).map(String) : typeof (call.args.cmd ?? call.args.command) === "string" ? String(call.args.cmd ?? call.args.command) : undefined);
+  if (!parsed.ok) return { callId: call.id, ok: false, output: parsed.problem };
+  const { argv } = parsed;
+  const level = classifyCommand(argv);
+  if (level !== "medium") {
     return {
       callId: call.id,
       ok: false,
-      output: "command classified as high-blast-radius; not executed",
+      output: level === "hardline"
+        ? "command is hardline (never executed, not even with --yolo)"
+        : "command classified as high-blast-radius; not executed",
     };
   }
-  const proc = Bun.spawn(argv, {
-    cwd: host.workspace,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const timeout = setTimeout(() => proc.kill(), 15_000);
+  const rawTimeout = Number(call.args.timeout_s ?? RUN_COMMAND_TIMEOUT_DEFAULT_S);
+  const timeoutS = Number.isFinite(rawTimeout) ? Math.min(RUN_COMMAND_TIMEOUT_MAX_S, Math.max(1, Math.floor(rawTimeout))) : RUN_COMMAND_TIMEOUT_DEFAULT_S;
+  let proc: Bun.ReadableSubprocess;
+  try {
+    proc = spawnManaged(argv[0], argv.slice(1), { cwd: host.workspace, stdout: "pipe", stderr: "pipe", env: scrubbedEnv() });
+  } catch (err) {
+    return { callId: call.id, ok: false, output: `cannot start ${argv[0]}: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  let timedOut = false;
+  const term = setTimeout(() => {
+    timedOut = true;
+    killManaged(proc);
+    setTimeout(() => killManaged(proc, "SIGKILL"), 2_000).unref?.();
+  }, timeoutS * 1000);
   const [stdout, stderr, exit] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
+    readCapped(proc.stdout as ReadableStream<Uint8Array>, RUN_COMMAND_CAPTURE_MAX),
+    readCapped(proc.stderr as ReadableStream<Uint8Array>, RUN_COMMAND_CAPTURE_MAX),
     proc.exited,
   ]);
-  clearTimeout(timeout);
-  const output = `exit ${exit}\n${stdout}${stderr ? "\nstderr:\n" + stderr : ""}`;
+  clearTimeout(term);
+  const head = timedOut ? `timeout after ${timeoutS}s (killed)\nexit ${exit}` : `exit ${exit}`;
+  const output = `${head}\n${stdout}${stderr ? "\nstderr:\n" + stderr : ""}`;
   const env = wrapUntrusted(output, `tool:run_command`, "tool_output");
-  void detectInjection(env.body, "tool_output", env.origin);
-  return { callId: call.id, ok: exit === 0, output: env.body };
+  return { callId: call.id, ok: exit === 0 && !timedOut, output: env.body };
+}
+
+/** Drain a stream into a string, keeping at most `max` bytes; the rest is read and dropped. */
+async function readCapped(stream: ReadableStream<Uint8Array>, max: number): Promise<string> {
+  const decoder = new TextDecoder();
+  let text = "";
+  let kept = 0;
+  let dropped = 0;
+  for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
+    if (kept >= max) {
+      dropped += chunk.length;
+      continue;
+    }
+    const take = Math.min(chunk.length, max - kept);
+    text += decoder.decode(chunk.subarray(0, take), { stream: true });
+    kept += take;
+    dropped += chunk.length - take;
+  }
+  text += decoder.decode();
+  return dropped > 0 ? `${text}\n…[${dropped} bytes dropped — capture cap ${max}]` : text;
 }
 
 async function sandboxOpsTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {
