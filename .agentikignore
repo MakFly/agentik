@@ -1,0 +1,6 @@
+# Benchmark archives: run reports of agentik itself. They quote source lines and symbol names,
+# so indexing them makes `agentik search` return its own measurements instead of the code
+# (seen live: `search checkSeal` returned bench/index-ab/after-fix1/index.json).
+bench/**/*.json
+bench/**/*.stderr
+bench/**/*.txt
