@@ -3,6 +3,7 @@ import { lstat, mkdir, readdir, readFile, readlink, realpath, rename, rm, symlin
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { agentikHome, memoryPaths } from "./home.ts";
+import { memoryContentProblem } from "./memory-store.ts";
 
 /**
  * Skill names are *class-level*: what kind of work this is, not which session produced it.
@@ -130,8 +131,11 @@ export async function upsertSkill(
     const dp = skillDescriptionProblem(opts.description);
     if (dp) throw new Error(`skill "${opts.name}": ${dp}`);
   }
+  const rendered = renderSkillMarkdown(opts);
+  const tp = memoryContentProblem(rendered);
+  if (tp) throw new Error(`skill "${opts.name}" refused: ${tp}`);
   await mkdir(destDir, { recursive: true });
-  await writeFile(dest, renderSkillMarkdown(opts), "utf8");
+  await writeFile(dest, rendered, "utf8");
   if (opts.linkHarness) await linkHarnessSkill(opts.name, destDir);
   return { path: dest, name: opts.name, action };
 }
@@ -143,11 +147,14 @@ export async function draftSkill(
   if (problem) throw new Error(`invalid skill name "${opts.name}": ${problem}`);
   const dp = skillDescriptionProblem(opts.description);
   if (dp) throw new Error(`skill "${opts.name}": ${dp}`);
+  const rendered = renderSkillMarkdown(opts);
+  const tp = memoryContentProblem(rendered);
+  if (tp) throw new Error(`skill "${opts.name}" refused: ${tp}`);
   const paths = memoryPaths(agentikHome(opts.home));
   const dir = join(paths.pendingSkills, opts.name);
   await mkdir(dir, { recursive: true });
   const path = join(dir, "SKILL.md");
-  await writeFile(path, renderSkillMarkdown(opts), "utf8");
+  await writeFile(path, rendered, "utf8");
   return { path, name: opts.name };
 }
 
@@ -165,6 +172,8 @@ export async function approveSkill(
   } catch {
     return { error: `no pending skill ${name}` };
   }
+  const tp = memoryContentProblem(body);
+  if (tp) return { error: `approve refused: ${tp} — the draft stays pending, edit or reject it` };
   const destDir = join(paths.skills, name);
   await mkdir(destDir, { recursive: true });
   const dest = join(destDir, "SKILL.md");
@@ -259,11 +268,24 @@ export function harnessSkillDirs(home = homedir()): string[] {
   return [join(home, ".claude", "skills"), join(home, ".grok", "skills"), join(home, ".codex", "skills")];
 }
 
+/**
+ * Symlink a skill into the three harness homes. The body is scanned first: a linked skill is
+ * loaded into every prompt of every harness, so a poisoned SKILL.md must never get there.
+ * Throws `link refused: <problem>`.
+ */
 export async function linkHarnessSkill(
   name: string,
   srcDir: string,
   opts?: { harnessHome?: string },
 ): Promise<string[]> {
+  let body = "";
+  try {
+    body = await readFile(join(srcDir, "SKILL.md"), "utf8");
+  } catch {
+    throw new Error(`link refused: no SKILL.md in ${srcDir}`);
+  }
+  const tp = memoryContentProblem(body);
+  if (tp) throw new Error(`link refused: ${tp}`);
   const linked: string[] = [];
   for (const dir of harnessSkillDirs(opts?.harnessHome)) {
     const dest = join(dir, name);

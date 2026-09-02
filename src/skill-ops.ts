@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { agentikHome, memoryPaths } from "./home.ts";
+import { memoryContentProblem } from "./memory-store.ts";
 import { skillDescriptionProblem, upsertSkill } from "./skill-factory.ts";
 import { recordSkillUsage, type SkillCreator } from "./skill-usage.ts";
 
@@ -16,6 +17,13 @@ export interface SkillOpResult {
   output: string;
   artifact?: string;
 }
+
+/**
+ * A skill body is loaded into a prompt every time the skill is used: it is the same threat
+ * surface as MEMORY.md, so it gets the same scan (secrets, injections) on every write and on
+ * link. A refusal is not a write — "code never writes a skill" holds.
+ */
+export const skillTextProblem = memoryContentProblem;
 
 export function skillFile(name: string, home?: string): string {
   return join(memoryPaths(agentikHome(home)).skills, name, "SKILL.md");
@@ -38,7 +46,10 @@ export async function applySkillPatch(
   }
   const n = body.split(oldStr).length - 1;
   if (n !== 1) return { ok: false, output: `patch: old_string must match exactly once (matched ${n})` };
-  await writeFile(file, body.replace(oldStr, newStr), "utf8");
+  const next = body.replace(oldStr, newStr);
+  const problem = skillTextProblem(newStr) ?? skillTextProblem(next);
+  if (problem) return { ok: false, output: `patch refused: ${problem}` };
+  await writeFile(file, next, "utf8");
   await recordSkillUsage(name, "patch", { home: opts?.home });
   return { ok: true, output: `patched ${name}`, artifact: `skills/${name}/SKILL.md` };
 }
@@ -51,6 +62,8 @@ export function skillCreateProblem(name: string, args: { description?: unknown; 
   const body = String(args.body ?? "").trim();
   if (body.length < 80) return "create: body must be a real procedure (When to use / Procedure / Pitfalls / Verification), not a session log";
   if (body.length > 100_000) return "create: body over 100k chars";
+  const tp = skillTextProblem(String(args.description ?? "")) ?? skillTextProblem(body);
+  if (tp) return `create refused: ${tp}`;
   return undefined;
 }
 

@@ -77,6 +77,10 @@ Invariants (tests enforce them):
 - Code never writes a skill; only the review (a model) or a human does. Skill names are classes
   (`pwa-drawer-swipe`), never session titles; `skillNameProblem()` rejects `fix-…`, ticket ids,
   dates, mid-word cuts, >40 chars. No fallback name.
+- Every skill write scans description **and body** with `skillTextProblem` (= `memoryContentProblem`:
+  secrets, injections EN/FR): `skill_manage create|patch` (new_string and the resulting body), `upsertSkill`,
+  `draftSkill`, `approveSkill` (the pending body as it is then), and `agentik skills link` (reads SKILL.md,
+  `link refused: <problem>`, exit 1). `pin` only warns. A refusal is not a write.
 - Harness symlinks (`~/.claude|.grok|.codex/skills`) are opt-in: `agentik skills pin <n>` then
   `link <n>`. `agentik skills unlink` / `archive` undo the old pollution, idempotent, nothing deleted.
 - The cap is a consolidation forcing function, not an overflow. There is no WARM store.

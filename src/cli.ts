@@ -64,7 +64,7 @@ import { join } from "node:path";
 import { approveMemory, approveSkillOps, formatPendingMemory, formatPendingSkills, rejectPending, type ApprovalOutcome } from "./approval.ts";
 import { curateSkills, formatCurateResult, rollbackSkills } from "./curator.ts";
 import { isPendingId, listPending, pendingCounts, readPending, type PendingMemoryOp, type PendingSkillOp } from "./pending.ts";
-import { viewSkill } from "./skill-ops.ts";
+import { skillFile, skillTextProblem, viewSkill } from "./skill-ops.ts";
 import { describeUsage, readSkillUsage, recordSkillUsage } from "./skill-usage.ts";
 import {
   clampSubagentCount,
@@ -1037,6 +1037,15 @@ function homeFor(flags: { agentikHome?: string; profile?: string }): string {
   return agentikHome(flags.agentikHome, flags.profile);
 }
 
+/** The scan a skill body gets on link, as a warning for `pin`. Undefined when clean or absent. */
+async function skillBodyProblem(name: string, home: string): Promise<string | undefined> {
+  try {
+    return skillTextProblem(await readFile(skillFile(name, home), "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
 const CONFIG_EXEMPT = new Set(["probe", "context", "postmortem"]);
 const KNOWN_COMMANDS = new Set(["probe", "spawn", "memory", "skill", "skills", "harvest", "context", "review", "postmortem", "run"]);
 
@@ -1434,6 +1443,11 @@ async function skillCmd(args: string[]): Promise<number> {
       console.error(SKILL_USAGE);
       return 2;
     }
+    if (sub === "pin") {
+      // Pinning is bookkeeping, not a prompt load: warn, do not refuse.
+      const warn = await skillBodyProblem(name, home);
+      if (warn) console.error(`agentik skills pin: warning — ${name}: ${warn} (link will be refused)`);
+    }
     const pinned = await pinSkill(name, { home, unpin: sub === "unpin" });
     console.log(`pinned: ${pinned.join(", ") || "(none)"}`);
     return 0;
@@ -1445,7 +1459,13 @@ async function skillCmd(args: string[]): Promise<number> {
       return 2;
     }
     const dir = join(memoryPaths(agentikHome(home)).skills, name);
-    const linked = await linkHarnessSkill(name, dir);
+    let linked: string[];
+    try {
+      linked = await linkHarnessSkill(name, dir);
+    } catch (err) {
+      console.error(`agentik skills link: ${err instanceof Error ? err.message : String(err)}`);
+      return 1;
+    }
     console.log(`linked ${name} into ${linked.length} harness home(s)`);
     return 0;
   }
