@@ -290,6 +290,50 @@ export interface OrchEvent {
   detail: Record<string, unknown>;
 }
 
+/** One tool call of a task, as evidence: what ran, whether it worked, how long, where the full output is. */
+export interface TaskCallEvidence {
+  callId: string;
+  tool: string;
+  ok: boolean;
+  artifact?: string;
+  durationMs: number;
+  outputPath?: string;
+}
+
+export interface TaskAcceptanceResult {
+  ok: boolean;
+  problems: string[];
+  command?: { cmd: string; ok: boolean; output: string };
+}
+
+/**
+ * What one bounded task actually did. `done` = the worker finished (empty toolCalls or maxSteps)
+ * and the acceptance, if any, passed; `stalled` = no usable answer; `blocked` = a dependency did
+ * not finish, or every call waits for an approval; `failed` = the acceptance said no.
+ */
+export interface TaskResult {
+  taskId: string;
+  assignee: WorkerRole;
+  backend: string;
+  status: "done" | "stalled" | "blocked" | "failed";
+  reason?: string;
+  /** The worker's last prose, ≤ 2000 chars. */
+  summary: string;
+  artifacts: string[];
+  claims: Claim[];
+  evidence: {
+    steps: number;
+    executed: number;
+    blocked: number;
+    calls: TaskCallEvidence[];
+    acceptance?: TaskAcceptanceResult;
+  };
+  pendingApprovalIds: string[];
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+}
+
 export interface RunReport {
   status: RunStatus;
   goal: Goal | null;
@@ -311,6 +355,8 @@ export interface RunReport {
   planSource: "model" | "model_repaired" | "fallback";
   /** Why the model plan(s) were rejected, when they were. */
   planProblems: string[];
+  /** One structured result per planned task, in plan order. */
+  taskResults: TaskResult[];
 }
 
 export interface GoalClass {

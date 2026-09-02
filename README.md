@@ -210,6 +210,12 @@ non-destructive check command). One `PLAN_REJECTED` reprompt, then the regex pla
 `plan: model | model_repaired | fallback` and lists the problems; `--plan-only` prints the plan and
 stops.
 
+**Each task has its own context and a structured result.** A task sees the goal, the results of
+the tasks it depends on (as data) and its own tool outputs — not the whole run's. It ends as a
+`TaskResult` (status `done | stalled | blocked | failed`, summary, artifacts, every call with its
+duration, acceptance outcome); the orchestrator checks the plan's acceptance itself (artifacts moved,
+tools ran, a non-destructive command exits 0) instead of trusting the worker's "done".
+
 **Big tool outputs go to disk.** Over 8000 chars, a tool result is written to
 `.agentik/tool-results/<callId>.txt` (secrets and injections masked per line) and the model sees head +
 a `read_file {path, offset, limit}` pointer + tail; the injection scan still covers the whole body.

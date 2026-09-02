@@ -162,6 +162,22 @@ bad plan hands over to `buildPlan` (regex). `RunReport.planSource: model | model
 deps b,c ← a; e ← all. The plan is always printed before ACT (`onPlan` → `formatPlan`); `--plan-only`
 prints it, status `planned`, exit 0, no ACT.
 
+## Task results (`agentik run`)
+
+`runLoop` runs each planned task through `runTask(task, deps)` with its **own** context: the results
+of its dependencies as DATA envelopes `task:<id>` (`{taskId, status, summary, artifacts}`), then only
+its own prose and tool outputs — no run-wide heap. Every task ends as a `TaskResult {taskId, assignee,
+backend, status done|stalled|blocked|failed, reason?, summary ≤2000, artifacts, claims, evidence
+{steps, executed, blocked, calls[{callId, tool, ok, artifact?, durationMs, outputPath?}], acceptance?},
+pendingApprovalIds, startedAt, endedAt, durationMs}` (`RunReport.taskResults`, plan order). Call ids
+are monotone across the run (`<role>-<tool>-<seq>`). A dependency that is not `done` blocks its
+dependants without a model call. Acceptance is checked by the orchestrator, not taken from the worker:
+`expectArtifacts` via snapshot/untouched, `requireTools`, `command` executed as `proposedBy:
+orchestrator` (medium only, validated by the plan schema); a failed acceptance is status `failed`.
+`mergeClaims` dedups on (text, url). The synthesizer reads the task results and the retrieved sources
+as DATA. `formatReport` prints the whole synthesis and a `tasks:` block with status, duration, steps,
+ran, acceptance.
+
 ## Tool output spill (`agentik run`)
 
 `src/tool-results.ts`: a tool output over `TOOL_OUTPUT_INLINE_MAX` (8000 chars) is written whole
