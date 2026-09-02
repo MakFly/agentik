@@ -33,6 +33,7 @@ export { resolveWorkspaceRoot, workspaceKeys } from "./workspace.ts";
 export { logMemoryOp, listMemoryOps, formatMemoryOp, type MemoryOpRecord } from "./memory-log.ts";
 export { writeSkillFile, undoSkillWrite, listSkillBackups } from "./skill-write.ts";
 export { extractUsage, formatRunUsage, addRunUsage, emptyRunUsage, type RunUsage } from "./usage.ts";
+export { shapeOutput, SHAPERS, FAILURE_LINE_RE, isFailureLine, type ShapeResult, type Shaper } from "./shape.ts";
 export { writeRun, listRuns, readRun, newRunId, formatRunLine, type RunRecord, type RunSummary } from "./runs.ts";
 export { retainNote, recall, recallHot, readHot, readUser, HOT_CAP, USER_CAP } from "./memory.ts";
 export {

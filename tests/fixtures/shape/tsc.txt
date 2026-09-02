@@ -1,0 +1,4 @@
+src/tools.ts(268,10): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+  Type 'undefined' is not assignable to type 'string'.
+src/tools.ts(271,3): error TS2741: Property 'raw' is missing in type '{ callId: string; ok: boolean; output: string; artifact?: string | undefined; shaped?: { shaper: string; savedChars: number; } | undefined; }' but required in type 'ToolResult'.
+src/loop.ts(318,44): error TS2339: Property 'shaped' does not exist on type 'ToolResult'.

@@ -1,0 +1,8 @@
+src/loop.ts:9:import { spillToolResult } from "./tool-results.ts";
+src/loop.ts:318:    const spilled = await spillToolResult(opts.workspace, call.id, result.output, `tool:${call.tool}`);
+src/tool-results.ts:47:export async function spillToolResult(
+src/tool-results.ts:55:  const injection = detectInjection(output, "tool_output", origin);
+tests/tool-results.test.ts:6:import { maskLines, spillToolResult, TOOL_OUTPUT_HEAD, TOOL_OUTPUT_INLINE_MAX, TOOL_OUTPUT_TAIL, TOOL_RESULTS_DIR } from "../src/tool-results.ts";
+tests/tool-results.test.ts:13:    const r = await spillToolResult(ws, "worker_a-run_command-0", "x".repeat(TOOL_OUTPUT_INLINE_MAX), "tool:run_command");
+tests/tool-results.test.ts:26:    const r = await spillToolResult(ws, "worker_a-run_command-1", output, "tool:run_command");
+CLAUDE.md:151:`src/tool-results.ts`: a tool output over `TOOL_OUTPUT_INLINE_MAX` (8000 chars) is written whole to `<workspace>/.agentik/tool-results/<callId>.txt` (each line that reads as a secret or an injection replaced by `[BLOCKED: …]`, the rest byte for byte); the envelope keeps head 3000 + a pointer + tail 2000

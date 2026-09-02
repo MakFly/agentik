@@ -1,0 +1,32 @@
+bun test v1.2.19 (aad3abea)
+
+tests/shape.test.ts:
+(pass) shape > git status is grouped [1.02ms]
+(pass) shape > git diff drops headers [0.41ms]
+(pass) shape > git log is one line per commit [0.22ms]
+(pass) shape > test runner collapses passes [0.35ms]
+(pass) shape > tsc groups by file [0.18ms]
+(pass) shape > rg groups by file [0.20ms]
+(pass) shape > find is a compact tree [0.15ms]
+(pass) shape > generic merges identical lines [0.05ms]
+(pass) shape > exit line first [0.09ms]
+(skip) shape > live rtk parity
+12 |   test("failure lines survive", () => {
+13 |     const shaped = shapeOutput(["bun", "test"], raw, "", 1);
+14 |     expect(shaped.text).toContain("(fail) suite > b");
+                            ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "(fail) suite > b"
+Received: "0 passed"
+
+      at <anonymous> (/home/kev/lab/agentik/tests/shape.test.ts:14:29)
+(fail) shape > failure lines survive [1.88ms]
+(pass) shape > stderr is verbatim [0.07ms]
+(pass) shape > savedChars is never negative [0.03ms]
+
+ 11 pass
+ 1 skip
+ 1 fail
+ 14 expect() calls
+Ran 13 tests across 1 file. [48.00ms]

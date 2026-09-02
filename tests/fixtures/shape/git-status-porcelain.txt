@@ -1,0 +1,29 @@
+ M src/module-1/index.ts
+ M src/module-2/index.ts
+ M src/module-3/index.ts
+ M src/module-4/index.ts
+ M src/module-5/index.ts
+ M src/module-6/index.ts
+ M src/module-7/index.ts
+ M src/module-8/index.ts
+ M src/module-9/index.ts
+ M src/module-10/index.ts
+ M src/module-11/index.ts
+ M src/module-12/index.ts
+ M src/module-13/index.ts
+ M src/module-14/index.ts
+ M src/module-15/index.ts
+ M src/module-16/index.ts
+ M src/module-17/index.ts
+ M src/module-18/index.ts
+ M src/module-19/index.ts
+ M src/module-20/index.ts
+ M README.md
+ M CLAUDE.md
+ M docs/THREAT-MODEL.md
+M  src/tools.ts
+A  src/shape.ts
+ D docs/old.md
+R  src/a.ts -> src/b.ts
+?? tests/shape.test.ts
+?? tests/fixtures/shape/

@@ -1,0 +1,21 @@
+commit f1e04795b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7
+Author: Kévin Aubrée <kev@example.com>
+Date:   Tue Sep 1 18:02:11 2026 +0200
+
+    review eval: a case whose backend errored never passes
+
+    A case that failed because the backend threw used to score green
+    on `mustNot` rules alone.
+
+commit 0db2a21c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a
+Author: Kévin Aubrée <kev@example.com>
+Date:   Tue Sep 1 15:40:03 2026 +0200
+
+    review: known incidents as DATA in a normal review; eval scores only skill writes that landed
+
+commit 4157b82d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b
+Merge: 78ea8ca ea499e5
+Author: Kévin Aubrée <kev@example.com>
+Date:   Mon Aug 31 22:10:45 2026 +0200
+
+    live fixes: a claim without text no longer crashes the report; a throwing review tool is a refusal

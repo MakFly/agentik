@@ -1,0 +1,28 @@
+diff --git a/src/tools.ts b/src/tools.ts
+index 3f2a1b4..9c8d7e6 100644
+--- a/src/tools.ts
++++ b/src/tools.ts
+@@ -262,8 +263,14 @@ async function runCommandTool(call: ToolCall, host: ToolHost): Promise<ToolResul
+   clearTimeout(term);
+   const head = timedOut ? `timeout after ${timeoutS}s (killed)\nexit ${exit}` : `exit ${exit}`;
+-  const output = `${head}\n${stdout}${stderr ? "\nstderr:\n" + stderr : ""}`;
+-  const env = wrapUntrusted(output, `tool:run_command`, "tool_output");
+-  return { callId: call.id, ok: exit === 0 && !timedOut, output: env.body };
++  const raw = `${head}\n${stdout}${stderr ? "\nstderr:\n" + stderr : ""}`;
++  const shaped = shapeOutput(argv, stdout, stderr, timedOut ? null : exit);
++  if (!shaped.shaper) {
++    const env = wrapUntrusted(raw, `tool:run_command`, "tool_output");
++    return { callId: call.id, ok: exit === 0 && !timedOut, output: env.body };
++  }
++  return { callId: call.id, ok: exit === 0 && !timedOut, output: raw, raw };
+ }
+diff --git a/src/shape.ts b/src/shape.ts
+new file mode 100644
+index 0000000..a1b2c3d
+--- /dev/null
++++ b/src/shape.ts
+@@ -0,0 +1,4 @@
++export interface ShapeResult {
++  text: string;
++  savedChars: number;
++}
