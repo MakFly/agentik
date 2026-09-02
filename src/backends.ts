@@ -935,7 +935,7 @@ function backendAt(spec: string, index: number, named: string | undefined, opts:
     const cycle = autoCycle(opts);
     if (cycle.length === 0) {
       throw new Error(
-        "no authenticated worker CLI available (claude / codex / grok) — run `agentik probe`",
+        "no authenticated worker CLI available (claude / codex / grok) — run `agentik probe`, or pass --backend mock for an offline demo run",
       );
     }
     return cycle[index % cycle.length];

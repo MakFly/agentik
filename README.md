@@ -47,7 +47,7 @@ The root model conducts. `/ak` adapts 0–5 slots (never 6). Each slot has names
 
 ## CLI
 
-Same shape as `cla`, `grok --yolo`, `cc` (`codex --yolo`): prompt first, optional `--yolo`. (Policy engine / gated run, not the daily entry.)
+Same shape as `cla`, `grok --yolo`, `cc` (`codex --yolo`): prompt first, optional `--yolo`. Workers are the **authenticated CLIs in rotation by default** (`--backend auto`: claude-sonnet, codex, claude-opus, grok); with none authenticated the run exits 2 (`agentik probe`, or `--backend mock` for an offline demo — mock is never the default). `--yolo` is only the session approval of high-blast tools.
 
 ```bash
 # on PATH (~/.local/bin/agentik) and alias `agk='agentik --yolo'`

@@ -88,8 +88,9 @@ Harvest records the run in `sessions.sqlite` (searchable with `agentik memory se
 If the user asks for a **gated** run, or you need a machine-checkable trace, execute in the workspace:
 
 ```bash
-agentik --workers <1-5> --backend mock "<goal>"
-# live workers (same gate): add --yolo when the human launched yolo
+agentik --workers <1-5> "<goal>"                 # workers = the authenticated CLIs (auto), gated
+agentik --workers <1-5> --yolo "<goal>"          # + session approval of high-blast tools (never hardline)
+agentik --workers <1-5> --backend mock "<goal>"  # offline demo: mock is explicit, never the default
 ```
 
 Do not use that as the default when you can spawn native subagents.

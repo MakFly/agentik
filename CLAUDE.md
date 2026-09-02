@@ -251,6 +251,9 @@ command × level table (~80 rows) and the benign-neighbour check for every rule.
 
 - `agentik probe` = real auth checks, no model tokens (`claude auth status`, `codex login status`
   on stderr, `grok models`), cached 15 min in `backends.json`. `--version` is not a probe.
+- **`auto` is the default** (`backendSpec = flags.backend ?? "auto"`); `--yolo` is a session approval
+  only; no authenticated harness → exit 2 « run `agentik probe`, or pass --backend mock »; mock is
+  explicit only (every test passes `--backend mock`).
 - `--backend auto` rotation: claude-sonnet, codex, claude-opus, grok — grok never on worker_a/b
   (it expires 2026-11-16). Unknown backend name = error, never a mock. Dead backend mid-run →
   failover + `backendSwitches` in the report. `MockBackend` lives in `src/mock-backend.ts` (the only

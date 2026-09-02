@@ -181,13 +181,16 @@ Options:
                                ~/.agentik/profiles/NAME (env AGENTIK_PROFILE)
   --agentik-home DIR           Explicit home, wins over --profile and AGENTIK_HOME
   --backend mock|auto|cla|claude|grok|codex|cc
-                               Worker pair (default: mock; --yolo implies auto)
+                               Workers (default: auto = the authenticated CLIs in rotation
+                               claude-sonnet, codex, claude-opus, grok; exit 2 when none is
+                               authenticated — run "agentik probe" or pass --backend mock)
   --workers N                  Subagent count 1–${MAX_SUBAGENTS} (default 2, hard cap ${MAX_SUBAGENTS})
   --worker-a mock|cla|sonnet|opus|grok|codex|cc
   --worker-b mock|cla|sonnet|opus|grok|codex|cc
   --worker-c / --worker-d / --worker-e
                                Backends for extra subagents
-  --yolo                       Session approval (you launched yolo) + live CLIs
+  --yolo                       Session approval: every high-blast tool of this run is released
+                               (same posture as grok --yolo / cla / cc). Does not choose workers.
   --max-steps N                Auto-run cap per worker task (default: 8)
   --plan-only                  Print the validated plan (model, model_repaired or fallback) and
                                stop before ACT: status planned, exit 0
@@ -265,7 +268,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   const workspace = resolve(flags.workspace ?? process.cwd());
   await mkdir(workspace, { recursive: true });
   const home = homeFor(flags);
-  const backendSpec = flags.backend ?? (flags.yolo ? "auto" : "mock");
+  // Default: the authenticated CLIs in rotation. --yolo is a session approval, nothing more; a
+  // mock run is opt-in (`--backend mock`) so a demo backend never poses as real work.
+  const backendSpec = flags.backend ?? "auto";
   const workerCount = clampSubagentCount(flags.workers ?? 2);
   const names = [flags.workerA, flags.workerB, flags.workerC, flags.workerD, flags.workerE];
   // Only probe when a real CLI could be routed to. A mock run must stay offline.
