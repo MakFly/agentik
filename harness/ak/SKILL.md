@@ -91,7 +91,9 @@ It prints USER profile, MEMORY (GLOBAL durable facts, `~/.agentik/memory/MEMORY.
 
 To load the body of a skill from the index, run `agentik skills view <name>` (never `cat` it: the view is what keeps the skill alive for the curator).
 
-**After every /ak** (even 0-slot, even a one-liner you finished yourself), write a short transcript of what happened — the user's goal, corrections or preferences the user stated *explicitly*, what was tried, what worked, what a future run must know — to a temp file, then:
+**Write the transcript as you go**, not from memory at the end: open `/tmp/ak-transcript.md` when the run starts and append as things happen — the user's goal, every correction or preference the user states (**verbatim**, quoted), each `agentik spawn` with its exit code and one line of outcome, what was tried, what worked, what a future run must know. A long session that ends abruptly (context reset, user leaves) still has a transcript on disk; the review bounds it (head 36k + tail 24k of 60k) so keep the corrections and the conclusion at the ends. If the session is abandoned or only partly done, harvest it anyway with `--status partial --cause "<why>"`.
+
+**After every /ak** (even 0-slot, even a one-liner you finished yourself), finish that transcript, then:
 
 ```bash
 agentik harvest "<the original goal>" --workspace "$PWD" --transcript /tmp/ak-transcript.md \
