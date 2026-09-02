@@ -190,6 +190,18 @@ mutations synchronous, ids unique, **one run in flight per role**. `--concurrenc
 stays `awaiting_approval` (exit 4); `--yolo` / `--approve-high-blast` are session approvals,
 `decisions[]` are consumed by the first task that asks. `report.tasks` / `taskResults` keep plan order.
 
+## Guardrails and the destructive executor (`agentik run`)
+
+`src/guardrails.ts`: one `ToolGuard` per task, `callHash = sha256(tool + canonical JSON args)`; the
+same call failed 2× → a `guardrails` warning envelope in the task context, 3× → refused
+`repeated_failing_call` before the gate; the same `resultHash` 3× in a row → refused `no_progress`.
+Gate refusals count as failures. `fs_destructive` has a real, bounded executor: `{action: delete|move,
+path, to?}` inside the workspace only, never the root, `.git/`, `.agentik/`, a path that escapes, a
+symlink pointing outside, or an existing move target; **double lock**: `ToolHost.approved: Set<callId>`
+is fed by the loop when the gate releases a call, and the executor runs nothing for an id that is not
+in it. `credential_use` keeps no executor; `server_admin` stays a local receipt (both said in the
+catalogue: out of scope).
+
 ## Tool output spill (`agentik run`)
 
 `src/tool-results.ts`: a tool output over `TOOL_OUTPUT_INLINE_MAX` (8000 chars) is written whole

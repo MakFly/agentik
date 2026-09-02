@@ -220,6 +220,12 @@ the tasks it depends on (as data) and its own tool outputs — not the whole run
 duration, acceptance outcome); the orchestrator checks the plan's acceptance itself (artifacts moved,
 tools ran, a non-destructive command exits 0) instead of trusting the worker's "done".
 
+**Guardrails.** Per task, the same call failing three times is refused (`repeated_failing_call`),
+and three identical results in a row stop the loop (`no_progress`). `fs_destructive` now really
+deletes or moves — inside the workspace, never `.git/` or `.agentik/`, never over an existing file,
+and only for a call the gate released (a second lock on the call id). `credential_use` still has no
+executor; `server_admin` still writes a local receipt only.
+
 **Big tool outputs go to disk.** Over 8000 chars, a tool result is written to
 `.agentik/tool-results/<callId>.txt` (secrets and injections masked per line) and the model sees head +
 a `read_file {path, offset, limit}` pointer + tail; the injection scan still covers the whole body.

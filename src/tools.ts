@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { parseArgv } from "./argv.ts";
 import { killManaged, spawnManaged } from "./backends.ts";
@@ -40,17 +40,17 @@ export const TOOL_CATALOG: ToolSpec[] = [
   {
     name: "server_admin",
     blastRadius: "high",
-    description: "Remote/server mutation (gated; sandbox simulation only)",
+    description: "Remote/server mutation (gated; writes a local receipt only — no remote host is ever touched, out of scope)",
   },
   {
     name: "fs_destructive",
     blastRadius: "high",
-    description: "Destructive filesystem mutation",
+    description: "Delete or move a workspace path: {action: delete|move, path, to?}. Gated; runs only after approval, inside the workspace, never .git/ or .agentik/, never overwrites",
   },
   {
     name: "credential_use",
     blastRadius: "high",
-    description: "Use or export credentials",
+    description: "Use or export credentials (no executor: refused even after approval — out of scope)",
   },
   {
     name: "memory",
@@ -136,6 +136,11 @@ export interface ToolHost {
   /** Home for memory/skills. Only set by the reviewer; its absence blocks the memory tools. */
   agentikHome?: string;
   reviewState?: ReviewState;
+  /**
+   * Call ids the gate released (an approval granted). Second lock for destructive executors:
+   * even a call that reaches executeTool by mistake runs nothing unless its id is here.
+   */
+  approved?: Set<string>;
 }
 
 export function newReviewState(maxSkillCreates = 1): ReviewState {
@@ -163,6 +168,7 @@ export async function executeTool(call: ToolCall, host: ToolHost): Promise<ToolR
     case "incident":
       return incidentTool(call, host);
     case "fs_destructive":
+      return fsDestructiveTool(call, host);
     case "credential_use":
       return {
         callId: call.id,
@@ -339,6 +345,68 @@ async function serverAdminTool(call: ToolCall, host: ToolHost): Promise<ToolResu
     output: "sandbox admin receipt written (no remote mutation)",
     artifact: rel,
   };
+}
+
+/** Never a target of fs_destructive, whatever the approval says. */
+const FS_PROTECTED = [".git", ".agentik"];
+
+function fsProblem(workspace: string, rel: string): string | undefined {
+  const clean = rel.trim();
+  if (!clean || clean === "." || clean === "/" || clean === "./") return "refuses the workspace root";
+  let full: string;
+  try {
+    full = resolveSafe(workspace, clean);
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+  const relToRoot = relative(resolve(workspace), full);
+  const top = relToRoot.split(/[\\/]/)[0];
+  if (FS_PROTECTED.includes(top)) return `${top}/ is protected`;
+  return undefined;
+}
+
+/**
+ * The one destructive executor, bounded: delete or move INSIDE the workspace, never the root,
+ * `.git/` or `.agentik/`, never through a symlink that points outside, never over an existing
+ * target. Double lock: the gate must have released this very call id (`host.approved`).
+ */
+async function fsDestructiveTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {
+  if (!host.approved?.has(call.id)) {
+    return { callId: call.id, ok: false, output: "fs_destructive: this call was not released by the gate (no approval on record for it); nothing done" };
+  }
+  const action = String(call.args.action ?? "");
+  const rel = String(call.args.path ?? "");
+  if (action !== "delete" && action !== "move") return { callId: call.id, ok: false, output: `fs_destructive: action must be delete or move (got "${action}")` };
+  const problem = fsProblem(host.workspace, rel);
+  if (problem) return { callId: call.id, ok: false, output: `fs_destructive ${action} refused: ${problem}` };
+  const full = resolveSafe(host.workspace, rel);
+  let st;
+  try {
+    st = await lstat(full);
+  } catch {
+    return { callId: call.id, ok: false, output: `fs_destructive ${action}: ${rel} does not exist` };
+  }
+  if (st.isSymbolicLink()) {
+    const target = await realpath(full).catch(() => "");
+    const root = await realpath(host.workspace).catch(() => resolve(host.workspace));
+    if (!target || (target !== root && !target.startsWith(`${root}/`))) {
+      return { callId: call.id, ok: false, output: `fs_destructive ${action} refused: ${rel} is a symlink pointing outside the workspace` };
+    }
+  }
+  if (action === "delete") {
+    await rm(full, { recursive: true, force: false });
+    return { callId: call.id, ok: true, output: `deleted ${rel}`, artifact: rel };
+  }
+  const toRel = String(call.args.to ?? "");
+  const toProblem = fsProblem(host.workspace, toRel);
+  if (toProblem) return { callId: call.id, ok: false, output: `fs_destructive move refused (target): ${toProblem}` };
+  const toFull = resolveSafe(host.workspace, toRel);
+  if (await lstat(toFull).then(() => true, () => false)) {
+    return { callId: call.id, ok: false, output: `fs_destructive move refused: ${toRel} exists (no overwrite)` };
+  }
+  await mkdir(dirname(toFull), { recursive: true });
+  await rename(full, toFull);
+  return { callId: call.id, ok: true, output: `moved ${rel} -> ${toRel}`, artifact: toRel };
 }
 
 function reviewerOnly(call: ToolCall, host: ToolHost): ToolResult | undefined {
