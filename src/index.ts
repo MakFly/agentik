@@ -27,6 +27,7 @@ export { parseForeignHarness, parseSlotHarnesses } from "./foreign-harness.ts";
 export { classifyGoal, buildPlan } from "./plan.ts";
 export { validatePlan, formatPlan, findCycle, type PlanSource } from "./plan-schema.ts";
 export { runDag } from "./scheduler.ts";
+export { extractUsage, formatRunUsage, addRunUsage, emptyRunUsage, type RunUsage } from "./usage.ts";
 export { writeRun, listRuns, readRun, newRunId, formatRunLine, type RunRecord, type RunSummary } from "./runs.ts";
 export { retainNote, recall, recallHot, readHot, readUser, HOT_CAP, USER_CAP } from "./memory.ts";
 export {

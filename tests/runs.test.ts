@@ -23,7 +23,7 @@ async function capture(fn: () => Promise<number>): Promise<{ code: number; out: 
 }
 
 const minimalReport = (over: Partial<RunReport> = {}): RunReport => ({
-  status: "completed", goal: { id: "g", text: "x", submittedBy: "orchestrator", createdAt: "" }, originalGoalText: "x", workersInvoked: [], tasks: [], executedTools: [], blockedTools: [], stalledTasks: [], backendSwitches: [], pendingApprovals: [], findings: [], claims: [], sources: [], artifacts: [], synthesis: "", events: [], planSource: "fallback", planProblems: [], taskResults: [], ...over,
+  status: "completed", goal: { id: "g", text: "x", submittedBy: "orchestrator", createdAt: "" }, originalGoalText: "x", workersInvoked: [], tasks: [], executedTools: [], blockedTools: [], stalledTasks: [], backendSwitches: [], pendingApprovals: [], findings: [], claims: [], sources: [], artifacts: [], synthesis: "", events: [], planSource: "fallback", planProblems: [], taskResults: [], durationMs: 0, ...over,
 });
 
 describe("runs.ts", () => {
@@ -57,7 +57,7 @@ describe("agentik run persists every run", () => {
     const home = await makeWorkspace("runs-cli-home-");
     const r = await capture(() => main(["--backend", "mock", "--workspace", ws, "--agentik-home", home, "Create src/greet.txt containing AGENTIK_OK"]));
     expect(r.code).toBe(0);
-    const m = r.out.match(/^run: (.+\.json)$/m);
+    const m = r.out.match(/^run file: (.+\.json)$/m);
     expect(m).toBeTruthy();
     const rec = JSON.parse(await readFile(m![1], "utf8"));
     expect(rec.status).toBe("completed");
@@ -91,7 +91,7 @@ describe("agentik run persists every run", () => {
     expect(runs[0]).toMatchObject({ status: "awaiting_approval", exitCode: 4 });
     const p = await capture(() => main(["--backend", "mock", "--plan-only", "--workspace", ws, "--agentik-home", home, "Create a.txt containing X"]));
     expect(p.code).toBe(0);
-    expect(p.out).toContain("run: ");
+    expect(p.out).toContain("run file: ");
     expect((await listRuns({ home })).find((x) => x.status === "planned")).toBeDefined();
     const s = await capture(async () => {
       process.env.AGENTIK_MOCK_STALL = "worker_a";
@@ -112,6 +112,7 @@ describe("agentik run persists every run", () => {
     const r = await capture(() => main(["--backend", "mock", "--workspace", ws, "--agentik-home", home, "Create c.txt containing Z"]));
     expect(r.code).toBe(0);
     expect(r.err).toContain("could not write the run file");
-    expect(r.out).not.toContain("run: ");
+    expect(r.out).not.toContain("run file: ");
+    expect(r.out).toContain("run: (not persisted)");
   });
 });

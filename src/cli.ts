@@ -43,6 +43,7 @@ import {
 } from "./incidents.ts";
 import { formatIncidentForReview, formatReviewOutcome, runReview, type ReviewOutcome } from "./reviewer.ts";
 import { formatRunLine, listRuns, readRun, writeRun, type RunRecord } from "./runs.ts";
+import { formatRunUsage } from "./usage.ts";
 import { getSession, latestSession, recordSession } from "./sessions.ts";
 import { readFile } from "node:fs/promises";
 import { recallBeforeRun, reviewAfterRun, type SessionStatus } from "./review.ts";
@@ -112,7 +113,8 @@ Commands:
                                · 125 the harness ended without doing the work.
   agentik runs ls [--limit N] [--workspace DIR] [--json] | show <id|prefix> [--json]
                                Every run is persisted to <home>/runs/<id>.json whatever its
-                               status (string leaves masked); "run: <path>" is printed. An
+                               status (string leaves masked); "run: <id> · 84.2s · tokens 12.3k
+                               in / 4.1k out · $0.31" and "run file: <path>" are printed. An
                                awaiting_approval run is relaunched with the same goal and
                                --approve-high-blast (or --yolo).
   agentik context [--workspace DIR] [--profile P] ["<goal>"]
@@ -383,16 +385,21 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   }
   const jsonOut = () => JSON.stringify({ ...report, ...(persisted ? { runId: persisted.id, runPath: persisted.path } : {}) }, null, 2);
 
+  const runLine = `run: ${persisted?.id ?? "(not persisted)"} · ${formatRunUsage(report.usage, report.durationMs)}`;
   if (flags.planOnly) {
     if (flags.json) console.log(jsonOut());
-    else if (persisted) console.log(`run: ${persisted.path}`);
+    else {
+      console.log(runLine);
+      if (persisted) console.log(`run file: ${persisted.path}`);
+    }
     return 0;
   }
   if (flags.json) {
     console.log(jsonOut());
   } else {
     console.log(formatReport(report));
-    if (persisted) console.log(`run: ${persisted.path}`);
+    console.log(runLine);
+    if (persisted) console.log(`run file: ${persisted.path}`);
     if (report.status === "awaiting_approval") {
       console.log(`awaiting approval: ${report.pendingApprovals.map((a) => `${a.id} (${a.toolCall.tool})`).join(", ")} — relaunch the same goal with --approve-high-blast (or --yolo) to release, --reject-high-blast to refuse`);
     }

@@ -10,6 +10,7 @@ import { denyFloorPrompt, renderDenyRules } from "./command-policy.ts";
 import { childEnv } from "./depth.ts";
 import { MockBackend } from "./mock-backend.ts";
 import { renderEnvelopes } from "./trust.ts";
+import { extractUsage } from "./usage.ts";
 import {
   clampSubagentCount,
   type Backend,
@@ -520,7 +521,7 @@ export class ClaudeBackend implements Backend {
     const res = await spawnCapture("claude", args, this.timeoutMs, request.workspace);
     const err = classifyExit(this.id, "claude -p", res, this.timeoutMs);
     if (err) throw err;
-    return decodeClaudeStdout(res.stdout);
+    return { ...decodeClaudeStdout(res.stdout), usage: extractUsage("claude", res.stdout) };
   }
 }
 
@@ -538,7 +539,8 @@ export class GrokBackend implements Backend {
     const res = await spawnCapture("grok", args, this.timeoutMs, request.workspace);
     const err = classifyExit(this.id, "grok --yolo --single", res, this.timeoutMs);
     if (err) throw err;
-    return decodeGrokStdout(res.stdout);
+    // Usage is read from the envelope BEFORE it is unwrapped (GROK_ENVELOPE_KEYS stays as is).
+    return { ...decodeGrokStdout(res.stdout), usage: extractUsage("grok", res.stdout) };
   }
 }
 
@@ -598,7 +600,7 @@ export class CodexBackend implements Backend {
       this.timeoutMs,
     );
     if (err) throw err;
-    return decodeCodexStdout(res.stdout);
+    return { ...decodeCodexStdout(res.stdout), usage: extractUsage("codex", res.stdout) };
   }
 }
 

@@ -40,6 +40,6 @@ describe("agentik run: auto is the default, mock is explicit", () => {
     expect(r.code).toBe(0);
     expect(existsSync(join(ws, "a.txt"))).toBe(true);
     expect(existsSync(join(home, "backends.json"))).toBe(false);
-    expect(r.out).toContain("run: ");
+    expect(r.out).toContain("run file: ");
   });
 });

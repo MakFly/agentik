@@ -266,6 +266,10 @@ export interface WorkerInvocation {
   phase: Phase;
   backend: string;
   taskId?: string;
+  /** Wall clock of this model call. */
+  durationMs?: number;
+  /** What the CLI reported for this call, when it did. */
+  usage?: { inputTokens: number; cachedInputTokens?: number; outputTokens: number; costUsd?: number; turns: number; durationMs?: number };
 }
 
 /** A bounded task that ran out of usable answers instead of finishing. */
@@ -357,6 +361,10 @@ export interface RunReport {
   planProblems: string[];
   /** One structured result per planned task, in plan order. */
   taskResults: TaskResult[];
+  /** Tokens / cost over every model invocation of the run (undefined when nothing was reported). */
+  usage?: { inputTokens: number; cachedInputTokens: number; outputTokens: number; costUsd?: number; invocations: number; callsWithoutUsage: number };
+  /** Wall clock of the whole run. */
+  durationMs: number;
 }
 
 export interface GoalClass {
@@ -380,6 +388,8 @@ export interface WorkerMessage {
   toolCalls?: ToolCallDraft[];
   claims?: ClaimDraft[];
   newGoal?: string;
+  /** Filled by live backends from the CLI's own output; never by the model. */
+  usage?: WorkerInvocation["usage"];
 }
 
 export interface CompleteRequest {

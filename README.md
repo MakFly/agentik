@@ -210,9 +210,13 @@ non-destructive check command). One `PLAN_REJECTED` reprompt, then the regex pla
 `plan: model | model_repaired | fallback` and lists the problems; `--plan-only` prints the plan and
 stops.
 
+**What a run cost.** Every model invocation is timed and, on live CLIs, carries the tokens and
+dollars the harness itself reported; the run ends with `run: <id> · 84.2s · tokens 12.3k in / 4.1k
+out · $0.31` and the report lists per-worker and per-tool durations.
+
 **Every run is on disk.** `<home>/runs/<id>.json` holds the goal, status, exit code, timings and
 the full report (secrets masked) for every run, `awaiting_approval` and stalled ones included; the
-CLI prints `run: <path>`. `agentik runs ls` lists them, `agentik runs show <id|prefix>` replays the
+CLI prints `run file: <path>`. `agentik runs ls` lists them, `agentik runs show <id|prefix>` replays the
 report. An `awaiting_approval` run is relaunched with the same goal and `--approve-high-blast`.
 
 **Tasks run in parallel along the plan's dependencies.** A pure scheduler starts every task whose

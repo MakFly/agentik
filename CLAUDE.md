@@ -202,13 +202,25 @@ is fed by the loop when the gate releases a call, and the executor runs nothing 
 in it. `credential_use` keeps no executor; `server_admin` stays a local receipt (both said in the
 catalogue: out of scope).
 
+## Usage observability (`agentik run`)
+
+`src/usage.ts` — `extractUsage(harness, stdout)` reads the CLI's own output **before** the worker JSON
+is unwrapped (claude `usage` + `total_cost_usd` + `duration_ms` + `num_turns`; grok envelope `usage` +
+`total_cost_usd` else `total_cost_usd_ticks / 1e10`, `GROK_ENVELOPE_KEYS` untouched; codex sum of
+`turn.completed.usage`). Live backends put it on `WorkerMessage.usage` (never the model); the loop
+stamps every `WorkerInvocation` with `durationMs` and `usage`, every tool call with `durationMs`
+(`evidence.calls`), and aggregates `RunReport.usage {inputTokens, cachedInputTokens, outputTokens,
+costUsd?, invocations, callsWithoutUsage}` + `RunReport.durationMs`. The CLI prints
+`run: <id> · 84.2s · tokens 12.3k in / 4.1k out · $0.31` then `run file: <path>`; a mock run says
+`tokens (none reported)`.
+
 ## Run persistence (`agentik run`)
 
 `src/runs.ts`: `runId = <YYYYMMDDTHHMMSSZ>-<6hex>`, `writeRun(record, {home})` → `<home>/runs/<id>.json`
 `{id, at, goal, workspace, profile, status, exitCode, backend, workers, durationMs, report}` with every
 string leaf through the memory scan (`[BLOCKED: …]`, never a raw token). Written for **every** status
 (`planned` included), before the session/incidents/review, in try/catch: a failure is one stderr line
-(`could not write the run file`) and the exit code is unchanged. `run: <path>` is printed; `--json`
+(`could not write the run file`) and the exit code is unchanged. `run file: <path>` is printed; `--json`
 adds `runId` / `runPath`. An `awaiting_approval` run prints its approval ids and the relaunch hint
 (same goal with `--approve-high-blast` or `--yolo`; `runs resume` with a frozen call hash is F2).
 `agentik runs ls [--limit N] [--workspace DIR] [--json] | show <id|prefix> [--json]` (read-only, exempt
