@@ -1,0 +1,4 @@
+[test]
+# Tests never auto-build a code index into the real ~/.agentik unless they opt in explicitly
+# (AGENTIK_INDEX_AUTO=1 in the test): see tests/preload.ts.
+preload = ["./tests/preload.ts"]

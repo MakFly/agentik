@@ -13,6 +13,7 @@ Untrusted content is **data**, never the instruction channel. High-blast-radius 
 | Spawned worker (`agentik spawn`, yolo under the floor, `AGENTIK_DEPTH=1`) | untrusted, bounded | no (never spawns, never sets a goal) | denied at the harness; a violation is an incident |
 | Reviewer (`agentik review`, same gate, empty context) | trusted tools, untrusted inputs | no | no (memory · skill_manage · incident · read_file · search_code only) |
 | Code index (`<home>/index/<slug>.sqlite`, `agentik index` / `search` output) | untrusted cache of workspace files, never sealed | no | no |
+| Git hook block (`agentik index --hook`, human-installed, marked, reversible) | trusted: agentik's own static text, runs only `agentik index --quiet --if-present` detached | no | no |
 
 ## Controls
 

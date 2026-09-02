@@ -149,7 +149,8 @@ describe("shaped run_command output: inline = shaped, disk = raw", () => {
     expect(t!.output).toContain("exit 0\ntick ×4");
     expect(t!.output).toContain(`[shaped by generic: −${t!.shaped!.savedChars} chars; full output in ${t!.outputPath}]`);
     expect(await readFile(join(ws, t!.outputPath!), "utf8")).toBe("exit 0\ntick\ntick\ntick\ntick\n");
-    const ev = report.taskResults.flatMap((r) => r.evidence.calls).find((c) => c.shaped);
+    // Two workers ran the same call: match the evidence to THIS executed tool by its spill file.
+    const ev = report.taskResults.flatMap((r) => r.evidence.calls).find((c) => c.outputPath === t!.outputPath);
     expect(ev?.shaped).toEqual(t!.shaped!);
     expect(ev?.outputPath).toBe(t!.outputPath);
     // run-wide: every shaped run_command of the run (a synthesize-phase call has no task evidence)

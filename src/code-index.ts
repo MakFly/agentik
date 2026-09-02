@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, unlink } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
 import { chunkFile, detectLang, extractImports } from "./code-chunker.ts";
@@ -62,6 +62,8 @@ export interface IndexStats {
   built: boolean;
   /** The ignore files that were found and read. */
   ignoreFiles: string[];
+  /** Files git reported dirty (modified / untracked) at this refresh. */
+  dirty: number;
 }
 
 export interface RefreshOptions {
@@ -565,6 +567,7 @@ async function refreshNow(
       refreshedAt: now,
       built: fresh || Boolean(opts.rebuild),
       ignoreFiles: ignore.files ?? [],
+      dirty: listing.dirty.size,
     };
   } finally {
     db.close();
@@ -621,6 +624,7 @@ export function indexStats(home: string | undefined, workspace: string): IndexSt
       refreshedAt: metaGet(db, "refreshed_at") ?? metaGet(db, "built_at") ?? "",
       built: false,
       ignoreFiles: [],
+      dirty: 0,
     };
   } finally {
     db.close();
@@ -789,4 +793,195 @@ export async function ensureIndex(home: string | undefined, workspace: string, o
     log(`agentik: code index not built: ${err instanceof Error ? err.message : String(err)}`);
     return { built: false, reason: "failed", files: count.files, ms: Date.now() - t0 };
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Watch: a foreground polling loop (no daemon installed, no inotify)
+// ---------------------------------------------------------------------------------------------
+
+export const WATCH_INTERVAL_MS = 5000;
+export const WATCH_INTERVAL_MIN_MS = 1000;
+
+export interface WatchOptions {
+  signal: AbortSignal;
+  intervalMs?: number;
+  log: (line: string) => void;
+  /** Injected by tests: resolve at once. Default: a timer that the signal cancels. */
+  sleep?: (ms: number) => Promise<void>;
+  onTick?: (stats: IndexStats | undefined) => void;
+}
+
+/**
+ * Refresh the index of `workspace` every `intervalMs` until the signal aborts; log only when
+ * something changed. Polling `git status` is the detector (a recursive fs.watch costs one
+ * inotify watch per directory and `node_modules` blows the limit); an edit to a clean tree
+ * touches no `.git/` file, so there is no cheaper pre-check that is also correct. The effective
+ * interval is max(interval, 3 × the last refresh), never under WATCH_INTERVAL_MIN_MS. The first
+ * tick builds the index when there is none (the human asked, no cap).
+ */
+export async function watchIndex(home: string | undefined, workspace: string, opts: WatchOptions): Promise<{ ticks: number; changed: number }> {
+  const interval = Math.max(WATCH_INTERVAL_MIN_MS, opts.intervalMs ?? WATCH_INTERVAL_MS);
+  const sleep =
+    opts.sleep ??
+    ((ms: number) =>
+      new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, ms);
+        opts.signal.addEventListener("abort", () => {
+          clearTimeout(t);
+          resolve();
+        }, { once: true });
+      }));
+  let ticks = 0;
+  let changed = 0;
+  let lastMs = 0;
+  while (!opts.signal.aborted) {
+    ticks++;
+    let stats: IndexStats | undefined;
+    const t = Date.now();
+    try {
+      stats = await refreshIndex(home, workspace);
+    } catch (err) {
+      opts.log(`agentik index --watch: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    lastMs = Date.now() - t;
+    if (stats && (stats.built || stats.added + stats.updated + stats.removed > 0)) {
+      changed++;
+      opts.log(formatIndexStats(stats));
+    }
+    opts.onTick?.(stats);
+    if (opts.signal.aborted) break;
+    await sleep(Math.max(interval, 3 * lastMs));
+  }
+  return { ticks, changed };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Registry: every index of a home (read-only listing; rm / gc are the human's pen)
+// ---------------------------------------------------------------------------------------------
+
+export const INDEX_GC_UNUSED_DAYS = 90;
+
+export interface IndexEntry {
+  slug: string;
+  db: string;
+  workspaceFile: string;
+  root?: string;
+  rootExists: boolean;
+  /** db + wal + shm on disk. */
+  bytes: number;
+  files?: number;
+  chunks?: number;
+  builtAt?: string;
+  refreshedAt?: string;
+  /** Why this entry could not be read; such an entry is never garbage-collected. */
+  problem?: string;
+}
+
+function sizeOf(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
+/** Every `<slug>.workspace` of the home, opened READ-ONLY (never `openIndex`, which may rewrite a stale schema). */
+export async function listIndexes(home?: string): Promise<IndexEntry[]> {
+  const dir = memoryPaths(agentikHome(home)).indexDir;
+  if (!existsSync(dir)) return [];
+  const out: IndexEntry[] = [];
+  for (const name of readdirSync(dir).sort()) {
+    if (!name.endsWith(".workspace")) continue;
+    const slug = name.slice(0, -".workspace".length);
+    const db = join(dir, `${slug}.sqlite`);
+    const workspaceFile = join(dir, name);
+    const entry: IndexEntry = { slug, db, workspaceFile, rootExists: false, bytes: sizeOf(db) + sizeOf(`${db}-wal`) + sizeOf(`${db}-shm`) };
+    try {
+      entry.root = readFileSync(workspaceFile, "utf8").trim() || undefined;
+    } catch (err) {
+      entry.problem = `unreadable .workspace: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    if (entry.root) entry.rootExists = existsSync(entry.root);
+    if (!existsSync(db)) {
+      entry.problem ??= "index file missing";
+      out.push(entry);
+      continue;
+    }
+    try {
+      const ro = new Database(db, { readonly: true });
+      try {
+        const meta = new Map(ro.query<{ key: string; value: string }, []>("SELECT key, value FROM meta").all().map((r) => [r.key, r.value]));
+        entry.builtAt = meta.get("built_at");
+        entry.refreshedAt = meta.get("refreshed_at") ?? meta.get("built_at");
+        const c = countRows(ro);
+        entry.files = c.files;
+        entry.chunks = c.chunks;
+      } finally {
+        ro.close();
+      }
+    } catch (err) {
+      entry.problem ??= `unreadable index: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    out.push(entry);
+  }
+  return out;
+}
+
+const SLUG_RE = /^[a-z0-9][a-z0-9._-]*$/;
+
+/**
+ * Delete one index: `.workspace` first (so `hasIndex` turns false atomically for new openers),
+ * then the db, its WAL and shm; a reader that already has the file open keeps its fd. Returns
+ * the paths deleted; an unknown slug is an error.
+ */
+export async function removeIndex(home: string | undefined, target: { slug: string } | { workspace: string }): Promise<string[]> {
+  const h = agentikHome(home);
+  const slug = "slug" in target ? target.slug : indexPaths(h, indexKey(target.workspace).root).slug;
+  if (!SLUG_RE.test(slug)) throw new Error(`invalid index name: ${slug}`);
+  const dir = memoryPaths(h).indexDir;
+  const db = join(dir, `${slug}.sqlite`);
+  const paths = [join(dir, `${slug}.workspace`), db, `${db}-wal`, `${db}-shm`];
+  const deleted: string[] = [];
+  for (const p of paths) {
+    if (!existsSync(p)) continue;
+    await unlink(p);
+    deleted.push(p);
+  }
+  if (!deleted.length) throw new Error(`no index named ${slug}`);
+  return deleted;
+}
+
+/** Drop the indexes whose root is gone or that were not refreshed for `unusedDays`; a problem entry is only reported. */
+export async function gcIndexes(
+  home: string | undefined,
+  opts: { dryRun?: boolean; unusedDays?: number; now?: Date } = {},
+): Promise<{ removed: IndexEntry[]; kept: IndexEntry[]; problems: IndexEntry[] }> {
+  const days = opts.unusedDays ?? INDEX_GC_UNUSED_DAYS;
+  const now = (opts.now ?? new Date()).getTime();
+  const removed: IndexEntry[] = [];
+  const kept: IndexEntry[] = [];
+  const problems: IndexEntry[] = [];
+  for (const e of await listIndexes(home)) {
+    if (e.problem) {
+      problems.push(e);
+      continue;
+    }
+    const age = e.refreshedAt ? (now - Date.parse(e.refreshedAt)) / 86_400_000 : Number.POSITIVE_INFINITY;
+    const stale = !e.rootExists || age > days;
+    if (!stale) {
+      kept.push(e);
+      continue;
+    }
+    if (!opts.dryRun) await removeIndex(home, { slug: e.slug });
+    removed.push(e);
+  }
+  return { removed, kept, problems };
+}
+
+/** One line per index for `agentik index ls`. */
+export function formatIndexEntry(e: IndexEntry): string {
+  const kb = `${Math.round(e.bytes / 1024)}k`;
+  if (e.problem) return `${e.slug} · ${kb} · ${e.problem}${e.root ? ` · ${e.root}` : ""}`;
+  const when = e.refreshedAt ? e.refreshedAt.slice(0, 16).replace("T", " ") : "?";
+  return `${e.slug} · ${e.files} files · ${e.chunks} chunks · ${kb} · refreshed ${when} · ${e.root}${e.rootExists ? "" : " (missing)"}`;
 }

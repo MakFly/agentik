@@ -32,7 +32,8 @@ import { retainNote, readHot } from "./memory.ts";
 import { memoryFileLabel, memoryFilePath, memoryRemoveEntry, resealMemory, type MemoryTarget } from "./memory-store.ts";
 import { formatSessionHit, searchSessions } from "./sessions.ts";
 import { buildContext } from "./context.ts";
-import { ensureIndex, formatIndexStats, hasIndex, indexKey, indexStats, isIndexBusy, refreshIndex } from "./code-index.ts";
+import { ensureIndex, formatIndexEntry, formatIndexStats, gcIndexes, hasIndex, indexKey, indexStats, isIndexBusy, listIndexes, refreshIndex, removeIndex, watchIndex, WATCH_INTERVAL_MS } from "./code-index.ts";
+import { hookStatus, installHooks, removeHooks } from "./index-hooks.ts";
 import { repoMap } from "./repo-map.ts";
 import { formatSearch, searchCode } from "./code-search.ts";
 import { renderEnvelope, wrapUntrusted } from "./trust.ts";
@@ -148,6 +149,21 @@ Commands:
                                no cap. AGENTIK_INDEX_AUTO=0 or --no-index disables the auto-build.
                                --if-present refreshes only (never creates; what a git hook runs),
                                --quiet prints nothing and treats a busy index as done.
+  agentik index --hook | --unhook | --hook-status [--workspace DIR]
+                               Git hooks (post-commit, post-checkout, post-merge, post-rewrite)
+                               that run "agentik index --quiet --if-present" DETACHED after each
+                               git operation, so the index follows the checkout with no daemon:
+                               a marked block appended to an existing hook (never overwritten;
+                               a foreign interpreter or an "exec" before the block is skipped),
+                               refused when core.hooksPath is set. --unhook removes the block.
+                               The human's pen: refused inside a worker.
+  agentik index --watch [--interval S] [--workspace DIR]
+                               Foreground polling loop (git status every S seconds, default 5),
+                               prints only what changed, Ctrl-C to stop. Nothing is installed.
+  agentik index ls [--json] | rm <slug> | rm --workspace DIR | gc [--dry-run] [--unused-days N]
+                               The registry of this home's indexes (read-only listing); rm and
+                               gc (root gone, or not refreshed for N days, default 90) are the
+                               human's pen.
                                Files, chunks and where:
                                <home>/index/<slug>.sqlite, line ranges + identifiers +
                                symbols + imports and a trigram index of the secret-masked
@@ -1345,6 +1361,12 @@ export function parseRun(args: string[]): {
     stats?: boolean;
     quiet?: boolean;
     ifPresent?: boolean;
+    hook?: boolean;
+    unhook?: boolean;
+    hookStatus?: boolean;
+    watch?: boolean;
+    interval?: number;
+    unusedDays?: number;
     path?: string;
     offset?: number;
     k?: number;
@@ -1382,6 +1404,10 @@ export function parseRun(args: string[]): {
     }
     else if (a === "--regex") flags.regex = true;
     else if (a === "--quiet") flags.quiet = true;
+    else if (a === "--hook") flags.hook = true;
+    else if (a === "--unhook") flags.unhook = true;
+    else if (a === "--hook-status") flags.hookStatus = true;
+    else if (a === "--watch") flags.watch = true;
     else if (a === "--if-present") flags.ifPresent = true;
     else if (a === "--rebuild") flags.rebuild = true;
     else if (a === "--stats") flags.stats = true;
@@ -1483,6 +1509,12 @@ export function parseRun(args: string[]): {
       regex: Boolean(flags.regex),
       quiet: Boolean(flags.quiet),
       ifPresent: Boolean(flags.ifPresent),
+      hook: Boolean(flags.hook),
+      unhook: Boolean(flags.unhook),
+      hookStatus: Boolean(flags.hookStatus),
+      watch: Boolean(flags.watch),
+      interval: positive(flags.interval),
+      unusedDays: positive(flags["unused-days"]),
       rebuild: Boolean(flags.rebuild),
       stats: Boolean(flags.stats),
       path: str(flags.path),
@@ -1833,15 +1865,145 @@ async function contextCmd(args: string[]): Promise<number> {
 }
 
 const SEARCH_USAGE = 'usage: agentik search "<query>" [--regex] [--path GLOB] [-k N] [--offset N] [--workspace DIR] [--json]';
+const INDEX_USAGE =
+  "usage: agentik index [--workspace DIR] [--rebuild] [--stats] [--quiet] [--if-present] [--json]\n" +
+  "       agentik index --hook | --unhook | --hook-status [--workspace DIR] [--json]\n" +
+  "       agentik index --watch [--interval S] [--workspace DIR]\n" +
+  "       agentik index ls [--json] | rm <slug> | rm --workspace DIR | gc [--dry-run] [--unused-days N] [--json]";
+
+/** rm / gc / --watch / --hook / --unhook are the human's pen: a worker (depth ≥ 1) never runs them. */
+function humanOnly(verb: string): number | undefined {
+  const depth = currentDepth();
+  if (depth < 1) return undefined;
+  console.error(`agentik index ${verb}: refused at depth ${depth} — the human's pen, never a worker's`);
+  return 2;
+}
+
+/** `agentik index ls | rm | gc`: the registry of every index of this home. */
+async function indexRegistryCmd(sub: string, args: string[]): Promise<number> {
+  const { goal, flags } = parseRun(args);
+  const home = homeFor(flags);
+  try {
+    if (sub === "ls") {
+      const entries = await listIndexes(home);
+      if (flags.json) console.log(JSON.stringify(entries, null, 2));
+      else if (!entries.length) console.log("(no code index in this home)");
+      else for (const e of entries) console.log(formatIndexEntry(e));
+      return 0;
+    }
+    if (sub === "rm") {
+      const refused = humanOnly("rm");
+      if (refused !== undefined) return refused;
+      const slug = goal.trim();
+      if (!slug && !flags.workspace) {
+        console.error(INDEX_USAGE);
+        return 2;
+      }
+      const deleted = await removeIndex(home, slug ? { slug } : { workspace: resolve(flags.workspace!) });
+      if (flags.json) console.log(JSON.stringify({ deleted }, null, 2));
+      else console.log(`removed ${deleted.length} file(s): ${deleted.join(", ")}`);
+      return 0;
+    }
+    if (sub === "gc") {
+      const refused = humanOnly("gc");
+      if (refused !== undefined) return refused;
+      const res = await gcIndexes(home, { dryRun: flags.dryRun, unusedDays: flags.unusedDays });
+      if (flags.json) console.log(JSON.stringify(res, null, 2));
+      else {
+        for (const e of res.removed) console.log(`${flags.dryRun ? "would remove" : "removed"}: ${formatIndexEntry(e)}`);
+        for (const e of res.problems) console.log(`problem (kept): ${formatIndexEntry(e)}`);
+        console.log(`gc: ${res.removed.length} ${flags.dryRun ? "candidate(s)" : "removed"} · ${res.kept.length} kept · ${res.problems.length} problem(s)`);
+      }
+      return 0;
+    }
+    console.error(INDEX_USAGE);
+    return 2;
+  } catch (err) {
+    console.error(`agentik index ${sub}: ${err instanceof Error ? err.message : String(err)}`);
+    return 2;
+  }
+}
+
+/** `agentik index --hook | --unhook | --hook-status`: git hooks that refresh the index, detached. */
+async function indexHooksCmd(flags: ReturnType<typeof parseRun>["flags"], workspace: string): Promise<number> {
+  const verb = flags.hook ? "--hook" : flags.unhook ? "--unhook" : "--hook-status";
+  if (verb !== "--hook-status") {
+    const refused = humanOnly(verb);
+    if (refused !== undefined) return refused;
+  }
+  try {
+    if (flags.hook) {
+      const r = await installHooks(workspace);
+      if (r.refused) {
+        console.error(`agentik index --hook: ${r.refused}`);
+        return 2;
+      }
+      if (flags.json) console.log(JSON.stringify(r, null, 2));
+      else {
+        console.log(`hooks in ${r.hooksDir}: installed ${r.installed.join(", ") || "none"} · kept ${r.kept.join(", ") || "none"}`);
+        for (const s of r.skipped) console.log(`skipped ${s.name}: ${s.why}`);
+        console.log("each hook runs `agentik index --quiet --if-present` detached; `agentik index --unhook` removes the block");
+      }
+      return r.skipped.length && !r.installed.length && !r.kept.length ? 1 : 0;
+    }
+    if (flags.unhook) {
+      const r = await removeHooks(workspace);
+      if (r.refused) {
+        console.error(`agentik index --unhook: ${r.refused}`);
+        return 2;
+      }
+      if (flags.json) console.log(JSON.stringify(r, null, 2));
+      else console.log(`hooks in ${r.hooksDir}: block removed from ${r.removed.join(", ") || "none"}${r.deleted.length ? ` · file deleted: ${r.deleted.join(", ")}` : ""}`);
+      return 0;
+    }
+    const st = await hookStatus(workspace);
+    if (st.refused) {
+      console.error(`agentik index --hook-status: ${st.refused}`);
+      return 2;
+    }
+    if (flags.json) console.log(JSON.stringify(st, null, 2));
+    else {
+      console.log(`hooks in ${st.hooksDir}${st.bin ? ` · bin ${st.bin}${st.binaryMissing ? " (MISSING)" : ""}` : ""}`);
+      for (const h of st.hooks) console.log(`  ${h.name}: ${h.hooked ? "hooked" : h.foreign ? "foreign (not ours)" : "absent"}${h.present && !h.executable ? " · not executable" : ""}`);
+    }
+    return 0;
+  } catch (err) {
+    console.error(`agentik index ${verb}: ${err instanceof Error ? err.message : String(err)}`);
+    return 2;
+  }
+}
+
+/** `agentik index --watch`: a foreground polling loop, Ctrl-C to stop; nothing is installed. */
+async function indexWatchCmd(flags: ReturnType<typeof parseRun>["flags"], workspace: string, home: string): Promise<number> {
+  const refused = humanOnly("--watch");
+  if (refused !== undefined) return refused;
+  const ac = new AbortController();
+  const stop = () => ac.abort();
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+  const intervalMs = (flags.interval ?? WATCH_INTERVAL_MS / 1000) * 1000;
+  console.error(`agentik index --watch: ${indexKey(workspace).root} every ${Math.max(1, intervalMs / 1000)}s (Ctrl-C to stop; prints only what changes)`);
+  const res = await watchIndex(home, workspace, { signal: ac.signal, intervalMs, log: (line) => console.log(line) });
+  console.error(`agentik index --watch: stopped after ${res.ticks} tick(s), ${res.changed} refresh(es) with changes`);
+  return 0;
+}
 
 /**
  * `agentik index`: build or refresh the local code index of a workspace. A cache of the
  * checkout under <home>/index/<slug>.sqlite (no source text), never memory, never a trust source.
  */
 async function indexCmd(args: string[]): Promise<number> {
+  const sub = args[0];
+  if (sub === "ls" || sub === "rm" || sub === "gc") return indexRegistryCmd(sub, args.slice(1));
+  if (sub === "-h" || sub === "--help") {
+    console.log(INDEX_USAGE);
+    return 0;
+  }
   const { flags } = parseRun(args);
   const workspace = resolve(flags.workspace ?? process.cwd());
   const home = homeFor(flags);
+  if (flags.hook || flags.unhook || flags.hookStatus) return indexHooksCmd(flags, workspace);
+  if (flags.watch) return indexWatchCmd(flags, workspace, home);
   const say = (line: string) => {
     if (!flags.quiet) console.log(line);
   };

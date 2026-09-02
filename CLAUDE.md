@@ -373,6 +373,26 @@ refreshes only, never creates (what a hook runs), `--quiet` prints nothing and r
 index (a hook racing a run) both succeed instead of the second failing on `UNIQUE(path)`; `refreshIndex(…,
 {onProgress, progressEvery})` reports the write phase (the CLI prints `n/total` only past 2 s).
 
+**Hooks, watch, registry.** `src/index-hooks.ts`: `hookPaths(ws)` (`git rev-parse --path-format=absolute --git-path
+hooks`, so a worktree uses the main checkout's hooks; `core.hooksPath` at any scope → `refused`), `installHooks(ws,
+{bin?})` / `removeHooks(ws)` / `hookStatus(ws)` over `HOOK_NAMES` (post-commit, post-checkout, post-merge,
+post-rewrite): a block between `HOOK_MARK_BEGIN` / `HOOK_MARK_END` appended to an existing hook (kept byte for byte
+outside the block; a shebang other than sh/bash/dash/zsh/ash or an `exec` before the block → `skipped`; a file
+created gets `#!/bin/sh`, `chmod 755`), idempotent, reversible (a file reduced to its shebang is deleted). The block:
+absolute `AGENTIK_BIN` frozen at install (`command -v agentik` as fallback: IDEs run git with a minimal PATH),
+`unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_PREFIX` (git exports a temporary `GIT_INDEX_FILE` during
+`git commit <paths>`), `</dev/null` (post-rewrite hands the shas on stdin), `--quiet --if-present` (a hook refreshes,
+NEVER creates: `git worktree add` fires post-checkout in a fresh checkout), `( … & )` detached. No recursion:
+`agentik index` runs rev-parse / ls-files / status / check-ignore / config only. `watchIndex(home, ws, {signal,
+intervalMs 5000, log, sleep?, onTick?})`: polling `refreshIndex` (a recursive fs.watch costs one inotify watch per
+directory; an edit to a clean tree touches no `.git/` file, so there is no cheaper *correct* pre-check), effective
+interval `max(interval, 3 × last refresh)`, ≥ 1 s, logs only ticks with changes, the first tick builds. Registry:
+`listIndexes(home)` opens every `<slug>.sqlite` **read-only** (never `openIndex`, which rewrites a stale schema),
+`removeIndex(home, {slug}|{workspace})` deletes `.workspace` first (so `hasIndex` flips atomically) then db / wal /
+shm, `gcIndexes(home, {dryRun, unusedDays 90, now})` drops root-gone or stale `refreshed_at`, never a `problem`
+entry. CLI: `agentik index --hook|--unhook|--hook-status`, `--watch [--interval S]`, `ls|rm|gc`; `rm`, `gc`,
+`--watch`, `--hook`, `--unhook` are the human's pen (`humanOnly`: exit 2 at depth ≥ 1).
+
 **In the harness.** `src/tool-catalog.ts` is the leaf catalogue (`TOOL_CATALOG`, `REVIEWER_ONLY_TOOLS`,
 `workerToolNames()`), re-exported by `tools.ts`, read by `backends.ts` (`systemPromptFor` lists exactly
 `workerToolNames()`) and `plan-schema.ts` — one list, no drift. Tool `search_code {query, regex?, path?, k?,
@@ -406,6 +426,12 @@ Invariants (tests enforce them):
 - **The conductor builds, the worker reads**: no auto-build at `AGENTIK_DEPTH ≥ 1`, none above the file cap without
   an explicit `agentik index`, none with `--no-index` / `AGENTIK_INDEX_AUTO=0`; one hint per reason per process.
 - Two processes refreshing the same index both succeed; `--quiet` treats busy as done.
+- A hook is written only by `agentik index --hook` (human) and never creates an index; `ls` never writes; `rm` / `gc` /
+  `--watch` / `--hook` / `--unhook` are refused inside a worker.
+- **Tests never auto-build into the real `~/.agentik`**: `bunfig.toml` preloads `tests/preload.ts`
+  (`AGENTIK_INDEX_AUTO=0`); a test about the auto-build opts in (`process.env.AGENTIK_INDEX_AUTO = "1"`, restored, or
+  `env` / `auto` explicitly). A non-git test directory must live in `os.tmpdir()`, never under `<repo>/.tmp/`: git
+  resolves its hooks dir to this repository's `.git/hooks` (seen live: a test installed hooks in the main checkout).
 
 ## Command policy — one source of truth for dangerous shell commands
 

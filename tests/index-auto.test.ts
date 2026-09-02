@@ -27,6 +27,18 @@ async function repo(files = 3): Promise<{ ws: string; home: string }> {
 
 const clean = { PATH: process.env.PATH ?? "" } as NodeJS.ProcessEnv;
 
+/** The preload turns the auto-build off for every test; these tests are about it. */
+async function withAuto<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = process.env.AGENTIK_INDEX_AUTO;
+  process.env.AGENTIK_INDEX_AUTO = "1";
+  try {
+    return await fn();
+  } finally {
+    if (prev === undefined) delete process.env.AGENTIK_INDEX_AUTO;
+    else process.env.AGENTIK_INDEX_AUTO = prev;
+  }
+}
+
 async function capture(fn: () => Promise<number>): Promise<{ code: number; out: string; err: string }> {
   const out: string[] = [];
   const err: string[] = [];
@@ -109,7 +121,7 @@ describe("ensureIndex: the conductor builds, the worker reads", () => {
     const { ws, home } = await repo();
     const res = Bun.spawnSync(["bun", "src/cli.ts", "search", "fn1", "--workspace", ws, "--agentik-home", home], {
       cwd: join(import.meta.dir, ".."),
-      env: { ...process.env, [DEPTH_ENV]: "1" },
+      env: { ...process.env, [DEPTH_ENV]: "1", AGENTIK_INDEX_AUTO: "1" },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -152,7 +164,7 @@ describe("ensureIndex: the conductor builds, the worker reads", () => {
     expect(lines.some((l) => l.includes("not built"))).toBe(true);
   });
 
-  test("run / context / spawn build on first use; --no-index builds nothing; report.codeIndex says so", async () => {
+  test("run / context / spawn build on first use; --no-index builds nothing; report.codeIndex says so", () => withAuto(async () => {
     const { ws, home } = await repo();
     const { workerA, workerB } = pair();
     const off = await runLoop({ goal: "list files", workspace: ws, home, workerA, workerB, codeIndex: false });
@@ -189,7 +201,7 @@ describe("ensureIndex: the conductor builds, the worker reads", () => {
       if (prev === undefined) delete process.env[AUTO_INDEX_MAX_FILES_ENV];
       else process.env[AUTO_INDEX_MAX_FILES_ENV] = prev;
     }
-  });
+  }));
 
   test("two processes refreshing the same fresh index both succeed (race on UNIQUE(path) fixed)", async () => {
     const { ws, home } = await repo(40);
