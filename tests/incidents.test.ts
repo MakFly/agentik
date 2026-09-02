@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -12,6 +13,7 @@ import {
   resolveIncident,
   searchIncidents,
 } from "../src/incidents.ts";
+import { memoryPaths } from "../src/home.ts";
 import { recordSession, searchSessions } from "../src/sessions.ts";
 import { makeWorkspace } from "./helpers.ts";
 
@@ -201,5 +203,21 @@ describe("incidents — the failure log (same sessions.sqlite, FTS5 unicode61 + 
     );
     expect(formatIncidentHit({ ...base, backend: "codex", fix: "" })).toBe("⚠ codex · adapter_eof on --output-schema · seen 4× · last 2026-09-01");
     expect(formatIncidentHit({ ...base, harness: "", backend: "", fix: "" })).toBe("⚠ adapter_eof on --output-schema · seen 4× · last 2026-09-01");
+  });
+});
+
+describe("incidents FTS: an index created over an already-populated table is rebuilt once", () => {
+  test("dropping the FTS tables and reopening finds the old rows again", async () => {
+    const home = await makeWorkspace("incidents-rebuild-");
+    const rec = await recordIncident({ goal: "deploy", symptom: "adapter_eof on opencodex", harness: "codex", workspace: "/w" }, { home });
+    expect((await searchIncidents("opencodex", { home, workspace: "/w" })).map((i) => i.id)).toEqual([rec.id]);
+    const db = new Database(memoryPaths(home).sessionsDb);
+    for (const name of ["incidents_fts", "incidents_fts_tri"]) {
+      for (const t of ["ai", "ad", "au"]) db.run(`DROP TRIGGER IF EXISTS ${name}_${t}`);
+      db.run(`DROP TABLE IF EXISTS ${name}`);
+    }
+    db.close();
+    expect((await searchIncidents("opencodex", { home, workspace: "/w" })).map((i) => i.id)).toEqual([rec.id]);
+    expect((await searchIncidents("opencodx", { home, workspace: "/w" })).map((i) => i.id)).toEqual([rec.id]);
   });
 });

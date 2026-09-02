@@ -402,9 +402,12 @@ async function openIncidents(home: string): Promise<Database> {
     ["incidents_fts", "unicode61 remove_diacritics 2"],
     ["incidents_fts_tri", "trigram"],
   ] as const) {
+    const existed = db.query<{ n: number }, [string]>("SELECT count(*) AS n FROM sqlite_master WHERE name = ?").get(name)?.n ?? 0;
     db.run(
       `CREATE VIRTUAL TABLE IF NOT EXISTS ${name} USING fts5(goal, symptom, cause, fix, content='incidents', content_rowid='id', tokenize='${tokenizer}')`,
     );
+    // An index created over an already-populated table starts empty: rebuild it once.
+    if (!existed) db.run(`INSERT INTO ${name}(${name}) VALUES ('rebuild')`);
     db.run(`CREATE TRIGGER IF NOT EXISTS ${name}_ai AFTER INSERT ON incidents BEGIN
       INSERT INTO ${name}(rowid, goal, symptom, cause, fix) VALUES (new.id, new.goal, new.symptom, new.cause, new.fix);
     END`);
