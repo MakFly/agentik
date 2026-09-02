@@ -40,12 +40,27 @@ export interface CurateResult {
   snapshot?: string;
 }
 
-export interface LedgerEntry {
+export interface CurationLedgerEntry {
   at: string;
   snapshot: string;
   actions: Array<{ name: string; from: SkillState; to: SkillState }>;
   /** Present on a rollback entry: the snapshot that was restored. */
   restored?: string;
+}
+
+/** One SKILL.md write (src/skill-write.ts): who, what, which file, where the previous version went. */
+export interface SkillWriteLedgerEntry {
+  at: string;
+  actor: "reviewer" | "human" | "approval" | "migration";
+  action: string;
+  name: string;
+  backup?: string;
+}
+
+export type LedgerEntry = CurationLedgerEntry | SkillWriteLedgerEntry;
+
+export function isCurationEntry(e: LedgerEntry): e is CurationLedgerEntry {
+  return "snapshot" in e;
 }
 
 export interface CurateOptions {
@@ -155,7 +170,7 @@ export async function readLedger(opts?: { home?: string }): Promise<LedgerEntry[
   }
 }
 
-async function appendLedger(entry: LedgerEntry, home: string): Promise<void> {
+export async function appendLedger(entry: LedgerEntry, home: string): Promise<void> {
   const path = memoryPaths(home).curatorLedger;
   const ledger = await readLedger({ home });
   ledger.push(entry);

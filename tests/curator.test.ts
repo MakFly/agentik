@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
-import { curateSkills, planCuration, readLedger, rollbackSkills } from "../src/curator.ts";
+import { curateSkills, isCurationEntry, planCuration, readLedger, rollbackSkills } from "../src/curator.ts";
 import { pinSkill } from "../src/skill-factory.ts";
 import { readSkillUsage, recordSkillUsage, writeSkillUsage } from "../src/skill-usage.ts";
 import { executeTool, newReviewState } from "../src/tools.ts";
@@ -146,7 +146,7 @@ describe("curator: stale after 30 days, archived after 90, never deleted, snapsh
     expect(usage["skill-c"].state).toBe("archived");
     expect(usage["skill-d"].state).toBe("stale");
     expect(usage["skill-e"].state).toBe("stale");
-    const ledger = await readLedger({ home });
+    const ledger = (await readLedger({ home })).filter(isCurationEntry);
     expect(ledger).toHaveLength(1);
     expect(ledger[0].snapshot).toBe(real.snapshot!);
     expect(ledger[0].actions).toHaveLength(4);
@@ -195,7 +195,7 @@ describe("curator: stale after 30 days, archived after 90, never deleted, snapsh
     expect((await readSkillUsage({ home }))["skill-c"].state).toBeUndefined();
     expect((await readSkillUsage({ home }))["skill-b"].state).toBeUndefined();
     expect(existsSync(join(home, "skills", ".pinned"))).toBe(true);
-    const ledger = await readLedger({ home });
+    const ledger = (await readLedger({ home })).filter(isCurationEntry);
     expect(ledger).toHaveLength(2);
     expect(ledger[1].restored).toBe(pass.snapshot);
     expect(ledger[1].snapshot).toBe(r.safetySnapshot);

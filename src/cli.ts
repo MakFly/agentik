@@ -43,6 +43,7 @@ import {
 } from "./incidents.ts";
 import { formatIncidentForReview, formatReviewOutcome, runReview, type ReviewOutcome } from "./reviewer.ts";
 import { formatRunLine, listRuns, readRun, writeRun, type RunRecord } from "./runs.ts";
+import { undoSkillWrite } from "./skill-write.ts";
 import { formatRunUsage } from "./usage.ts";
 import { getSession, latestSession, recordSession } from "./sessions.ts";
 import { readFile } from "node:fs/promises";
@@ -150,7 +151,13 @@ Commands:
                                With memory.writeApproval on in <home>/config.json, every memory
                                write (reviewer tool, retain) is staged under pending/memory/;
                                approve replays it (the cap applies then), reject drops it.
-  agentik skills list | view <name> | draft|approve|update ... | pin|unpin|link|unlink|archive
+  agentik skills list | view <name> | draft|approve ... | pin|unpin|link|unlink|archive | undo <name>
+  agentik skill update <name> "<text>" [--section Pitfalls|Procedure|Steps]
+                               Every SKILL.md write (reviewer, human, approval) is backed up first
+                               to skills/.backups/<name>/SKILL.md.bak.<ts> and logged in
+                               skills/.curator-ledger.json {at, actor, action, name, backup};
+                               "update" appends a line to the section, the rest of the body is
+                               kept byte for byte; "undo" restores the newest backup (reversible).
                                "skills view <name>" prints a skill body and counts one view —
                                this is how /ak loads a skill from the index.
   agentik skills curate [--dry-run] [--stale-days 30] [--archive-days 90] [--rollback SNAPSHOT]
@@ -1108,6 +1115,7 @@ export function parseRun(args: string[]): {
     since?: string;
     target?: string;
     usage?: string;
+    section?: string;
   };
 } {
   const flags: Record<string, string | boolean> = {};
@@ -1222,6 +1230,7 @@ export function parseRun(args: string[]): {
       since: str(flags.since),
       target: str(flags.target),
       usage: str(flags.usage),
+      section: str(flags.section),
     },
   };
 }
@@ -1682,6 +1691,20 @@ async function skillCmd(args: string[]): Promise<number> {
     console.log(`linked ${name} into ${linked.length} harness home(s)`);
     return 0;
   }
+  if (sub === "undo") {
+    const name = args[1];
+    if (!name) {
+      console.error(SKILL_USAGE);
+      return 2;
+    }
+    const res = await undoSkillWrite(name, { home });
+    if (!res.ok) {
+      console.error(`agentik skills undo: ${res.error}`);
+      return 1;
+    }
+    console.log(`restored ${name} from ${res.restored} (the version you undid is backed up too)`);
+    return 0;
+  }
   if (sub === "update") {
     const name = args[1];
     const rest = args.slice(2);
@@ -1691,9 +1714,10 @@ async function skillCmd(args: string[]): Promise<number> {
       console.error("usage: agentik skill update <name> <goal>");
       return 2;
     }
+    const section = parsed.flags.section;
     const ok = await updateSkill(
       name,
-      { goal: updateGoal, steps: [`Updated from CLI: ${updateGoal}`] },
+      { steps: [updateGoal], ...(section ? { section } : {}) },
       { home: parsed.flags.agentikHome ? homeFor(parsed.flags) : home },
     );
     if ("error" in ok) {

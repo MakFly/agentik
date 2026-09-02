@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { agentikHome, memoryPaths } from "./home.ts";
 import { memoryContentProblem } from "./memory-store.ts";
+import { writeSkillFile } from "./skill-write.ts";
 
 /**
  * Skill names are *class-level*: what kind of work this is, not which session produced it.
@@ -134,8 +135,7 @@ export async function upsertSkill(
   const rendered = renderSkillMarkdown(opts);
   const tp = memoryContentProblem(rendered);
   if (tp) throw new Error(`skill "${opts.name}" refused: ${tp}`);
-  await mkdir(destDir, { recursive: true });
-  await writeFile(dest, rendered, "utf8");
+  await writeSkillFile(opts.name, rendered, { home: opts.home, actor: "human", action: action === "updated" ? "upsert" : "create" });
   if (opts.linkHarness) await linkHarnessSkill(opts.name, destDir);
   return { path: dest, name: opts.name, action };
 }
@@ -175,9 +175,8 @@ export async function approveSkill(
   const tp = memoryContentProblem(body);
   if (tp) return { error: `approve refused: ${tp} — the draft stays pending, edit or reject it` };
   const destDir = join(paths.skills, name);
-  await mkdir(destDir, { recursive: true });
-  const dest = join(destDir, "SKILL.md");
-  await writeFile(dest, body, "utf8");
+  // An approval over an existing skill used to overwrite it silently; now it is backed up and logged.
+  const { path: dest } = await writeSkillFile(name, body, { home: opts?.home, actor: "approval", action: "approve" });
   // A draft is consumed by its approval; leaving it would list the skill as pending forever.
   await rm(join(paths.pendingSkills, name), { recursive: true, force: true });
   if (opts?.linkHarness) await linkHarnessSkill(name, destDir);
@@ -186,7 +185,7 @@ export async function approveSkill(
 
 export async function updateSkill(
   name: string,
-  patch: { description?: string; goal?: string; steps?: string[]; artifacts?: string[] },
+  patch: { description?: string; goal?: string; steps?: string[]; artifacts?: string[]; section?: string },
   opts?: { home?: string },
 ): Promise<{ path: string } | { error: string }> {
   if (!NAME_RE.test(name)) return { error: "invalid skill name" };
@@ -198,15 +197,37 @@ export async function updateSkill(
   } catch {
     return { error: `no approved skill ${name}` };
   }
-  const description =
-    patch.description ?? existing.match(/^description:\s*(.+)$/m)?.[1]?.trim() ?? name;
-  const goal = patch.goal ?? existing.match(/^Origin: ([^\n]+)/m)?.[1];
-  const steps = patch.steps ?? ["Keep existing procedure; see previous body."];
-  await writeFile(
-    dest,
-    renderSkillMarkdown({ name, description, goal, steps, artifacts: patch.artifacts }),
-    "utf8",
-  );
+  // Never re-render: the body is somebody's work. Patch the description line, append the new
+  // steps under the procedure section (or a section the caller names), keep every other byte.
+  let next = existing;
+  if (patch.description !== undefined) {
+    const line = `description: ${patch.description.trim()}`;
+    next = /^description:.*$/m.test(next) ? next.replace(/^description:.*$/m, line) : next.replace(/^---\n/, `---\n${line}\n`);
+  }
+  const additions = patch.steps ?? [];
+  if (additions.length) {
+    const section = patch.section ?? "Steps";
+    const headingRe = new RegExp(`^##\\s+(${section === "Steps" ? "Steps|Procedure" : section.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})\\s*$`, "mi");
+    const m = headingRe.exec(next);
+    const block = additions.map((st) => (/^\d+\.\s|^[-*]\s/.test(st) ? st : `- ${st}`)).join("\n");
+    if (m) {
+      // Insert at the end of that section: before the next "## " heading or at EOF.
+      const start = m.index + m[0].length;
+      const rest = next.slice(start);
+      const nextHeading = rest.search(/^##\s+/m);
+      const end = nextHeading < 0 ? next.length : start + nextHeading;
+      const body = next.slice(start, end).replace(/\s+$/, "");
+      next = `${next.slice(0, start)}${body}\n${block}\n\n${next.slice(end)}`.replace(/\n{3,}/g, "\n\n");
+    } else {
+      next = `${next.replace(/\s+$/, "")}\n\n## ${section}\n\n${block}\n`;
+    }
+  }
+  if (patch.artifacts?.length) {
+    next = `${next.replace(/\s+$/, "")}\n\n## Artifacts seen\n\n${patch.artifacts.map((a) => `- ${a}`).join("\n")}\n`;
+  }
+  const tp = memoryContentProblem(next);
+  if (tp) return { error: `update refused: ${tp}` };
+  await writeSkillFile(name, next, { home: opts?.home, actor: "human", action: "update" });
   return { path: dest };
 }
 

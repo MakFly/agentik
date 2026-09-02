@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { agentikHome, memoryPaths } from "./home.ts";
 import { memoryContentProblem } from "./memory-store.ts";
-import { skillDescriptionProblem, upsertSkill } from "./skill-factory.ts";
+import { skillDescriptionProblem, skillNameProblem } from "./skill-factory.ts";
+import { writeSkillFile } from "./skill-write.ts";
 import { recordSkillUsage, type SkillCreator } from "./skill-usage.ts";
 
 /**
@@ -49,7 +50,7 @@ export async function applySkillPatch(
   const next = body.replace(oldStr, newStr);
   const problem = skillTextProblem(newStr) ?? skillTextProblem(next);
   if (problem) return { ok: false, output: `patch refused: ${problem}` };
-  await writeFile(file, next, "utf8");
+  await writeSkillFile(name, next, { home: opts?.home, actor: opts?.by === "human" ? "human" : opts?.by === "reviewer" ? "reviewer" : "approval", action: "patch" });
   await recordSkillUsage(name, "patch", { home: opts?.home });
   return { ok: true, output: `patched ${name}`, artifact: `skills/${name}/SKILL.md` };
 }
@@ -76,8 +77,9 @@ export async function applySkillCreate(
   if (problem) return { ok: false, output: problem };
   const description = String(args.description ?? "").trim();
   const body = String(args.body ?? "").trim();
-  await upsertSkill({ name, description, steps: [], home: opts?.home });
-  await writeFile(skillFile(name, opts?.home), `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n`, "utf8");
+  const np = skillNameProblem(name);
+  if (np) return { ok: false, output: `create: invalid skill name "${name}": ${np}` };
+  await writeSkillFile(name, `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n`, { home: opts?.home, actor: opts?.by === "human" ? "human" : opts?.by === "reviewer" ? "reviewer" : "approval", action: "create" });
   await recordSkillUsage(name, "create", { home: opts?.home, createdBy: opts?.by ?? "reviewer" });
   return { ok: true, output: `created ${name}`, artifact: `skills/${name}/SKILL.md` };
 }

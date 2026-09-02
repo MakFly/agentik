@@ -60,6 +60,12 @@ the README and this file disagree; this file wins for agents.
   + executeTool refuses without role=reviewer and a home.
 
   Profiles:  --profile P / AGENTIK_PROFILE   default → ~/.agentik   other → ~/.agentik/profiles/P
+  Skill pen: every SKILL.md write (skill_manage create|patch, upsert, draft→approve, skill update, undo)
+             goes through src/skill-write.ts: backup to skills/.backups/<name>/SKILL.md.bak.<ts> (outside
+             the skill folder, which may be symlinked), then {at, actor reviewer|human|approval|migration,
+             action, name, backup} in skills/.curator-ledger.json. agentik skills undo <name> restores
+             the newest backup (after backing up the current file: reversible). agentik skill update
+             <n> "<text>" [--section Pitfalls|Procedure|Steps] appends a line, the rest is byte for byte.
   Curator:   agentik skills curate  active → stale (30d unused) → archived (90d) ; never deletes ;
              tar.gz snapshot + ledger before each pass ; --rollback <snapshot> ; pinned & human skills
              are never archived.  Usage counters in skills/.usage.json (view/patch/create).
