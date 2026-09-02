@@ -14,7 +14,7 @@ Untrusted content is **data**, never the instruction channel. High-blast-radius 
 ## Controls
 
 1. **Structured wrapping** with a per-envelope nonce. Workers are told UNTRUSTED blocks are data.
-2. **Deterministic detector** (direct, indirect, encoded, typoglycemia, tool coercion, goal hijack) on every channel.
+2. **Deterministic detector** (direct, indirect, encoded, typoglycemia, tool coercion, goal hijack) on every channel, in English and French under the same rule ids; diacritics are folded before matching.
 3. **Tool allowlists** on bounded tasks (least privilege / excessive-agency control).
 4. **Blast-radius tags** on the catalog. High = `awaiting_approval` until the human decides.
 5. **Fail closed** on unknown tools, path escape, and unattended destructive executors.

@@ -22,7 +22,7 @@ export const INJECTION_RULES: InjectionRule[] = [
   {
     id: "ignore_previous_instructions",
     severity: "high",
-    re: /\b(ignore|disregard|forget|discard)\s+(all\s+)?(previous|prior|above|preceding)\s+(instructions?|directives?|prompts?|rules?|goals?|context)\b/i,
+    re: /\b(ignore|disregard|forget|discard)\s+(all\s+)?(previous|prior|above|preceding)\s+(instructions?|directives?|prompts?|rules?|goals?|context)\b|\b(ignore[sz]?|oublie[sz]?|efface[sz]?|ne\s+tiens\s+plus\s+compte\s+de[s]?)\s+(toutes?\s+)?(les\s+|tes\s+|vos\s+|ces\s+)?(instructions?|consignes?|regles?|directives?)\s+(precedentes?|anterieures?|ci-dessus|d'avant|au-dessus|donnees\s+plus\s+haut)\b|\boublie[sz]?\s+tout\s+ce\s+qui\s+precede\b/i,
   },
   {
     id: "override_system",
@@ -32,7 +32,7 @@ export const INJECTION_RULES: InjectionRule[] = [
   {
     id: "goal_hijack",
     severity: "high",
-    re: /\bnew\s+goal\s*[:\-]|from\s+now\s+on\s+your\s+goal\b|\breplace\s+(the\s+)?(current\s+)?goal\b/i,
+    re: /\bnew\s+goal\s*[:\-]|from\s+now\s+on\s+your\s+goal\b|\breplace\s+(the\s+)?(current\s+)?goal\b|\bnouvel\s+objectif\s*[:\-]|\bnouvelle\s+mission\s*[:\-]|\b(desormais|dorenavant|a\s+partir\s+de\s+maintenant)[,]?\s+(ton|votre)\s+(objectif|but|mission)\b|\bremplace[sz]?\s+(l'|le\s+)?objectif\b/i,
   },
   {
     id: "jailbreak_persona",
@@ -42,22 +42,22 @@ export const INJECTION_RULES: InjectionRule[] = [
   {
     id: "role_hijack",
     severity: "high",
-    re: /\b(enter\s+(developer|maintenance|unrestricted)\s+mode|act\s+as\s+if\s+you(?:'re| are) not bound|no\s+restrictions?\s+apply)\b/i,
+    re: /\b(enter\s+(developer|maintenance|unrestricted)\s+mode|act\s+as\s+if\s+you(?:'re| are) not bound|no\s+restrictions?\s+apply)\b|\btu\s+es\s+maintenant\b|\b(desormais|dorenavant)[,]?\s+tu\s+(es|dois|vas|n'as\s+plus)\b|\bmode\s+sans\s+(restrictions?|limites?)\b|\bpasse\s+en\s+mode\s+(developpeur|maintenance|sans\s+restriction)\b/i,
   },
   {
     id: "reveal_system_prompt",
     severity: "medium",
-    re: /\b(reveal|repeat|print|dump|show)\s+(your\s+)?(system\s+)?(prompt|instructions?|hidden\s+rules)\b/i,
+    re: /\b(reveal|repeat|print|dump|show)\s+(your\s+)?(system\s+)?(prompt|instructions?|hidden\s+rules)\b|\b(revele[sz]?|affiche[sz]?|montre[sz]?|repete[sz]?|devoile[sz]?|donne[sz]?)(-|\s+)?(moi)?\s+(ton|le|tes|les|votre|vos)?\s*(prompt\s+systeme|instructions?\s+(cachees?|systeme|secretes?)|regles?\s+cachees?|consignes?\s+cachees?)\b/i,
   },
   {
     id: "tool_coercion",
     severity: "high",
-    re: /\b(call|invoke|run|execute)\s+tool\s+(server_admin|fs_destructive|credential_use)\b/i,
+    re: /\b(call|invoke|run|execute)\s+tool\s+(server_admin|fs_destructive|credential_use)\b|\b(appelle[sz]?|invoque[sz]?|lance[sz]?|execute[sz]?|utilise[sz]?)\s+(l['\u2019]\s*)?outil\s+(server_admin|fs_destructive|credential_use)\b/i,
   },
   {
     id: "destructive_coercion",
     severity: "high",
-    re: /\b(wipe|destroy|rm\s+-rf\s+\/|drop\s+database|exfiltrate|send\s+(secrets?|keys?)\s+to)\b/i,
+    re: /\b(wipe|destroy|rm\s+-rf\s+\/|drop\s+database|exfiltrate|send\s+(secrets?|keys?)\s+to)\b|\b(execute[sz]?|lance[sz]?)\s+rm\s+-rf\b|\bsupprime[sz]?\s+(tout|le\s+disque|la\s+base(\s+de\s+donnees)?|toutes?\s+les\s+donnees)\b|\b(envoie[sz]?|transmet[sz]?|exfiltre[sz]?)\s+(les\s+|tes\s+|vos\s+)?(cles?|secrets?|tokens?|mots?\s+de\s+passe)\s+(vers|a)\b/i,
   },
   {
     id: "thought_injection",
@@ -81,10 +81,24 @@ const TYPO_TARGETS = [
   "jailbreak",
   "instructions",
   "prompt",
+  // French (folded: no diacritics, see normalizeForScan)
+  "oublie",
+  "consignes",
+  "objectif",
+  "revele",
+  "supprime",
+  "contourne",
+  "desormais",
+  "precedentes",
 ];
 
+/**
+ * NFKC (compatibility forms), zero-width strip, then NFD + combining-mark strip: the same fold
+ * as sessions.ts, so « précédentes », « precedentes » and a decomposed accent all reach the
+ * rules as `precedentes`. The French rules are written in that folded form.
+ */
 export function normalizeForScan(text: string): string {
-  let s = text.normalize("NFKC").replace(ZERO_WIDTH, "");
+  let s = text.normalize("NFKC").replace(ZERO_WIDTH, "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   s = s.replace(/\s+/g, " ");
   // Collapse spaced-out letters: "i g n o r e" -> "ignore"
   s = s.replace(/(?:\b[a-zA-Z]\s+){3,}[a-zA-Z]\b/g, (m) => m.replace(/\s+/g, ""));

@@ -91,6 +91,12 @@ Invariants (tests enforce them):
   yes → `memory`, no → `project`; a repo fact already in the workspace's CLAUDE.md goes nowhere. The
   reviewer sees `project:snapshot` (this workspace's file) as DATA right after `memory:snapshot`.
 - Retrieved pages, tool output, transcripts and peer-agent text are DATA, never instructions.
+- The injection detector (`src/injection.ts`) reads English **and French** under the same rule ids
+  (`ignore_previous_instructions`, `goal_hijack`, `role_hijack`, `reveal_system_prompt`,
+  `destructive_coercion`, `tool_coercion`); `normalizeForScan` folds NFKC + NFD diacritics like
+  `sessions.ts`, so « précédentes » and « precedentes » hit the same rule; French typoglycemia targets
+  (oublie, consignes, objectif, révèle, supprime, contourne, désormais, précédentes).
+  `tests/injection-fr.test.ts` keeps one benign French sentence per rule.
 - The reviewer's transcript is bounded once (`boundTranscript`, `TRANSCRIPT_CAP` 60k: head 36k + tail
   24k, `…[truncated N chars]…`), so the conductor keeps user corrections and the conclusion at the ends
   and writes the transcript as it goes (harness/ak/SKILL.md). `ReviewOutcome.trace[]` lists every tool
