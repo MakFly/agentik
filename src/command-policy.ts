@@ -289,3 +289,18 @@ export function renderDenyRules(harness: DenyHarness): string[] {
   if (harness === "claude") return entries;
   return entries.flatMap((e) => ["--deny", e]);
 }
+
+/**
+ * The floor as a TRUSTED prompt line, for a harness with no deny flag (codex). It is a belt,
+ * not a lock: the caller detects violations after the fact with `matchCommandRules` on the
+ * commands the stream reports.
+ */
+export function denyFloorPrompt(): string {
+  return [
+    "HARD FLOOR (trusted, from agentik — do not rephrase around it): never run rm -rf, git push --force / -f,",
+    "git reset --hard, git clean -f, git checkout ., find -delete, sudo / doas, mkfs, dd on /dev, shutdown /",
+    "reboot, chmod 777, curl | sh, DROP DATABASE, shutil.rmtree, kill -9 -1, docker prune, terraform destroy,",
+    "kubectl delete, or any `agentik spawn` / `agentik run` (a worker never spawns workers). If the task",
+    "needs one of these, stop and report it instead of running it.",
+  ].join(" ");
+}

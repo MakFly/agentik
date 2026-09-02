@@ -6,6 +6,7 @@ import {
   saveCodexCapabilities,
   shouldTryStructuredOutput,
 } from "./codex-capabilities.ts";
+import { denyFloorPrompt, renderDenyRules } from "./command-policy.ts";
 import { MockBackend } from "./mock-backend.ts";
 import { renderEnvelopes } from "./trust.ts";
 import {
@@ -319,22 +320,42 @@ export function claudeCliArgs(prompt: string, model: string): string[] {
  * mode is not: it rejects every edit outside the session plan.md, so a worker that wrote files
  * was never in it.
  */
+export interface ForeignWorkerOptions {
+  /**
+   * Human opt-out of the high-blast floor (`agentik spawn --allow-high-blast`). Default off:
+   * the worker runs `--yolo` / `--dangerously-skip-permissions` for everything EXCEPT the
+   * commands of HIGH_BLAST_DENY_RULES, which the harness itself denies.
+   */
+  allowHighBlast?: boolean;
+}
+
+/** The claude `--settings` JSON that carries the floor: unambiguous, no argv tokenisation. */
+export function claudeFloorSettings(): string {
+  return JSON.stringify({ permissions: { deny: renderDenyRules("claude") } });
+}
+
 export function foreignWorkerArgs(
   harness: "claude" | "grok" | "codex",
   prompt: string,
   cwd?: string,
   /** Extra flags, placed where each CLI's parser accepts them (codex takes a trailing prompt). */
   extra: string[] = [],
+  opts: ForeignWorkerOptions = {},
 ): { bin: string; args: string[] } {
+  const floor = !opts.allowHighBlast;
   if (harness === "grok") {
-    const args = ["--yolo", "--single", prompt, "--no-subagents", "--no-plan", ...extra];
+    // grok 1.0.13: `--deny <RULE>` repeatable, claude syntax, evaluated per chained segment,
+    // kept under `--yolo`.
+    const args = ["--yolo", "--single", prompt, "--no-subagents", "--no-plan", ...(floor ? renderDenyRules("grok") : []), ...extra];
     if (cwd) args.push("--cwd", cwd);
     return { bin: "grok", args };
   }
   if (harness === "codex") {
+    // codex 0.151.0 has no deny flag (execpolicy files only): the floor is a trusted prompt
+    // line, and the verdict checks the commands it ran after the fact.
     const args = ["exec", "--yolo", "--skip-git-repo-check", "--ephemeral", ...extra];
     if (cwd) args.push("--cd", cwd);
-    args.push(prompt);
+    args.push(floor ? `${denyFloorPrompt()}\n\n${prompt}` : prompt);
     return { bin: "codex", args };
   }
   const args = [
@@ -345,6 +366,7 @@ export function foreignWorkerArgs(
     "high",
     "--disallowedTools",
     "Agent",
+    ...(floor ? ["--settings", claudeFloorSettings()] : []),
     ...extra,
   ];
   return { bin: "claude", args };

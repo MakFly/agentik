@@ -23,6 +23,11 @@ Untrusted content is **data**, never the instruction channel. High-blast-radius 
    High needs an approval; hardline (`rm -rf /`, `mkfs`/`dd` on a block device, fork bomb) is
    refused before any ApprovalRequest exists, so a session `--yolo` cannot release it. `run_command`
    runs a single argv with no shell, a scrubbed environment and a bounded capture.
+7. **Spawn floor** (`agentik spawn`): the same rules are handed to the foreign harness as deny
+   rules (claude `--settings` permissions.deny, grok `--deny`), so a `--yolo` worker still cannot
+   `rm -rf`, force-push or `sudo`. Codex has no deny flag: the floor there is a trusted prompt line
+   plus after-the-fact detection on the commands the stream reports (an incident, not a lock).
+   `--allow-high-blast` is the human's opt-out and is announced on stderr.
 
 ## Sources (retrieved and attributed)
 

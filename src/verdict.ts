@@ -1,4 +1,5 @@
 import type { HarnessName } from "./availability.ts";
+import { matchCommandRules } from "./command-policy.ts";
 
 /**
  * What a headless harness actually did, read from its own structured stream rather than
@@ -21,6 +22,31 @@ export interface HarnessVerdict {
   errors: string[];
   /** Assistant prose, when the stream carries it. */
   text: string;
+  /** Parsed stream events of any type (0 = the harness never spoke). */
+  events: number;
+  /** Shell commands the harness proposed (claude Bash, grok run_terminal_command, codex command_execution). */
+  commands: string[];
+  /** Commands the harness itself denied (claude `permission_denials`). */
+  denied: string[];
+}
+
+export interface FloorViolation {
+  command: string;
+  rules: string[];
+}
+
+/**
+ * High-blast commands the harness reports having run despite the floor: matched by the policy
+ * and not in its own denial list. For codex, which has no deny flag, every match is a run.
+ */
+export function floorViolations(v: HarnessVerdict): FloorViolation[] {
+  const out: FloorViolation[] = [];
+  for (const command of v.commands) {
+    if (v.denied.includes(command)) continue;
+    const m = matchCommandRules(command);
+    if (m.level !== "medium") out.push({ command, rules: m.rules });
+  }
+  return out;
 }
 
 /** Extra CLI args that switch a harness to its NDJSON event stream. */
@@ -31,7 +57,7 @@ export function verdictArgs(harness: HarnessName): string[] {
 }
 
 export function newVerdict(harness: HarnessName): HarnessVerdict {
-  return { harness, completed: false, turns: 0, toolCalls: 0, toolNames: [], errors: [], text: "" };
+  return { harness, completed: false, turns: 0, toolCalls: 0, toolNames: [], errors: [], text: "", events: 0, commands: [], denied: [] };
 }
 
 /** Tool-ish codex item types. Anything else (agent_message, reasoning, todo_list) is not work. */
@@ -74,6 +100,7 @@ export function consumeVerdictLine(v: HarnessVerdict, line: string, hooks?: Rend
     return;
   }
   const type = typeof obj.type === "string" ? obj.type : "";
+  v.events += 1;
 
   if (v.harness === "grok") {
     if (type === "text" && typeof obj.data === "string") {
@@ -82,6 +109,8 @@ export function consumeVerdictLine(v: HarnessVerdict, line: string, hooks?: Rend
     } else if (type === "tool_call") {
       const name = String(obj.toolName ?? obj.title ?? "tool");
       record(v, name, describeArgs(obj.rawInput), hooks);
+      const cmd = commandOf(obj.rawInput);
+      if (cmd && /terminal|bash|shell|command/i.test(name)) v.commands.push(cmd);
     } else if (type === "error") {
       v.errors.push(String(obj.message ?? "error"));
     } else if (type === "max_turns_reached") {
@@ -103,6 +132,8 @@ export function consumeVerdictLine(v: HarnessVerdict, line: string, hooks?: Rend
           if (p.type === "text" && typeof p.text === "string") hooks?.onText?.(p.text);
           if (p.type === "tool_use") {
             record(v, String(p.name ?? "tool"), describeArgs(p.input), hooks);
+            const cmd = commandOf(p.input);
+            if (cmd && p.name === "Bash") v.commands.push(cmd);
           }
         }
       }
@@ -118,6 +149,10 @@ export function consumeVerdictLine(v: HarnessVerdict, line: string, hooks?: Rend
       const denials = obj.permission_denials;
       if (Array.isArray(denials) && denials.length > 0) {
         v.errors.push(`${denials.length} permission denial(s)`);
+        for (const d of denials) {
+          const cmd = commandOf((d as Record<string, unknown>)?.tool_input);
+          if (cmd) v.denied.push(cmd);
+        }
       }
       if (obj.is_error === true) v.errors.push(String(obj.result ?? "run reported is_error"));
     }
@@ -143,6 +178,10 @@ export function consumeVerdictLine(v: HarnessVerdict, line: string, hooks?: Rend
       v.errors.push(String(item?.message ?? "error item"));
     } else if (CODEX_TOOL_ITEMS.has(itemType)) {
       record(v, itemType, describeArgs(item?.command ?? item?.changes ?? item?.query), hooks);
+      if (itemType === "command_execution") {
+        const cmd = typeof item?.command === "string" ? item.command : commandOf(item?.command);
+        if (cmd) v.commands.push(cmd);
+      }
     }
   }
 }
@@ -168,6 +207,20 @@ function claudeErrorMessage(obj: Record<string, unknown>): string {
     json = "";
   }
   return (json || "error event").slice(0, ERROR_LINE_MAX);
+}
+
+/** The shell command inside a tool input, whatever the harness calls the field. */
+function commandOf(input: unknown): string | undefined {
+  if (typeof input === "string") return input.trim() || undefined;
+  if (Array.isArray(input)) return input.every((x) => typeof x === "string") ? (input as string[]).join(" ").trim() || undefined : undefined;
+  if (!input || typeof input !== "object") return undefined;
+  const o = input as Record<string, unknown>;
+  for (const k of ["command", "cmd", "commandLine", "command_line"]) {
+    const v = o[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+    if (Array.isArray(v) && v.every((x) => typeof x === "string")) return (v as string[]).join(" ");
+  }
+  return undefined;
 }
 
 function numberOr(value: unknown, fallback: number): number {

@@ -183,6 +183,18 @@ command × level table (~80 rows) and the benign-neighbour check for every rule.
   skills index, related sessions, KNOWN FAILURES) to the bounded task as an UNTRUSTED envelope
   (`origin=agentik:context`, "DATA ONLY"), capped at 6000 chars (`…[truncated]`); `--no-context` leaves
   it out, `--raw` keeps it. A context that cannot be built is one stderr line, the task still runs.
+- `agentik spawn` installs the **high-blast floor** from `HIGH_BLAST_DENY_RULES` (`foreignWorkerArgs(…,
+  {allowHighBlast})`): claude `--settings '{"permissions":{"deny":["Bash(rm -rf *)",…]}}'` (+
+  `--disallowedTools Agent`), grok `--deny 'Bash(…)'` × N (kept under `--yolo`), codex a TRUSTED
+  `denyFloorPrompt()` line in front of the prompt (no deny flag exists). The verdict records the
+  commands the harness ran (`verdict.commands`: claude Bash, grok run_terminal_command, codex
+  command_execution) and its own denials (claude `permission_denials`); `floorViolations()` = matched
+  by the policy and not denied → stderr `FLOOR VIOLATION` + incident `<harness> ran a high-blast
+  command despite the floor: <rule>`, exit code unchanged. `--allow-high-blast` (human) removes the
+  floor and prints `floor DISABLED`. `probe` records `supportsDenyRules` from `--help`; a claude/grok
+  that does not advertise it is refused (exit 2) unless `--allow-high-blast`. A CLI dying at once
+  (no event, < 5 s, stderr `unknown … --settings|deny`) is the symptom `rejected the deny rules (argv)`.
+  `--raw` reads no stream: no after-the-fact detection (said on stderr).
 - `agentik spawn --harness X` reads the harness event stream (verdict): exit `0` done · `1` CLI
   failed · `2` unusable harness · `124` timeout (default 1800 s) · `125` finished without doing the
   work (`--require-tools`, `--expect-artifact PATH`).

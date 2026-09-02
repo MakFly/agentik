@@ -164,6 +164,15 @@ returned a bare failure with nothing saying the work had been cut off mid-task. 
 
 Live models only **propose** JSON `toolCalls`. The orchestrator gates and executes.
 
+**Spawned workers have a floor.** `agentik spawn` runs the harness in yolo mode for everything
+except the high-blast commands of the policy, which it denies at the harness itself: claude via
+`--settings '{"permissions":{"deny":["Bash(rm -rf *)", …]}}'`, grok via repeated `--deny 'Bash(…)'`
+(kept under `--yolo`), codex — which has no deny flag — via a trusted line in front of the prompt.
+After the run, the commands the harness reports having run are matched against the same rules: a
+match that the harness did not deny itself is printed as `FLOOR VIOLATION` and logged as an incident
+(exit code unchanged). `--allow-high-blast` removes the floor and says `floor DISABLED`. A claude or
+grok whose `--help` no longer advertises the deny flag is refused rather than run without the floor.
+
 **Command policy.** `run_command` executes one argv with no shell (pipes, `;`, `&&`, redirections
 and `$(…)` are refused: "one command per call"), with a 30 s default timeout (`timeout_s`, max 120),
 a scrubbed environment (no `*_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `GH_TOKEN`, API keys) and a

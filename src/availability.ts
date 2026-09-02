@@ -33,7 +33,33 @@ export interface BackendStatus {
   loggedIn: boolean;
   /** First line of the probe output, for the human. */
   detail: string;
+  /** `<bin> --help` advertises a deny-rule flag (claude `--disallowedTools`/`--settings`, grok `--deny`); codex never. */
+  supportsDenyRules?: boolean;
   checkedAt: string;
+}
+
+const DENY_HELP: Record<HarnessName, RegExp | null> = {
+  claude: /--disallowedTools|--settings\b/,
+  grok: /--deny\b/,
+  codex: null,
+};
+
+/**
+ * Does this binary accept the high-blast floor? Read from `--help` (no token spent). A CLI that
+ * dropped the flag would otherwise silently run without the floor — `spawn` refuses instead.
+ */
+export async function helpSupportsDenyRules(bin: HarnessName): Promise<boolean> {
+  const re = DENY_HELP[bin];
+  if (!re || !Bun.which(bin)) return false;
+  try {
+    const proc = Bun.spawn([bin, "--help"], { stdout: "pipe", stderr: "pipe" });
+    const timer = setTimeout(() => proc.kill(), PROBE_TIMEOUT_MS);
+    const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+    clearTimeout(timer);
+    return re.test(`${stdout}\n${stderr}`);
+  } catch {
+    return false;
+  }
 }
 
 export type AvailabilityMap = Record<HarnessName, BackendStatus>;
@@ -127,6 +153,7 @@ export async function probeBackend(bin: HarnessName): Promise<BackendStatus> {
     present: true,
     loggedIn: readsAsLoggedIn(stdout, stderr, exitCode),
     detail: summarizeProbe(stdout, stderr, exitCode),
+    supportsDenyRules: await helpSupportsDenyRules(bin),
     checkedAt: new Date().toISOString(),
   };
 }

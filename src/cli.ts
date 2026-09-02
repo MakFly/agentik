@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { matchCommandRules } from "./command-policy.ts";
 import { ConfigError, formatConfigError, readConfig } from "./config.ts";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -13,8 +14,7 @@ import {
   describeStatus,
   HARNESSES,
   loadAvailability,
-  type HarnessName,
-} from "./availability.ts";
+  type HarnessName, helpSupportsDenyRules } from "./availability.ts";
 import {
   describeUntouched,
   snapshotArtifacts,
@@ -26,8 +26,7 @@ import {
   newVerdict,
   summarizeVerdict,
   verdictArgs,
-  verdictProblem,
-} from "./verdict.ts";
+  verdictProblem, floorViolations } from "./verdict.ts";
 import { formatReport, runLoop } from "./loop.ts";
 import { defaultFetchImpl } from "./tools.ts";
 import { retainNote, readHot } from "./memory.ts";
@@ -191,6 +190,9 @@ Options:
   --refresh-backends           Re-probe the harnesses instead of reading the 15min cache
   --strict-backend             Fail instead of rerouting when a named harness is unusable
   --no-review                  run / harvest: skip the background review
+  --allow-high-blast           spawn: run WITHOUT the high-blast floor (rm -rf, git push --force,
+                               sudo, … are denied at the harness by default; codex gets a trusted
+                               prompt line and after-the-fact detection). Says "floor DISABLED".
   --require-tools              spawn: a run that calls no tool is a failure (exit 125).
                                Pass it for implement/fix tasks, omit it for diagnostics.
   --expect-artifact PATH       spawn: this workspace path must be created, modified or
@@ -651,6 +653,9 @@ export async function spawnContextBlock(goal: string, workspace: string, home: s
   return renderEnvelope(wrapUntrusted(body, SPAWN_CONTEXT_ORIGIN, "retrieved"));
 }
 
+/** stderr of a CLI whose argv parser refused the floor flags. */
+const ARGV_REJECTED = /(unknown|invalid|unrecognized|unexpected|bad)[^\n]{0,80}(deny|disallowed|settings)|(deny|disallowed|settings)[^\n]{0,80}(unknown|invalid|unrecognized|unexpected|not (a )?valid)/i;
+
 async function spawnForeign(args: string[]): Promise<number> {
   const { goal, flags } = parseRun(args);
   const harnessRaw = (flags.harness ?? flags.backend ?? "").toLowerCase();
@@ -681,6 +686,23 @@ async function spawnForeign(args: string[]): Promise<number> {
     return 2;
   }
 
+  // The high-blast floor: HIGH_BLAST_DENY_RULES handed to the harness as deny rules. A claude
+  // or grok that does not advertise the flag would run with no floor at all — refuse instead.
+  const floor = !flags.allowHighBlast;
+  if (!floor) {
+    console.error("agentik spawn: high-blast floor DISABLED (--allow-high-blast) — rm -rf, git push --force, sudo… are NOT denied for this worker");
+  } else if (harness === "codex") {
+    console.error("agentik spawn: codex has no deny flag — the floor is a trusted prompt line; violations are detected after the fact");
+  } else {
+    const supports = status.supportsDenyRules ?? (await helpSupportsDenyRules(harness));
+    if (!supports) {
+      console.error(
+        `agentik spawn: ${harness} does not advertise deny rules in --help (${harness === "grok" ? "--deny" : "--disallowedTools / --settings"}) — refusing to spawn without the high-blast floor; pass --allow-high-blast to run without it`,
+      );
+      return 2;
+    }
+  }
+
   const workspace = resolve(flags.workspace ?? process.cwd());
   const role = flags.role ? `You are ${flags.role}. ` : "";
   const bounded = `${role}Bounded task (no nested subagents, stay in ${workspace}):\n${goal}`;
@@ -692,7 +714,7 @@ async function spawnForeign(args: string[]): Promise<number> {
   // Murphy: a failure that is not written down happens again. Every non-zero exit leaves an
   // incident (same symptom on the same harness and workspace -> seen+1). Recording never
   // changes the exit code: if the log itself fails, say so and return the same code.
-  const fail = async (code: number, symptom: string, extra?: { stopReason?: string; errors?: string[] }) => {
+  const noteIncident = async (code: number, symptom: string, extra?: { stopReason?: string; errors?: string[] }) => {
     try {
       const rec = await recordIncident(
         {
@@ -712,6 +734,9 @@ async function spawnForeign(args: string[]): Promise<number> {
     } catch (err) {
       console.error(`agentik spawn: could not record incident: ${err instanceof Error ? err.message : String(err)}`);
     }
+  };
+  const fail = async (code: number, symptom: string, extra?: { stopReason?: string; errors?: string[] }) => {
+    await noteIncident(code, symptom, extra);
     return code;
   };
   let before: ArtifactSnapshot[] = [];
@@ -728,7 +753,8 @@ async function spawnForeign(args: string[]): Promise<number> {
 
   if (flags.raw) {
     // Opt-out: the harness's own rendering, no verdict.
-    const { bin, args: rawArgs } = foreignWorkerArgs(harness, prompt, workspace);
+    const { bin, args: rawArgs } = foreignWorkerArgs(harness, prompt, workspace, [], { allowHighBlast: !floor });
+    if (floor) console.error("agentik spawn: --raw reads no stream — floor violations cannot be detected after the fact on this run");
     const res = await spawnCapture(bin, rawArgs, timeoutMs, workspace, { stream: true });
     if (res.timedOut) {
       console.error(timedOutMsg());
@@ -746,8 +772,9 @@ async function spawnForeign(args: string[]): Promise<number> {
 
   // Read the harness's own event stream. Exit code alone cannot tell a worker that did the
   // job from one that narrated an intention and stopped — both exit 0.
-  const { bin, args: streamArgs } = foreignWorkerArgs(harness, prompt, workspace, verdictArgs(harness));
+  const { bin, args: streamArgs } = foreignWorkerArgs(harness, prompt, workspace, verdictArgs(harness), { allowHighBlast: !floor });
   const verdict = newVerdict(harness);
+  const startedAt = Date.now();
   const res = await spawnLines(bin, streamArgs, timeoutMs, workspace, (line) =>
     consumeVerdictLine(verdict, line, {
       onText: (chunk) => process.stdout.write(chunk),
@@ -761,6 +788,24 @@ async function spawnForeign(args: string[]): Promise<number> {
   const label = verdict.completed ? "note" : "harness error";
   for (const e of verdict.errors) console.error(`agentik spawn: ${label} — ${e}`);
 
+  // The floor, after the fact: a high-blast command the harness reports having run (and did
+  // not deny itself) is an incident whatever the exit code — the exit code is never changed.
+  const violations = floorViolations(verdict);
+  for (const cmd of verdict.denied) {
+    if (matchCommandRules(cmd).level !== "medium") console.error(`agentik spawn: denied by the floor — ${cmd.slice(0, 120)}`);
+  }
+  if (violations.length > 0) {
+    for (const vi of violations) {
+      console.error(`agentik spawn: ${floor ? "FLOOR VIOLATION" : "high-blast command (floor disabled)"} — ${harness} ran "${vi.command.slice(0, 120)}" (${vi.rules.join(", ")})`);
+    }
+    if (floor) {
+      await noteIncident(res.exitCode, `${harness} ran a high-blast command despite the floor: ${violations.map((vi) => vi.rules[0]).join(", ")}`, {
+        stopReason: verdict.stopReason,
+        errors: [...violations.map((vi) => `ran: ${vi.command.slice(0, 160)}`), ...verdict.errors],
+      });
+    }
+  }
+
   const detail = { stopReason: verdict.stopReason, errors: verdict.errors };
   if (res.timedOut) {
     console.error(timedOutMsg());
@@ -768,6 +813,12 @@ async function spawnForeign(args: string[]): Promise<number> {
   }
   if (res.exitCode !== 0) {
     if (res.stderr.trim()) process.stderr.write(res.stderr);
+    // A CLI that rejects the deny rules as argv dies at once, before any event.
+    if (floor && verdict.events === 0 && Date.now() - startedAt < 5_000 && ARGV_REJECTED.test(res.stderr)) {
+      const symptom = `${harness} rejected the deny rules (argv) — exit ${res.exitCode}; the floor could not be installed`;
+      console.error(`agentik spawn: ${symptom}`);
+      return fail(1, symptom, { ...detail, errors: [res.stderr.trim().split("\n")[0].slice(0, 200), ...verdict.errors] });
+    }
     return fail(1, `${harness} exited ${res.exitCode}`, detail);
   }
   const problem = verdictProblem(verdict, { requireTools: flags.requireTools });
@@ -845,6 +896,7 @@ export function parseRun(args: string[]): {
     transcript?: string;
     session?: string;
     noReview?: boolean;
+    allowHighBlast?: boolean;
     maxIterations?: number;
     all?: boolean;
     limit?: number;
@@ -883,6 +935,7 @@ export function parseRun(args: string[]): {
     else if (a === "--refresh-backends") flags.refreshBackends = true;
     else if (a === "--strict-backend") flags.strictBackend = true;
     else if (a === "--require-tools") flags.requireTools = true;
+    else if (a === "--allow-high-blast") flags.allowHighBlast = true;
     else if (a === "--raw") flags.raw = true;
     else if (a === "--no-context") flags.noContext = true;
     else if (a === "--link-harness") flags.linkHarness = true;
@@ -938,6 +991,7 @@ export function parseRun(args: string[]): {
       refreshBackends: Boolean(flags.refreshBackends),
       strictBackend: Boolean(flags.strictBackend),
       requireTools: Boolean(flags.requireTools),
+      allowHighBlast: Boolean(flags.allowHighBlast),
       raw: Boolean(flags.raw),
       noContext: Boolean(flags.noContext),
       expectArtifacts,

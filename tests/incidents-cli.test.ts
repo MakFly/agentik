@@ -28,6 +28,8 @@ async function fakeClaudeOnPath(dir: string, argvFile?: string): Promise<void> {
   await mkdir(dir, { recursive: true });
   const script = [
     "#!/bin/sh",
+    // The floor preflight reads --help: a real claude advertises --disallowedTools / --settings.
+    `if [ "$1" = "--help" ]; then echo '  --disallowedTools <tools...>  deny'; echo '  --settings <file-or-json>'; exit 0; fi`,
     ...(argvFile ? [`printf '%s\\n' "$@" > '${argvFile}'`] : []),
     `printf '%s\\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"I would edit the file."}]}}'`,
     `printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"described the work"}'`,
