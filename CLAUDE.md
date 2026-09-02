@@ -348,7 +348,8 @@ command × level table (~80 rows) and the benign-neighbour check for every rule.
   `--disallowedTools Agent`), grok `--deny 'Bash(…)'` × N (kept under `--yolo`), codex a TRUSTED
   `denyFloorPrompt()` line in front of the prompt (no deny flag exists). The verdict records the
   commands the harness ran (`verdict.commands`: claude Bash, grok run_terminal_command, codex
-  command_execution) and its own denials (claude `permission_denials`); `floorViolations()` = matched
+  command_execution) and its own denials (claude `permission_denials`; grok's "was not executed: Denied by
+  permission policy" line marks the last command as denied — seen live on grok 1.0.13); `floorViolations()` = matched
   by the policy and not denied → stderr `FLOOR VIOLATION` + incident `<harness> ran a high-blast
   command despite the floor: <rule>`, exit code unchanged. `--allow-high-blast` (human) removes the
   floor and prints `floor DISABLED`. `probe` records `supportsDenyRules` from `--help`; a claude/grok

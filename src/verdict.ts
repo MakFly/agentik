@@ -218,6 +218,9 @@ const CODEX_TOOL_ITEMS = new Set([
   "web_search",
 ]);
 
+/** grok's own words for a tool refused by a `--deny` rule. */
+const GROK_DENIED = /Denied by permission policy|was not executed: Denied|deny rule on bash/i;
+
 /** grok stop reasons that mean the turn was cut short rather than finished. */
 const GROK_BAD_STOP = new Set(["max_tokens", "max_turns", "max_turn_requests", "refusal", "cancelled"]);
 
@@ -276,6 +279,13 @@ export function consumeVerdictLine(v: HarnessVerdict, line: string, hooks?: Rend
   v.eventCount += 1;
 
   if (v.harness === "grok") {
+    // grok has no permission_denials list: a denied tool shows up as a tool_result / text line
+    // "Tool `run_terminal_command` was not executed: Denied by permission policy: deny rule …".
+    // That is the floor doing its job, not a violation — mark the last command as denied.
+    if (type !== "tool_call" && GROK_DENIED.test(JSON.stringify(obj)) && v.commands.length) {
+      const last = v.commands[v.commands.length - 1];
+      if (!v.denied.includes(last)) v.denied.push(last);
+    }
     if (type === "text" && typeof obj.data === "string") {
       v.text += obj.data;
       hooks?.onText?.(obj.data);
