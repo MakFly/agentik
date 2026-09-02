@@ -64,7 +64,7 @@ describe("memory HOT (shipped retainNote / recall)", () => {
     expect(hot.length).toBeLessThanOrEqual(HOT_CAP);
     expect(hot).not.toContain(last.reason);
     // No WARM overflow: no notes.sqlite, no sessions row, nothing but MEMORY.md under memory/.
-    const files = (await readdir(join(home, "memory"))).filter((f) => f !== ".migrated-v1");
+    const files = (await readdir(join(home, "memory"))).filter((f) => f !== ".migrated-v1" && f !== ".seal.json");
     expect(files).toEqual(["MEMORY.md"]);
     // sessions.sqlite may exist (the memory journal lives there) but holds no session row.
     expect(await listSessions({ home })).toEqual([]);
@@ -145,7 +145,7 @@ describe("agentik memory hot | retain | remove --target …: the human's pen", (
     // "contains" is not "prefix": the middle of an entry does not match.
     expect((await cli(["memory", "remove", "Postgres 16", "--agentik-home", home])).code).toBe(1);
     expect(await readEntries("memory", home)).toHaveLength(4);
-    expect(await readdir(join(home, "memory"))).toEqual(["MEMORY.md"]);
+    expect((await readdir(join(home, "memory"))).filter((f) => f !== ".seal.json")).toEqual(["MEMORY.md"]);
 
     const prefix = await cli(["memory", "remove", "Tests: bun test", "--agentik-home", home]);
     expect(prefix.code).toBe(0);

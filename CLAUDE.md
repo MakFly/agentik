@@ -82,6 +82,15 @@ the README and this file disagree; this file wins for agents.
              tools.ts memory tool → reviewer (+ sessionId), retain → human, approve → approval, remove →
              human. Never imported by context.ts nor reviewer.ts (test). agentik memory log [--target]
              [--workspace] [-n N] [--json].
+  Seal:      memory/.seal.json {"MEMORY.md"|"USER.md"|"projects/<slug>/MEMORY.md" → sha256} (src/memory-seal.ts,
+             atomic tmp+rename, module mutex). Written by writeEntries, the legacy HOT rewrites (sweep,
+             migrateLegacyMemory) and the C4 migration. memorySnapshot: diverged → body
+             "[BLOCKED: modified out of band — agentik memory reseal to accept]" + incident
+             "memory file modified out of band: memory/<key>" (seen ≥2 → KNOWN FAILURES, wanted);
+             unsealed → accepted and sealed silently. memoryApply / retain / remove / approve REFUSE on
+             diverged. agentik memory reseal [--target …|all] [--workspace] = the human's pen, journaled
+             op reseal by human. Tamper-EVIDENT, not tamper-proof: no HMAC (the key would live next to
+             the files). See docs/THREAT-MODEL.md.
   Human pen: agentik memory hot | retain <fact> | remove "<exact or unique prefix>" [--target memory|user|project]
              [--workspace DIR] — remove never stages (the human is the approver), backup MEMORY.md.bak.<ts> first.
   Legacy:    "- (session) …" lines found in MEMORY.md are swept into sessions.sqlite on every open

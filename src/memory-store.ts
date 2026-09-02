@@ -3,6 +3,7 @@ import { copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { readConfig } from "./config.ts";
 import { agentikHome, legacyProjectSlug, memoryPaths, projectMemoryPath, projectSlug } from "./home.ts";
+import { checkSeal, DIVERGED_BODY, sealContent, sealFile, sealKey } from "./memory-seal.ts";
 import { resolveWorkspaceRoot } from "./workspace.ts";
 import { detectInjection } from "./injection.ts";
 import { logMemoryOp, type MemoryOpActor } from "./memory-log.ts";
@@ -211,6 +212,8 @@ export async function migrateProjectMemory(home: string, workspace: string): Pro
     await rename(legacyDir, rootDir);
     await writeFile(join(rootDir, ".workspace"), `${root}\n`, "utf8");
     await writeFile(join(rootDir, ".migrated-from"), `${abs}\n${legacyProjectSlug(abs)}\n`, "utf8");
+    await sealFile(join(legacyDir, "MEMORY.md"), home);
+    await sealFile(join(rootDir, "MEMORY.md"), home);
     console.error(`agentik: project memory of ${abs} moved under the repository root ${root} (${projectSlug(abs)})`);
     return;
   }
@@ -221,6 +224,7 @@ export async function migrateProjectMemory(home: string, workspace: string): Pro
     if (!res.ok && !/already present|duplicate/i.test(res.message)) leftovers.push(entry);
   }
   await rename(legacyDir, `${legacyDir}.merged.${stamp}`);
+  await sealFile(join(legacyDir, "MEMORY.md"), home);
   console.error(
     `agentik: project memory of ${abs} merged into the repository root's (${projectSlug(abs)}): ${legacy.length - leftovers.length}/${legacy.length} entries${leftovers.length ? `; not merged (cap or scan): ${leftovers.map((e) => `"${e.slice(0, 40)}"`).join(", ")}` : ""}; legacy kept as ${legacyProjectSlug(abs)}.merged.${stamp}`,
   );
@@ -243,8 +247,24 @@ async function writeEntries(target: MemoryTarget, entries: string[], home?: stri
     // A human browsing memory/projects/ can tell which repository a slug belongs to.
     await writeFile(join(dir, ".workspace"), `${resolveWorkspaceRoot(resolve(workspace))}\n`, "utf8");
   }
-  await writeFile(file, entries.length ? `${entries.join(ENTRY_SEPARATOR)}\n` : "", "utf8");
+  const content = entries.length ? `${entries.join(ENTRY_SEPARATOR)}\n` : "";
+  await writeFile(file, content, "utf8");
+  await sealContent(sealKey(file, home), content, home);
 }
+
+/** Read a memory file and its seal status; a missing file is "" / unsealed. */
+async function readSealed(target: MemoryTarget, home?: string, workspace?: string): Promise<{ file: string; body: string; status: "sealed" | "unsealed" | "diverged" | "absent" }> {
+  const { file } = pathFor(target, home, workspace);
+  let body: string;
+  try {
+    body = await readFile(file, "utf8");
+  } catch {
+    return { file, body: "", status: "absent" };
+  }
+  return { file, body, status: await checkSeal(file, body, home) };
+}
+
+export const DIVERGED_MESSAGE = (label: string) => `${label} was modified out of band (seal mismatch) — a human must run \`agentik memory reseal\` to accept it before any write`;
 
 // ------------------------------------------------------------------------------------------
 // Operations
@@ -351,6 +371,11 @@ export async function memoryApply(
   if (ops.length === 0) {
     return { ok: false, target, action, message: "no operations", usage: usageBefore };
   }
+  // A file modified out of band is frozen until a human reseals it: writing over it would
+  // launder the foreign entry into "something agentik wrote".
+  if ((await readSealed(target, opts?.home, workspace)).status === "diverged") {
+    return { ok: false, target, action, message: DIVERGED_MESSAGE(memoryFileLabel(target)), usage: usageBefore };
+  }
   const applied = applyOps(target, before, ops);
   if ("error" in applied) {
     return {
@@ -429,6 +454,9 @@ export async function memoryRemoveEntry(
 ): Promise<RemoveEntryResult> {
   const workspace = target === "project" ? opts?.workspace : undefined;
   const { file } = pathFor(target, opts?.home, workspace);
+  if ((await readSealed(target, opts?.home, workspace)).status === "diverged") {
+    return { ok: false, message: DIVERGED_MESSAGE(memoryFileLabel(target)), candidates: [] };
+  }
   const entries = await readEntries(target, opts?.home, { workspace });
   const n = normalize(needle);
   const exact = n ? entries.filter((e) => normalize(e) === n) : [];
@@ -458,9 +486,35 @@ export interface MemorySnapshot {
   usage: MemoryUsage;
   /** Entries masked at load because they trip the scan. Kept on disk for inspection. */
   blockedCount: number;
+  /** The file no longer matches its seal: shown as BLOCKED until `agentik memory reseal`. */
+  diverged?: boolean;
 }
 
 export async function memorySnapshot(target: MemoryTarget, home?: string, opts?: { workspace?: string }): Promise<MemorySnapshot> {
+  const title =
+    target === "memory"
+      ? "MEMORY (durable facts)"
+      : target === "user"
+        ? "USER PROFILE (who the user is)"
+        : "PROJECT MEMORY (this workspace)";
+  if (target === "project" && opts?.workspace) await migrateProjectMemory(agentikHome(home), opts.workspace);
+  if (target !== "project" || opts?.workspace) {
+    const sealed = await readSealed(target, home, opts?.workspace);
+    if (sealed.status === "diverged") {
+      const key = sealKey(sealed.file, home);
+      try {
+        const { recordIncident } = await import("./incidents.ts");
+        await recordIncident(
+          { goal: "memory integrity", workspace: opts?.workspace, harness: "agentik", symptom: `memory file modified out of band: memory/${key}`, errors: [DIVERGED_MESSAGE(memoryFileLabel(target))] },
+          { home },
+        );
+      } catch (err) {
+        console.error(`agentik: could not record the seal incident: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      const usage = usageOf(parseEntries(sealed.body), target);
+      return { target, header: `${title} [${Math.min(100, usage.percent)}% — ${usage.used}/${usage.cap} chars]`, body: DIVERGED_BODY, usage, blockedCount: 1, diverged: true };
+    }
+  }
   const entries = await readEntries(target, home, { workspace: opts?.workspace });
   const usage = usageOf(entries, target);
   let blockedCount = 0;
@@ -470,12 +524,19 @@ export async function memorySnapshot(target: MemoryTarget, home?: string, opts?:
     blockedCount += 1;
     return `[BLOCKED: ${problem}]`;
   });
-  const title =
-    target === "memory"
-      ? "MEMORY (durable facts)"
-      : target === "user"
-        ? "USER PROFILE (who the user is)"
-        : "PROJECT MEMORY (this workspace)";
   const header = `${title} [${Math.min(100, usage.percent)}% — ${usage.used}/${usage.cap} chars]`;
   return { target, header, body: shown.length ? shown.join("\n§\n") : "(empty)", usage, blockedCount };
+}
+
+/** The human's pen: accept the file as it is on disk. Journaled `reseal` by human. */
+export async function resealMemory(target: MemoryTarget, opts?: MemoryStoreOpts): Promise<{ file: string; status: "sealed" | "unsealed" | "diverged" }> {
+  const workspace = target === "project" ? opts?.workspace : undefined;
+  const { file } = pathFor(target, opts?.home, workspace);
+  const status = await sealFile(file, opts?.home);
+  try {
+    await logMemoryOp({ target, workspace: workspace ? resolve(workspace) : undefined, op: "reseal", by: opts?.by ?? "human" }, { home: opts?.home });
+  } catch (err) {
+    console.error(`agentik: could not journal the reseal: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return { file, status };
 }

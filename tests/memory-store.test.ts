@@ -3,21 +3,7 @@ import { existsSync } from "node:fs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { projectMemoryPath, projectSlug } from "../src/home.ts";
-import {
-  MEMORY_CAP,
-  memoryAdd,
-  memoryApply,
-  memoryContentProblem,
-  memoryFilePath,
-  memoryRemove,
-  memoryReplace,
-  memorySnapshot,
-  parseEntries,
-  PROJECT_CAP,
-  PROJECT_NEEDS_WORKSPACE,
-  readEntries,
-  USER_CAP,
-} from "../src/memory-store.ts";
+import { MEMORY_CAP, PROJECT_CAP, PROJECT_NEEDS_WORKSPACE, USER_CAP, memoryAdd, memoryApply, memoryContentProblem, memoryFilePath, memoryRemove, memoryReplace, memorySnapshot, parseEntries, readEntries, resealMemory } from "../src/memory-store.ts";
 import { makeWorkspace } from "./helpers.ts";
 
 describe("memory store: the cap forces consolidation", () => {
@@ -239,6 +225,8 @@ describe("memory store: project memory is per workspace (target \"project\")", (
     expect(snap.header).toBe("PROJECT MEMORY (this workspace) [1% — 19/2200 chars]");
     expect(snap.body).toBe("Short project fact.");
     await writeFile(projectMemoryPath(home, ws), "Fine.\n§\napi_key = sk-live-abcdefghijklmnopqrstuvwxyz0123\n", "utf8");
+    // A manual edit diverges from the seal; the human accepts it, then the scan masks the token.
+    await resealMemory("project", { home, workspace: ws });
     const masked = await memorySnapshot("project", home, { workspace: ws });
     expect(masked.body).toContain("[BLOCKED: looks like a secret");
     expect(masked.body).not.toContain("sk-live");

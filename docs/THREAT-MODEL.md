@@ -28,6 +28,12 @@ Untrusted content is **data**, never the instruction channel. High-blast-radius 
    `rm -rf`, force-push or `sudo`. Codex has no deny flag: the floor there is a trusted prompt line
    plus after-the-fact detection on the commands the stream reports (an incident, not a lock).
    `--allow-high-blast` is the human's opt-out and is announced on stderr.
+8. **Memory seal** (`memory/.seal.json`): sha256 of what agentik last wrote to each memory file.
+   A file that no longer matches is shown as `[BLOCKED: modified out of band]`, logged as an
+   incident, and frozen for every agentik write until a human runs `agentik memory reseal`, so the
+   reviewer's next write cannot launder a foreign entry. Limits: tamper-evident, not tamper-proof —
+   no HMAC (the key would live in the same home), a process that can edit MEMORY.md can edit the
+   seal. It catches mistakes and unprivileged prompt-injected writes, not a root attacker.
 
 ## Sources (retrieved and attributed)
 

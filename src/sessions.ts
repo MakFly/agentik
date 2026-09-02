@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { agentikHome, memoryPaths } from "./home.ts";
+import { sealFile } from "./memory-seal.ts";
 import { resolveWorkspaceRoot, workspaceKeys } from "./workspace.ts";
 
 /**
@@ -277,6 +278,7 @@ export async function sweepLegacySessionLines(home: string): Promise<number> {
   // Drop the blank lines the removed entries leave behind, keep the § structure intact.
   const cleaned = kept.join("\n").replace(/\n{3,}/g, "\n\n").replace(/\n+§/g, "\n§");
   await writeFile(paths.hot, cleaned.endsWith("\n") ? cleaned : `${cleaned}\n`, "utf8");
+  await sealFile(paths.hot, home);
   return moved.length;
 }
 
@@ -375,6 +377,7 @@ export async function migrateLegacyMemory(opts?: { home?: string }): Promise<Mig
       hotKept = ["# MEMORY"];
     }
     await writeFile(paths.hot, `${hotKept.join("\n")}\n`, "utf8");
+    await sealFile(paths.hot, home);
   }
 
   await mkdir(paths.memoryDir, { recursive: true });

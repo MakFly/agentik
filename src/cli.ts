@@ -28,7 +28,7 @@ import { consumeVerdictLine, describeEvidence, evidenceOf, floorViolations, form
 import { formatReport, runLoop } from "./loop.ts";
 import { defaultFetchImpl } from "./tools.ts";
 import { retainNote, readHot } from "./memory.ts";
-import { memoryFileLabel, memoryFilePath, memoryRemoveEntry, type MemoryTarget } from "./memory-store.ts";
+import { memoryFileLabel, memoryFilePath, memoryRemoveEntry, resealMemory, type MemoryTarget } from "./memory-store.ts";
 import { formatSessionHit, searchSessions } from "./sessions.ts";
 import { buildContext } from "./context.ts";
 import { renderEnvelope, wrapUntrusted } from "./trust.ts";
@@ -150,6 +150,13 @@ Commands:
                                one entry by exact text or unique prefix — the human's pen: no
                                approval queue, a MEMORY.md.bak.<ts> copy is taken first; no
                                match or several matches exit 1 and list the candidates.
+  agentik memory reseal [--target memory|user|project|all] [--workspace DIR]
+                               Memory files are sealed (memory/.seal.json, sha256 of what
+                               agentik last wrote). A file edited by anything else shows as
+                               [BLOCKED: modified out of band] in every context, records an
+                               incident, and refuses every agentik write until you reseal it.
+                               Tamper-evident, not tamper-proof (no HMAC: the key would live
+                               next to the files).
   agentik memory where [--workspace DIR] [--json]
                                The project file for a workspace: per repository (a git worktree
                                resolves to its main checkout; a directory that is not a git
@@ -1441,6 +1448,7 @@ const MEMORY_USAGE =
   'usage: agentik memory search "<query>" [--workspace DIR] [--all] [--limit N] | recall (alias)\n' +
   '       agentik memory hot | retain <fact> | remove "<exact entry or unique prefix>"  [--target memory|user|project] [--workspace DIR]\n' +
   "       agentik memory where [--workspace DIR] [--json]   (which project file: given, root, slug, file)\n" +
+  "       agentik memory reseal [--target memory|user|project|all] [--workspace DIR]   (accept a file edited by hand)\n" +
   "       agentik memory pending | approve <id|all> | reject <id|all>";
 
 /** `--target` (default memory); `project` scopes to `--workspace` or the cwd. */
@@ -1456,6 +1464,20 @@ async function memoryCmd(args: string[]): Promise<number> {
   const sub = args[0];
   const { goal, flags } = parseRun(args.slice(1));
   const home = homeFor(flags);
+  if (sub === "reseal") {
+    const raw = flags.target ?? "all";
+    const targets: MemoryTarget[] = raw === "all" ? ["memory", "user", "project"] : raw === "memory" || raw === "user" || raw === "project" ? [raw] : [];
+    if (!targets.length) {
+      console.error(`agentik memory reseal: unknown --target "${raw}" (memory | user | project | all)`);
+      return 2;
+    }
+    const workspace = resolve(flags.workspace ?? process.cwd());
+    for (const target of targets) {
+      const r = await resealMemory(target, { home, workspace, by: "human" });
+      console.log(`${target}: ${r.status === "sealed" ? "resealed" : "no file (seal entry cleared)"} ${r.file}`);
+    }
+    return 0;
+  }
   if (sub === "where") {
     const given = resolve(flags.workspace ?? process.cwd());
     const root = resolveWorkspaceRoot(given);
