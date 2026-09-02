@@ -53,6 +53,8 @@ export interface ReviewInput {
   maxSkillCreates?: number;
   /** Postmortem mode: the review answers one question about this incident — why, and what prevents it. */
   incident?: IncidentRecord;
+  /** The session under review, stamped on every memory write in the journal. */
+  sessionId?: number;
 }
 
 export interface ReviewOutcome {
@@ -151,7 +153,7 @@ export async function runReview(input: ReviewInput): Promise<ReviewOutcome> {
   const home = agentikHome(input.home);
   const maxIterations = input.maxIterations ?? REVIEW_MAX_ITERATIONS;
   const reviewState = newReviewState(input.maxSkillCreates ?? 1);
-  const host: ToolHost = { workspace: input.workspace, agentikHome: home, reviewState };
+  const host: ToolHost = { workspace: input.workspace, agentikHome: home, reviewState, sessionId: input.sessionId };
 
   const [memory, project, user, skills, claudeMd] = await Promise.all([
     memorySnapshot("memory", home),

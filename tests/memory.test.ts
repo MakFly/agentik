@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { listSessions } from "../src/sessions.ts";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -65,7 +66,8 @@ describe("memory HOT (shipped retainNote / recall)", () => {
     // No WARM overflow: no notes.sqlite, no sessions row, nothing but MEMORY.md under memory/.
     const files = (await readdir(join(home, "memory"))).filter((f) => f !== ".migrated-v1");
     expect(files).toEqual(["MEMORY.md"]);
-    expect(existsSync(join(home, "sessions.sqlite"))).toBe(false);
+    // sessions.sqlite may exist (the memory journal lives there) but holds no session row.
+    expect(await listSessions({ home })).toEqual([]);
     // A subsequent, shorter note still fits and is accepted.
     const short = await retainNote("ok", { home });
     expect(short.layer).toBe("hot");

@@ -40,7 +40,7 @@ export async function approveMemory(selector: string, opts?: { home?: string }):
     // One broken op (a project op whose workspace is missing, an unreadable file) must not stop
     // `approve all`: it stays pending with its reason, the others are still applied.
     try {
-      const res = await memoryApply(entry.target, entry.ops, { home: opts?.home, workspace: entry.workspace, bypassApproval: true });
+      const res = await memoryApply(entry.target, entry.ops, { home: opts?.home, workspace: entry.workspace, by: "approval", bypassApproval: true });
       if (res.ok) await removePending("memory", id, { home: opts?.home });
       out.push({ id, ok: res.ok, message: res.ok ? `${res.message} (${res.usage.used}/${res.usage.cap} chars)` : `${res.message} — still pending` });
     } catch (err) {

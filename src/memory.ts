@@ -51,7 +51,7 @@ export async function retainNote(
   await migrateLegacyMemory({ home });
   const paths = memoryPaths(home);
   const file = memoryFilePath(target, { home, workspace: opts?.workspace });
-  const res = await memoryAdd(target, text, { home, workspace: opts?.workspace });
+  const res = await memoryAdd(target, text, { home, workspace: opts?.workspace, by: "human" });
   if (!res.ok) {
     return {
       layer: "rejected",

@@ -75,6 +75,12 @@ the README and this file disagree; this file wins for agents.
              symlink, camel/snake disagreement → run|review|harvest|memory|skills|spawn exit 2 before doing
              anything ("<path>: … — fix or delete the file (defaults are all off)"); harvest writes no session.
              probe · context · postmortem are exempt. Absent file = defaults, never an error.
+  Journal:   src/memory-log.ts — table memory_ops(id, ts, target, workspace, op add|replace|remove|reseal|
+             migrate, before, after, session_id, by reviewer|human|approval|migration) in sessions.sqlite;
+             memoryApply journals after writeEntries (before/after masked, try/catch, one stderr line);
+             tools.ts memory tool → reviewer (+ sessionId), retain → human, approve → approval, remove →
+             human. Never imported by context.ts nor reviewer.ts (test). agentik memory log [--target]
+             [--workspace] [-n N] [--json].
   Human pen: agentik memory hot | retain <fact> | remove "<exact or unique prefix>" [--target memory|user|project]
              [--workspace DIR] — remove never stages (the human is the approver), backup MEMORY.md.bak.<ts> first.
   Legacy:    "- (session) …" lines found in MEMORY.md are swept into sessions.sqlite on every open

@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { readConfig } from "./config.ts";
 import { agentikHome, memoryPaths, projectMemoryPath } from "./home.ts";
 import { detectInjection } from "./injection.ts";
+import { logMemoryOp, type MemoryOpActor } from "./memory-log.ts";
 import { newPendingId, stagePending, type PendingMemoryOp } from "./pending.ts";
 
 /**
@@ -32,6 +33,37 @@ export const CAPS: Record<MemoryTarget, number> = { memory: MEMORY_CAP, user: US
 export interface MemoryStoreOpts {
   home?: string;
   workspace?: string;
+  /** Who writes (journal): the reviewer's tool, the human's pen, an approval, a migration. Default reviewer. */
+  by?: MemoryOpActor;
+  /** The session this write belongs to, when known (journal). */
+  sessionId?: number;
+}
+
+/** Journal a batch after the file is written; a broken journal is one stderr line, never a failed write. */
+async function journal(target: MemoryTarget, ops: MemoryOperation[], opts: MemoryStoreOpts | undefined, workspace: string | undefined): Promise<void> {
+  const mask = (text: string | undefined) => {
+    if (!text) return undefined;
+    const problem = memoryContentProblem(text);
+    return problem ? `[BLOCKED: ${problem}]` : text;
+  };
+  for (const op of ops) {
+    try {
+      await logMemoryOp(
+        {
+          target,
+          workspace: workspace ? resolve(workspace) : undefined,
+          op: op.action,
+          before: mask(op.action === "add" ? undefined : op.old),
+          after: mask(op.action === "remove" ? undefined : op.action === "add" ? op.content : op.new),
+          sessionId: opts?.sessionId,
+          by: opts?.by ?? "reviewer",
+        },
+        { home: opts?.home },
+      );
+    } catch (err) {
+      console.error(`agentik: could not journal the memory write: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 }
 
 export const PROJECT_NEEDS_WORKSPACE = "project memory needs a workspace";
@@ -319,6 +351,7 @@ export async function memoryApply(
     };
   }
   await writeEntries(target, applied.entries, opts?.home, workspace);
+  await journal(target, ops, opts, workspace);
   return {
     ok: true,
     target,
@@ -365,7 +398,7 @@ export async function memoryRemoveEntry(
   let backup = stamp;
   for (let n = 2; existsSync(backup); n++) backup = `${stamp}-${n}`; // two removals in the same ms keep both states
   await copyFile(file, backup);
-  const res = await memoryApply(target, [{ action: "remove", old: matches[0] }], { ...opts, bypassApproval: true });
+  const res = await memoryApply(target, [{ action: "remove", old: matches[0] }], { ...opts, by: opts?.by ?? "human", bypassApproval: true });
   if (!res.ok) return { ok: false, message: res.message, candidates: [] };
   return { ok: true, removed: matches[0], backup, usage: res.usage };
 }

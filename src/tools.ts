@@ -141,6 +141,8 @@ export interface ToolHost {
    * even a call that reaches executeTool by mistake runs nothing unless its id is here.
    */
   approved?: Set<string>;
+  /** The session under review, for the memory journal. */
+  sessionId?: number;
 }
 
 export function newReviewState(maxSkillCreates = 1): ReviewState {
@@ -435,7 +437,7 @@ async function memoryTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {
         },
       ];
   // The project file is the host workspace's: the reviewer chooses the level, never the path.
-  const res = await memoryApply(target, ops, { home: host.agentikHome, workspace: host.workspace });
+  const res = await memoryApply(target, ops, { home: host.agentikHome, workspace: host.workspace, by: "reviewer", sessionId: host.sessionId });
   const lines = [`${res.ok ? "ok" : "refused"}: ${res.message}`, `usage: ${res.usage.used}/${res.usage.cap} chars`];
   if (res.overCap && res.entries) {
     lines.push("current entries:");

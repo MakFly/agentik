@@ -43,6 +43,7 @@ import {
 } from "./incidents.ts";
 import { formatIncidentForReview, formatReviewOutcome, runReview, type ReviewOutcome } from "./reviewer.ts";
 import { formatRunLine, listRuns, readRun, writeRun, type RunRecord } from "./runs.ts";
+import { formatMemoryOp, listMemoryOps } from "./memory-log.ts";
 import { undoSkillWrite } from "./skill-write.ts";
 import { formatRunUsage } from "./usage.ts";
 import { getSession, latestSession, recordSession } from "./sessions.ts";
@@ -147,6 +148,9 @@ Commands:
                                one entry by exact text or unique prefix — the human's pen: no
                                approval queue, a MEMORY.md.bak.<ts> copy is taken first; no
                                match or several matches exit 1 and list the candidates.
+  agentik memory log [--target memory|user|project] [--workspace DIR] [-n N] [--json]
+                               Journal of every memory write (table memory_ops): who (reviewer,
+                               human, approval, migration), which file, before → after.
   agentik memory pending | approve <id|all> | reject <id|all>
                                With memory.writeApproval on in <home>/config.json, every memory
                                write (reviewer tool, retain) is staged under pending/memory/;
@@ -438,6 +442,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       home,
       backend: workers.find((w) => !w.id.startsWith("mock")) ?? workerA,
       maxIterations: flags.maxIterations,
+      sessionId: harvested.sessionId,
     });
     if (!flags.json) {
       console.log(formatReviewOutcome(outcome));
@@ -506,6 +511,7 @@ async function reviewCmd(args: string[]): Promise<number> {
   let transcript = "";
   let reviewGoal = goal;
   let incident: IncidentRecord | undefined;
+  let reviewSessionId: number | undefined;
   if (flags.incident) {
     if (flags.transcript || flags.session) {
       console.error("agentik review: --incident cannot be combined with --transcript or --session");
@@ -538,6 +544,7 @@ async function reviewCmd(args: string[]): Promise<number> {
       return 2;
     }
     reviewGoal = reviewGoal || session.goal;
+    reviewSessionId = session.id;
     transcript = [
       `session #${session.id} [${session.createdAt}]`,
       `goal: ${session.goal}`,
@@ -567,6 +574,7 @@ async function reviewCmd(args: string[]): Promise<number> {
     backend,
     maxIterations: flags.maxIterations,
     incident,
+    sessionId: reviewSessionId,
   });
   if (flags.json) console.log(JSON.stringify(outcome, null, 2));
   else {
@@ -1116,6 +1124,7 @@ export function parseRun(args: string[]): {
     target?: string;
     usage?: string;
     section?: string;
+    n?: number;
   };
 } {
   const flags: Record<string, string | boolean> = {};
@@ -1145,6 +1154,9 @@ export function parseRun(args: string[]): {
     else if (a === "--allow-high-blast") flags.allowHighBlast = true;
     else if (a === "--require-evidence") flags.requireEvidence = true;
     else if (a === "--plan-only") flags.planOnly = true;
+    else if (a === "-n" && args[i + 1]) {
+      flags.n = args[++i];
+    }
     else if (a === "--raw") flags.raw = true;
     else if (a === "--no-context") flags.noContext = true;
     else if (a === "--link-harness") flags.linkHarness = true;
@@ -1231,6 +1243,7 @@ export function parseRun(args: string[]): {
       target: str(flags.target),
       usage: str(flags.usage),
       section: str(flags.section),
+      n: positive(flags.n),
     },
   };
 }
@@ -1436,6 +1449,17 @@ async function memoryCmd(args: string[]): Promise<number> {
   const sub = args[0];
   const { goal, flags } = parseRun(args.slice(1));
   const home = homeFor(flags);
+  if (sub === "log") {
+    const ops = await listMemoryOps({
+      home,
+      target: flags.target,
+      workspace: flags.workspace ? resolve(flags.workspace) : undefined,
+      limit: flags.limit ?? flags.n ?? 50,
+    });
+    if (flags.json) console.log(JSON.stringify(ops, null, 2));
+    else console.log(ops.length ? ops.map(formatMemoryOp).join("\n") : "(no memory writes yet)");
+    return 0;
+  }
   if (sub === "hot" || sub === "retain" || sub === "remove") {
     const scope = memoryTargetFor(flags);
     if ("error" in scope) {
