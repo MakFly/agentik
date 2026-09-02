@@ -49,6 +49,8 @@ export function memoryPaths(home: string) {
     skillSnapshots: join(home, "skills", ".snapshots"),
     curatorLedger: join(home, "skills", ".curator-ledger.json"),
     config: join(home, "config.json"),
+    /** Code indexes, one sqlite per checkout (`<slug>.sqlite` + `<slug>.workspace`); a cache. */
+    indexDir: join(home, "index"),
   };
 }
 

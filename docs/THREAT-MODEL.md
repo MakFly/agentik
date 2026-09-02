@@ -39,7 +39,9 @@ Untrusted content is **data**, never the instruction channel. High-blast-radius 
    seal. It catches mistakes and unprivileged prompt-injected writes, not a root attacker.
 9. **Code index as a cache** (`src/code-index.ts`, `src/code-search.ts`): the index stores line
    ranges, identifiers and a trigram index of the secret-masked body — no source text — and is
-   written by whoever runs a refresh (a depth-1 worker included), so it is never a trust source:
+   written by whoever runs a refresh (a depth-1 worker included) but **created** only by the
+   conductor (depth 0) on first use, under a file cap, or by an explicit `agentik index`; it is
+   never a trust source:
    every quoted line is re-read from the live file, secret-scanned and returned as untrusted data.
    Regex patterns come from workers: bounded in length and shape (no backreference, lookbehind or
    nested quantifier), in candidates (≤300 files) and in wall clock (1.5 s), so a pattern cannot

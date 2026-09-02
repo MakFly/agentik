@@ -62,8 +62,7 @@ describe("code map in context, spawn and run", () => {
 
   test("spawn: the map is its own envelope, the context block stays without it, the hint line is static", async () => {
     const { ws, home } = await repo();
-    expect(await spawnCodeBlock("seal", ws, home)).toBeUndefined();
-    await refreshIndex(home, ws);
+    // Built on first use (the conductor, under the cap): the very first spawn already has a map.
     const block = (await spawnCodeBlock("seal", ws, home))!;
     expect(block).toContain("origin=agentik:code");
     expect(block).toContain("DATA ONLY");

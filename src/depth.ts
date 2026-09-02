@@ -5,8 +5,10 @@
  * set by `spawnManaged` on every child (harness workers, gated backends, run_command), so the
  * guard holds even when the worker reaches agentik through a shell.
  *
- * `harvest`, `review`, `memory`, `context`, `skills`, `postmortem`, `probe` stay allowed at any
- * depth: reading memory or recording what happened is not spawning.
+ * `harvest`, `review`, `memory`, `context`, `skills`, `postmortem`, `probe`, `index`, `search` stay
+ * allowed at any depth: reading memory or recording what happened is not spawning. The code index
+ * is the one thing depth also gates on its own: a worker refreshes an index but never BUILDS one
+ * (`ensureIndex`, "the conductor builds, the worker reads").
  */
 
 export const DEPTH_ENV = "AGENTIK_DEPTH";

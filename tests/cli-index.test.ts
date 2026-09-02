@@ -41,9 +41,17 @@ async function repo(): Promise<{ ws: string; home: string }> {
 }
 
 describe("agentik index / search", () => {
-  test("search without an index exits 1 with the hint; index builds; search finds; --json; --stats", async () => {
+  test("search without an index: exit 1 with the hint when auto-build is off, a build otherwise; index; --json; --stats", async () => {
     const { ws, home } = await repo();
-    const none = await capture(() => main(["search", "seal", "--workspace", ws, "--agentik-home", home]));
+    const prev = process.env.AGENTIK_INDEX_AUTO;
+    process.env.AGENTIK_INDEX_AUTO = "0";
+    let none: Awaited<ReturnType<typeof capture>>;
+    try {
+      none = await capture(() => main(["search", "seal", "--workspace", ws, "--agentik-home", home]));
+    } finally {
+      if (prev === undefined) delete process.env.AGENTIK_INDEX_AUTO;
+      else process.env.AGENTIK_INDEX_AUTO = prev;
+    }
     expect(none.code).toBe(1);
     expect(none.err).toContain("no code index");
     expect(none.err).toContain("agentik index --workspace");

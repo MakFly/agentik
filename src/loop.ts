@@ -1,6 +1,6 @@
 import { snapshotArtifacts, untouchedArtifacts } from "./artifacts.ts";
 import { BackendError, systemPromptFor } from "./backends.ts";
-import { hasIndex, refreshIndex } from "./code-index.ts";
+import { ensureIndex } from "./code-index.ts";
 import { repoMap } from "./repo-map.ts";
 import { Orchestrator } from "./orchestrator.ts";
 import { callHash, ToolGuard } from "./guardrails.ts";
@@ -142,16 +142,16 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
     shaping.calls += 1;
     shaping.savedChars += shaped.savedChars;
   };
-  // The code index is refreshed ONCE per run (never per search_code call). No index → nothing:
-  // the conductor builds one with `agentik index`; a refresh that fails is one stderr line.
+  // The code index is refreshed ONCE per run (never per search_code call), and built on first
+  // use when this process is the conductor (depth 0) and the checkout is under the file cap;
+  // otherwise one stderr hint and the run goes on without it (ensureIndex never throws).
   let codeIndex: RunReport["codeIndex"];
-  if (opts.codeIndex !== false && hasIndex(opts.home, opts.workspace)) {
-    try {
-      const s = await refreshIndex(opts.home, opts.workspace);
-      codeIndex = { files: s.files, chunks: s.chunks, changed: s.added + s.updated + s.removed };
-    } catch (err) {
-      console.error(`agentik: code index not refreshed: ${err instanceof Error ? err.message : String(err)}`);
-    }
+  // Auto-build needs an explicit home (the CLI always passes one): a library caller or a test
+  // that omits it may refresh an existing index but never creates files in the default home.
+  if (opts.codeIndex !== false) {
+    const r = await ensureIndex(opts.home, opts.workspace, { auto: opts.home !== undefined ? undefined : false, log: (line) => console.error(line) });
+    if (r.stats) codeIndex = { files: r.stats.files, chunks: r.stats.chunks, changed: r.stats.added + r.stats.updated + r.stats.removed, built: r.built, ms: r.ms };
+    else if (r.reason && r.reason !== "disabled" && r.reason !== "empty") codeIndex = { files: r.files ?? 0, chunks: 0, changed: 0, built: false, ms: r.ms, reason: r.reason };
   }
   const bits = (synth: string): Parameters<typeof report>[1] => ({
     usage,

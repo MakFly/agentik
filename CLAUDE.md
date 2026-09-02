@@ -357,6 +357,22 @@ backend (Meilisearch, embeddings) implements. CLI: `agentik index [--workspace] 
 stderr line; no index → exit 1 with the `agentik index` hint; a refused query → exit 2). Both are in
 `KNOWN_COMMANDS` (else a worker at depth ≥ 1 would be refused as `run`) and `CONFIG_EXEMPT`.
 
+**Auto-build (à la Cursor).** `ensureIndex(home, ws, {auto?, maxFiles?, env?, log?, onProgress?}) → {stats?, built,
+reason?: disabled | depth | too_big | failed, files?, ms}` never throws: `hasIndex` → `refreshIndex`; else build when
+`auto` (env `AGENTIK_INDEX_AUTO !== "0"`, `--no-index` off) **and** `currentDepth(env) === 0` **and**
+`countIndexable(root, max)` (git `ls-files -c -o --exclude-standard -z` streamed, killed at `max + 1`, no file read,
+never `git status`; walk mode counted the same way) is not `over` (`AUTO_INDEX_MAX_FILES` 5000, env
+`AGENTIK_INDEX_MAX_FILES`). ONE hint per `(root, reason)` per process (`resetIndexHints()` for tests). Callers:
+`runLoop` (→ `RunReport.codeIndex {files, chunks, changed, built, ms, reason?}`, printed by `runs show`),
+`spawnCodeBlock`, `contextCmd` (the only thing `agentik context` writes: a cache; `buildContext` stays read-only),
+`searchCmd` (no index after `ensureIndex` → exit 1). `agentik index` (explicit) has no cap; `--if-present`
+refreshes only, never creates (what a hook runs), `--quiet` prints nothing and returns 0 on a busy index
+(`isIndexBusy`). `loadIgnore` reads `.agentikignore`, `.cursorignore`, `.aiignore` (union, `IndexStats.ignoreFiles`).
+`meta.built_at` = created / rebuilt, `meta.refreshed_at` = every refresh (`IndexStats.built`, `refreshedAt`).
+**Race fix**: `refreshNow` re-reads `code_files` after `BEGIN IMMEDIATE`, so two processes refreshing one fresh
+index (a hook racing a run) both succeed instead of the second failing on `UNIQUE(path)`; `refreshIndex(…,
+{onProgress, progressEvery})` reports the write phase (the CLI prints `n/total` only past 2 s).
+
 **In the harness.** `src/tool-catalog.ts` is the leaf catalogue (`TOOL_CATALOG`, `REVIEWER_ONLY_TOOLS`,
 `workerToolNames()`), re-exported by `tools.ts`, read by `backends.ts` (`systemPromptFor` lists exactly
 `workerToolNames()`) and `plan-schema.ts` — one list, no drift. Tool `search_code {query, regex?, path?, k?,
@@ -387,6 +403,9 @@ Invariants (tests enforce them):
   proposed, accepted and executed; a hit quoting an injection is a finding, never a goal.
 - The planner and a spawned worker get the repo map as DATA (paths + exported symbols only); a task context gets
   code hits only when its worker calls `search_code`; the spawn hint line never contains goal text.
+- **The conductor builds, the worker reads**: no auto-build at `AGENTIK_DEPTH ≥ 1`, none above the file cap without
+  an explicit `agentik index`, none with `--no-index` / `AGENTIK_INDEX_AUTO=0`; one hint per reason per process.
+- Two processes refreshing the same index both succeed; `--quiet` treats busy as done.
 
 ## Command policy — one source of truth for dangerous shell commands
 

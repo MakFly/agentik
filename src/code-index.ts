@@ -4,7 +4,8 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { mkdir, readFile, unlink } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
 import { chunkFile, detectLang, extractImports } from "./code-chunker.ts";
-import { agentikHome, legacyProjectSlug } from "./home.ts";
+import { currentDepth } from "./depth.ts";
+import { agentikHome, legacyProjectSlug, memoryPaths } from "./home.ts";
 import { secretProblem } from "./memory-store.ts";
 
 /**
@@ -29,6 +30,12 @@ export const INDEX_SCHEMA_VERSION = 1;
 export const INDEX_FILE_MAX_BYTES = 1_000_000;
 export const INDEX_WALK_MAX_FILES = 20_000;
 export const INDEX_COMMIT_EVERY = 500;
+/** Auto-build (first use by the conductor) only under this many indexable files; `agentik index` has no cap. */
+export const AUTO_INDEX_MAX_FILES = 5000;
+export const AUTO_INDEX_ENV = "AGENTIK_INDEX_AUTO";
+export const AUTO_INDEX_MAX_FILES_ENV = "AGENTIK_INDEX_MAX_FILES";
+/** Ignore files read in this order, union of their globs (gitignore-like, no negation). */
+export const IGNORE_FILES = [".agentikignore", ".cursorignore", ".aiignore"] as const;
 /** Directories never indexed, in git mode too: `.agentik/` is usually untracked but not ignored. */
 export const ALWAYS_SKIP_DIRS = new Set([".git", ".agentik", ".tmp", "node_modules", "dist", "build", ".next", "target", "vendor", "coverage"]);
 const SECRET_NAME = /^(\.env(\..*)?|.*\.(pem|key|p12|pfx|kdbx)|id_(rsa|dsa|ecdsa|ed25519)(\..*)?)$/i;
@@ -47,7 +54,21 @@ export interface IndexStats {
   removed: number;
   skipped: number;
   ms: number;
+  /** When the file was created or rebuilt. */
   builtAt: string;
+  /** When it was last refreshed (every refresh; what `gc` reads). */
+  refreshedAt: string;
+  /** This refresh created the file (first build or --rebuild). */
+  built: boolean;
+  /** The ignore files that were found and read. */
+  ignoreFiles: string[];
+}
+
+export interface RefreshOptions {
+  rebuild?: boolean;
+  /** Called every `progressEvery` files during the write phase, and once at the end. */
+  onProgress?: (done: number, total: number) => void;
+  progressEvery?: number;
 }
 
 export interface IndexKey {
@@ -87,7 +108,7 @@ export function indexKey(workspace: string): IndexKey {
 
 export function indexPaths(home: string, root: string): { dir: string; db: string; workspaceFile: string; slug: string } {
   const slug = legacyProjectSlug(root);
-  const dir = join(home, "index");
+  const dir = memoryPaths(home).indexDir;
   return { dir, db: join(dir, `${slug}.sqlite`), workspaceFile: join(dir, `${slug}.workspace`), slug };
 }
 
@@ -260,17 +281,32 @@ async function walk(root: string): Promise<Listing> {
   return { mode: "walk", files, dirty: new Set() };
 }
 
-export type IgnoreMatcher = (path: string) => boolean;
+export interface IgnoreMatcher {
+  (path: string): boolean;
+  /** The ignore files that existed and were read. */
+  files?: string[];
+}
 
-/** `.agentikignore`: one glob per line (gitignore-like, no negation), `#` comments. */
+/** `.agentikignore` + `.cursorignore` + `.aiignore`: one glob per line (gitignore-like, no negation), `#` comments; union. */
 export async function loadIgnore(root: string): Promise<IgnoreMatcher> {
-  let text = "";
-  try {
-    text = await readFile(join(root, ".agentikignore"), "utf8");
-  } catch {
-    return () => false;
-  }
   const globs: Bun.Glob[] = [];
+  const files: string[] = [];
+  for (const name of IGNORE_FILES) {
+    let text: string;
+    try {
+      text = await readFile(join(root, name), "utf8");
+    } catch {
+      continue;
+    }
+    files.push(name);
+    addIgnoreGlobs(globs, text);
+  }
+  const matcher: IgnoreMatcher = (path) => globs.some((g) => g.match(path));
+  matcher.files = files;
+  return matcher;
+}
+
+function addIgnoreGlobs(globs: Bun.Glob[], text: string): void {
   for (const raw of text.split("\n")) {
     const line = raw.trim();
     if (!line || line.startsWith("#") || line.startsWith("!")) continue;
@@ -279,7 +315,6 @@ export async function loadIgnore(root: string): Promise<IgnoreMatcher> {
     if (!pat.includes("/")) globs.push(new Bun.Glob(`**/${pat}`));
     else if (!pat.startsWith("**/") && !pat.startsWith("/")) globs.push(new Bun.Glob(`**/${pat}`));
   }
-  return (path) => globs.some((g) => g.match(path));
 }
 
 /** Why a path is not indexed, or undefined. `bytes` enables the binary / minified checks. */
@@ -289,7 +324,7 @@ export function shouldSkip(path: string, ignore: IgnoreMatcher, bytes?: Uint8Arr
   const name = basename(path);
   if (SECRET_NAME.test(name)) return "secret-looking file name";
   if (NOISE_NAME.test(name)) return "lock or minified file";
-  if (ignore(path)) return ".agentikignore";
+  if (ignore(path)) return "ignore file";
   if (bytes) {
     if (bytes.byteLength > INDEX_FILE_MAX_BYTES) return "larger than 1 MB";
     const head = bytes.subarray(0, 8192);
@@ -320,7 +355,7 @@ const refreshLocks = new Map<string, Promise<unknown>>();
 export async function refreshIndex(
   home: string | undefined,
   workspace: string,
-  opts: { rebuild?: boolean } = {},
+  opts: RefreshOptions = {},
 ): Promise<IndexStats> {
   const h = agentikHome(home);
   const { root, slug } = indexKey(workspace);
@@ -342,7 +377,7 @@ async function refreshNow(
   root: string,
   slug: string,
   p: ReturnType<typeof indexPaths>,
-  opts: { rebuild?: boolean },
+  opts: RefreshOptions,
 ): Promise<IndexStats> {
   const t0 = Date.now();
   await mkdir(p.dir, { recursive: true });
@@ -353,10 +388,17 @@ async function refreshNow(
   try {
     const listing = await listFiles(root);
     const ignore = await loadIgnore(root);
-    const stored = new Map<string, StoredFile>();
-    for (const r of db.query<{ id: number; path: string; sha: string }, []>("SELECT id, path, sha FROM code_files").all()) {
-      stored.set(r.path, { id: r.id, sha: r.sha });
-    }
+    const readStored = (): Map<string, StoredFile> => {
+      const out = new Map<string, StoredFile>();
+      for (const r of db.query<{ id: number; path: string; sha: string }, []>("SELECT id, path, sha FROM code_files").all()) {
+        out.set(r.path, { id: r.id, sha: r.sha });
+      }
+      return out;
+    };
+    // A first snapshot decides what to READ (phase 1, outside the lock); the write phase re-reads
+    // the store under the lock, so a concurrent refresh in another process (a git hook, another
+    // run) that landed in between is seen, not fought over UNIQUE(path).
+    let stored = readStored();
     const fresh = stored.size === 0;
     const wanted = new Map<string, string | undefined>();
     let skipped = 0;
@@ -406,7 +448,17 @@ async function refreshNow(
       const bytes = await Promise.all(batch.map((path) => readWorkspaceFile(root, path)));
       batch.forEach((path, j) => reads.set(path, bytes[j]));
     }
-    db.run("BEGIN IMMEDIATE");
+    try {
+      db.run("BEGIN IMMEDIATE");
+    } catch (err) {
+      throw indexBusy(err);
+    }
+    stored = readStored();
+    removed.length = 0;
+    for (const path of stored.keys()) if (!wanted.has(path)) removed.push(path);
+    const progressEvery = Math.max(1, opts.progressEvery ?? 200);
+    let done = 0;
+    const total = candidates.length;
     const flush = () => {
       if (++pending >= INDEX_COMMIT_EVERY) {
         db.run("COMMIT");
@@ -450,7 +502,7 @@ async function refreshNow(
           continue;
         }
         const sha = listing.mode === "git" ? (wanted.get(path) ?? blobSha(bytes)) : wanted.get(path)!;
-        if (old && old.sha === sha) continue; // dirty in git status, same content as indexed
+        if (old && old.sha === sha) continue; // same content as indexed (dirty but unchanged, or another process got there first)
         const lang = detectLang(path);
         const dirty = listing.dirty.has(path) ? 1 : 0;
         let id: number;
@@ -474,8 +526,10 @@ async function refreshNow(
         }
         insTri.run(id, maskSecretLines(text));
         importsOf.set(id, extractImports(path, text, lang, known));
+        if (++done % progressEvery === 0) opts.onProgress?.(done, total);
         flush();
       }
+      opts.onProgress?.(total, total);
       // Edges of the files just indexed, against every known path (ids from the store).
       const idOf = new Map<string, number>();
       for (const [path, f] of stored) idOf.set(path, f.id);
@@ -485,7 +539,8 @@ async function refreshNow(
           if (to !== undefined) insEdge.run(from, to);
         }
       }
-      metaSet(db, "built_at", now);
+      if (fresh || opts.rebuild) metaSet(db, "built_at", now);
+      metaSet(db, "refreshed_at", now);
       metaSet(db, "mode", listing.mode);
       db.run("COMMIT");
     } catch (err) {
@@ -506,11 +561,32 @@ async function refreshNow(
       removed: removed.length,
       skipped,
       ms: Date.now() - t0,
-      builtAt: now,
+      builtAt: metaGet(db, "built_at") ?? now,
+      refreshedAt: now,
+      built: fresh || Boolean(opts.rebuild),
+      ignoreFiles: ignore.files ?? [],
     };
   } finally {
     db.close();
   }
+}
+
+/** The lock could not be taken within busy_timeout: another refresh holds the index. */
+export const INDEX_BUSY = "another refresh holds the index (busy)";
+
+function indexBusy(err: unknown): Error {
+  const code = (err as { code?: string })?.code;
+  const msg = err instanceof Error ? err.message : String(err);
+  if (code === "SQLITE_BUSY" || /busy|locked/i.test(msg)) {
+    const e = new Error(INDEX_BUSY);
+    (e as { code?: string }).code = "AGENTIK_INDEX_BUSY";
+    return e;
+  }
+  return err instanceof Error ? err : new Error(msg);
+}
+
+export function isIndexBusy(err: unknown): boolean {
+  return (err as { code?: string })?.code === "AGENTIK_INDEX_BUSY";
 }
 
 function countRows(db: Database): { files: number; chunks: number } {
@@ -542,6 +618,9 @@ export function indexStats(home: string | undefined, workspace: string): IndexSt
       skipped: 0,
       ms: 0,
       builtAt: metaGet(db, "built_at") ?? "",
+      refreshedAt: metaGet(db, "refreshed_at") ?? metaGet(db, "built_at") ?? "",
+      built: false,
+      ignoreFiles: [],
     };
   } finally {
     db.close();
@@ -569,4 +648,145 @@ export async function readWorkspaceFile(root: string, rel: string): Promise<Uint
 export function formatIndexStats(s: IndexStats): string {
   const delta = `+${s.added} ~${s.updated} -${s.removed}`;
   return `index: ${s.slug} · ${s.mode} · ${s.files} files · ${s.chunks} chunks · ${delta}${s.skipped ? ` · ${s.skipped} skipped` : ""} · ${(s.ms / 1000).toFixed(1)}s · ${s.path}`;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Auto-build: the conductor builds, the worker reads
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * How many files an index of `root` would hold, without reading any of them: `git ls-files -c -o
+ * --exclude-standard -z` streamed and stopped at `max + 1` (git status, which can take seconds on
+ * a large checkout, is never run here); a walked directory is counted the same way, capped.
+ */
+export async function countIndexable(root: string, max: number): Promise<{ files: number; mode: "git" | "walk"; over: boolean }> {
+  const ignore = await loadIgnore(root);
+  const top = git(["rev-parse", "--show-toplevel"], root)?.trim();
+  const gitMode = Boolean(top) && git(["check-ignore", "-q", "."], root) === undefined;
+  let files = 0;
+  if (gitMode) {
+    const proc = Bun.spawn(["git", "ls-files", "-c", "-o", "--exclude-standard", "-z"], {
+      cwd: root,
+      stdout: "pipe",
+      stderr: "ignore",
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    });
+    const decoder = new TextDecoder();
+    let rest = "";
+    let over = false;
+    for await (const chunk of proc.stdout) {
+      rest += decoder.decode(chunk, { stream: true });
+      let nul = rest.indexOf("\0");
+      while (nul >= 0) {
+        const path = rest.slice(0, nul);
+        rest = rest.slice(nul + 1);
+        if (path && !shouldSkip(path, ignore)) files++;
+        if (files > max) {
+          over = true;
+          break;
+        }
+        nul = rest.indexOf("\0");
+      }
+      if (over) break;
+    }
+    if (over) proc.kill();
+    await proc.exited;
+    return { files, mode: "git", over };
+  }
+  const glob = new Bun.Glob("**/*");
+  for await (const rel of glob.scan({ cwd: root, onlyFiles: true, followSymlinks: false, dot: true })) {
+    if (shouldSkip(rel, ignore)) continue;
+    if (++files > max) return { files, mode: "walk", over: true };
+    if (files >= INDEX_WALK_MAX_FILES) break;
+  }
+  return { files, mode: "walk", over: false };
+}
+
+export type EnsureReason = "disabled" | "depth" | "too_big" | "empty" | "failed";
+
+export interface EnsureResult {
+  stats?: IndexStats;
+  /** This call created the index. */
+  built: boolean;
+  reason?: EnsureReason;
+  /** Indexable files counted when the cap refused the build. */
+  files?: number;
+  ms: number;
+}
+
+export interface EnsureOptions {
+  /** Build when absent (default: env AGENTIK_INDEX_AUTO !== "0"). */
+  auto?: boolean;
+  /** Default AUTO_INDEX_MAX_FILES, overridable with env AGENTIK_INDEX_MAX_FILES. */
+  maxFiles?: number;
+  /** Environment to read depth and the AGENTIK_INDEX_* variables from (tests). */
+  env?: NodeJS.ProcessEnv;
+  /** Where the "indexing …" and hint lines go (stderr in the CLI). */
+  log?: (line: string) => void;
+  onProgress?: (done: number, total: number) => void;
+}
+
+const hinted = new Set<string>();
+
+/** Test hook: forget which (root, reason) hints were already printed in this process. */
+export function resetIndexHints(): void {
+  hinted.clear();
+}
+
+/**
+ * The index of `workspace`, refreshed — or built on first use, à la Cursor, when the caller is
+ * the conductor (depth 0), auto-build is not disabled, and the checkout is under the file cap.
+ * Otherwise `reason` says why, and ONE hint per (root, reason) is logged in this process. A
+ * failed build is one line too; the caller carries on without an index. Never throws.
+ */
+export async function ensureIndex(home: string | undefined, workspace: string, opts: EnsureOptions = {}): Promise<EnsureResult> {
+  const t0 = Date.now();
+  const env = opts.env ?? process.env;
+  const log = opts.log ?? (() => {});
+  const { root } = indexKey(workspace);
+  const hint = (reason: EnsureReason, line: string) => {
+    const key = `${root}:${reason}`;
+    if (!hinted.has(key)) {
+      hinted.add(key);
+      log(line);
+    }
+  };
+  if (hasIndex(home, workspace)) {
+    try {
+      const stats = await refreshIndex(home, workspace, { onProgress: opts.onProgress });
+      return { stats, built: false, ms: Date.now() - t0 };
+    } catch (err) {
+      log(`agentik: code index not refreshed: ${err instanceof Error ? err.message : String(err)}`);
+      return { built: false, reason: "failed", ms: Date.now() - t0 };
+    }
+  }
+  const auto = opts.auto ?? env[AUTO_INDEX_ENV] !== "0";
+  if (!auto) return { built: false, reason: "disabled", ms: Date.now() - t0 };
+  if (currentDepth(env) >= 1) {
+    hint("depth", `agentik: no code index for ${root} — a worker never builds one; the conductor runs: agentik index --workspace ${root}`);
+    return { built: false, reason: "depth", ms: Date.now() - t0 };
+  }
+  const envMax = Number.parseInt(env[AUTO_INDEX_MAX_FILES_ENV] ?? "", 10);
+  const maxFiles = opts.maxFiles ?? (Number.isFinite(envMax) && envMax > 0 ? envMax : AUTO_INDEX_MAX_FILES);
+  let count: Awaited<ReturnType<typeof countIndexable>>;
+  try {
+    count = await countIndexable(root, maxFiles);
+  } catch (err) {
+    log(`agentik: could not size ${root} for indexing: ${err instanceof Error ? err.message : String(err)}`);
+    return { built: false, reason: "failed", ms: Date.now() - t0 };
+  }
+  if (count.files === 0) return { built: false, reason: "empty", files: 0, ms: Date.now() - t0 }; // nothing to index, nothing to say
+  if (count.over) {
+    hint("too_big", `agentik: no code index for ${root} (${count.files}+ files > ${maxFiles}) — run: agentik index --workspace ${root}, or ${AUTO_INDEX_ENV}=0 to silence`);
+    return { built: false, reason: "too_big", files: count.files, ms: Date.now() - t0 };
+  }
+  log(`agentik: indexing ${root} (${count.files} files)…`);
+  try {
+    const stats = await refreshIndex(home, workspace, { onProgress: opts.onProgress });
+    log(formatIndexStats(stats));
+    return { stats, built: true, files: count.files, ms: Date.now() - t0 };
+  } catch (err) {
+    log(`agentik: code index not built: ${err instanceof Error ? err.message : String(err)}`);
+    return { built: false, reason: "failed", files: count.files, ms: Date.now() - t0 };
+  }
 }

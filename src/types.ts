@@ -369,8 +369,11 @@ export interface RunReport {
   events: OrchEvent[];
   /** Where the plan came from: the model, the model after one PLAN_REJECTED reprompt, the regex planner, or a resumed run. */
   planSource: "model" | "model_repaired" | "fallback" | "resumed";
-  /** The code index this run refreshed at start (absent: no index for the workspace). */
-  codeIndex?: { files: number; chunks: number; changed: number };
+  /**
+   * The code index this run refreshed — or built on first use — at start. Absent when the
+   * workspace has none and none was built (`reason`: disabled | depth | too_big | failed).
+   */
+  codeIndex?: { files: number; chunks: number; changed: number; built: boolean; ms: number; reason?: string };
   /** Why the model plan(s) were rejected, when they were. */
   planProblems: string[];
   /** One structured result per planned task, in plan order. */

@@ -32,7 +32,7 @@ import { retainNote, readHot } from "./memory.ts";
 import { memoryFileLabel, memoryFilePath, memoryRemoveEntry, resealMemory, type MemoryTarget } from "./memory-store.ts";
 import { formatSessionHit, searchSessions } from "./sessions.ts";
 import { buildContext } from "./context.ts";
-import { formatIndexStats, hasIndex, indexKey, indexStats, refreshIndex } from "./code-index.ts";
+import { ensureIndex, formatIndexStats, hasIndex, indexKey, indexStats, isIndexBusy, refreshIndex } from "./code-index.ts";
 import { repoMap } from "./repo-map.ts";
 import { formatSearch, searchCode } from "./code-search.ts";
 import { renderEnvelope, wrapUntrusted } from "./trust.ts";
@@ -139,8 +139,16 @@ Commands:
                                awaiting_approval run is resumed with "runs resume" (approvals
                                frozen by call) or relaunched with --approve-high-blast.
   agentik context [--workspace DIR] [--profile P] ["<goal>"]
-  agentik index [--workspace DIR] [--rebuild] [--stats] [--json]
-                               Build or refresh the local code index of a checkout:
+  agentik index [--workspace DIR] [--rebuild] [--stats] [--quiet] [--if-present] [--json]
+                               Build or refresh the local code index of a checkout. Built
+                               AUTOMATICALLY on first use by run / spawn / context / search
+                               when this process is the conductor (AGENTIK_DEPTH=0) and the
+                               checkout has at most 5000 indexable files (AGENTIK_INDEX_MAX_FILES);
+                               above that, one hint and nothing else — this explicit command has
+                               no cap. AGENTIK_INDEX_AUTO=0 or --no-index disables the auto-build.
+                               --if-present refreshes only (never creates; what a git hook runs),
+                               --quiet prints nothing and treats a busy index as done.
+                               Files, chunks and where:
                                <home>/index/<slug>.sqlite, line ranges + identifiers +
                                symbols + imports and a trigram index of the secret-masked
                                body — no source text is stored. Freshness follows git
@@ -311,7 +319,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   }
   const cmd = argv[0];
   // Fail closed on a broken config.json before any command that could write memory, skills,
-  // sessions or spawn a worker. probe / context / postmortem never write and stay available.
+  // sessions or spawn a worker. probe / context / postmortem / index / search never write memory,
+  // skills or sessions (context and search may build the code index, a cache) and stay available.
   if (!CONFIG_EXEMPT.has(cmd)) {
     const problem = await preflightConfig(argv);
     if (problem !== undefined) return problem;
@@ -629,6 +638,10 @@ async function runsCmd(args: string[]): Promise<number> {
     console.log(`run ${rec.id} · ${rec.at} · status ${rec.status} · exit ${rec.exitCode} · ${rec.backend} × ${rec.workers} · ${Math.round(rec.durationMs / 1000)}s`);
     console.log(`workspace: ${rec.workspace}`);
     if (rec.report.shaping) console.log(`shaping: ${rec.report.shaping.calls} calls · −${rec.report.shaping.savedChars} chars`);
+    if (rec.report.codeIndex) {
+      const ci = rec.report.codeIndex;
+      console.log(ci.reason ? `code index: none (${ci.reason}${ci.files ? `, ${ci.files}+ files` : ""})` : `code index: ${ci.files} files · ${ci.chunks} chunks · ${ci.built ? "built this run" : `${ci.changed} changed`} · ${ci.ms}ms`);
+    }
     console.log(formatReport(rec.report));
     if (rec.report.pendingApprovals?.length) {
       console.log(`awaiting approval: ${rec.report.pendingApprovals.map((a) => `${a.id} (${a.toolCall.tool})`).join(", ")}`);
@@ -961,12 +974,9 @@ export async function spawnContextBlock(goal: string, workspace: string, home: s
  * of the index. No index → undefined (nothing said); a failure → one stderr line, the task runs.
  */
 export async function spawnCodeBlock(goal: string, workspace: string, home: string): Promise<string | undefined> {
-  if (!hasIndex(home, workspace)) return undefined;
-  try {
-    await refreshIndex(home, workspace);
-  } catch (err) {
-    console.error(`agentik spawn: code index not refreshed: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  // Built on first use when this process is the conductor and the checkout is under the cap.
+  const ensured = await ensureIndex(home, workspace, { log: (line) => console.error(line) });
+  if (!ensured.stats) return undefined;
   let map: string | undefined;
   try {
     map = await repoMap(home, workspace, { goal, budgetChars: CODE_CONTEXT_CAP - 200 });
@@ -1333,6 +1343,8 @@ export function parseRun(args: string[]): {
     regex?: boolean;
     rebuild?: boolean;
     stats?: boolean;
+    quiet?: boolean;
+    ifPresent?: boolean;
     path?: string;
     offset?: number;
     k?: number;
@@ -1369,6 +1381,8 @@ export function parseRun(args: string[]): {
       flags.n = args[++i];
     }
     else if (a === "--regex") flags.regex = true;
+    else if (a === "--quiet") flags.quiet = true;
+    else if (a === "--if-present") flags.ifPresent = true;
     else if (a === "--rebuild") flags.rebuild = true;
     else if (a === "--stats") flags.stats = true;
     else if (a === "-k" && args[i + 1]) {
@@ -1467,6 +1481,8 @@ export function parseRun(args: string[]): {
       case: str(flags.case),
       approve: str(flags.approve),
       regex: Boolean(flags.regex),
+      quiet: Boolean(flags.quiet),
+      ifPresent: Boolean(flags.ifPresent),
       rebuild: Boolean(flags.rebuild),
       stats: Boolean(flags.stats),
       path: str(flags.path),
@@ -1802,9 +1818,13 @@ async function memoryCmd(args: string[]): Promise<number> {
 /** The block `/ak` reads at session open. `--workspace` scopes the related sessions. */
 async function contextCmd(args: string[]): Promise<number> {
   const { goal, flags } = parseRun(args);
+  const workspace = flags.workspace ? resolve(flags.workspace) : undefined;
+  // The only thing `context` ever writes: the code index cache, built on first use (depth 0,
+  // under the cap) so the CODE MAP is there from the first session. buildContext stays read-only.
+  if (workspace && !flags.noIndex) await ensureIndex(homeFor(flags), workspace, { log: (line) => console.error(line) });
   const block = await buildContext({
     home: homeFor(flags),
-    workspace: flags.workspace ? resolve(flags.workspace) : undefined,
+    workspace,
     goal: goal || flags.goalFlag,
     code: !flags.noIndex,
   });
@@ -1822,7 +1842,15 @@ async function indexCmd(args: string[]): Promise<number> {
   const { flags } = parseRun(args);
   const workspace = resolve(flags.workspace ?? process.cwd());
   const home = homeFor(flags);
+  const say = (line: string) => {
+    if (!flags.quiet) console.log(line);
+  };
   try {
+    // --if-present: refresh only, never create (what a git hook runs). Nothing to do is exit 0.
+    if (flags.ifPresent && !hasIndex(home, workspace)) {
+      if (!flags.quiet) console.error(`agentik index: no code index for ${indexKey(workspace).root} (--if-present: nothing to do)`);
+      return 0;
+    }
     if (flags.stats && !flags.rebuild) {
       const stats = indexStats(home, workspace);
       if (!stats) {
@@ -1833,11 +1861,18 @@ async function indexCmd(args: string[]): Promise<number> {
       else console.log(formatIndexStats(stats));
       return 0;
     }
-    const stats = await refreshIndex(home, workspace, { rebuild: flags.rebuild });
-    if (flags.json) console.log(JSON.stringify(stats, null, 2));
-    else console.log(formatIndexStats(stats));
+    // Progress on stderr only when a build takes a while (never with --quiet).
+    const started = Date.now();
+    const onProgress = flags.quiet ? undefined : (done: number, total: number) => {
+      if (Date.now() - started > 2000 && done < total) console.error(`agentik index: ${done}/${total} files…`);
+    };
+    const stats = await refreshIndex(home, workspace, { rebuild: flags.rebuild, onProgress });
+    if (flags.json) say(JSON.stringify(stats, null, 2));
+    else say(formatIndexStats(stats));
     return 0;
   } catch (err) {
+    // Another process holds the lock (a hook racing a run): not a failure for a quiet refresh.
+    if (flags.quiet && isIndexBusy(err)) return 0;
     console.error(`agentik index: ${err instanceof Error ? err.message : String(err)}`);
     return 2;
   }
@@ -1857,14 +1892,11 @@ async function searchCmd(args: string[]): Promise<number> {
     return 2;
   }
   const { root } = indexKey(workspace);
-  if (!hasIndex(home, workspace)) {
-    console.error(`agentik search: no code index for ${root} — run: agentik index --workspace ${root}`);
+  // Built on first use (conductor, under the cap); a worker or a big checkout gets the hint.
+  const ensured = await ensureIndex(home, workspace, { log: (line) => console.error(line) });
+  if (!ensured.stats && !hasIndex(home, workspace)) {
+    if (ensured.reason === "disabled") console.error(`agentik search: no code index for ${root} — run: agentik index --workspace ${root}`);
     return 1;
-  }
-  try {
-    await refreshIndex(home, workspace);
-  } catch (err) {
-    console.error(`agentik search: index not refreshed (${err instanceof Error ? err.message : String(err)}) — searching it as it is`);
   }
   try {
     const res = await searchCode(home, workspace, { query, regex: flags.regex, pathGlob: flags.path, k: flags.k, offset: flags.offset });

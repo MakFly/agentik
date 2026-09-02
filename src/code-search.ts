@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { splitIdent } from "./code-chunker.ts";
-import { hasIndex, indexKey, indexStats, openIndex, readWorkspaceFile, refreshIndex, type IndexStats } from "./code-index.ts";
+import { hasIndex, indexKey, indexStats, openIndex, readWorkspaceFile, refreshIndex, type IndexStats, type RefreshOptions } from "./code-index.ts";
 import { agentikHome } from "./home.ts";
 import { secretProblem } from "./memory-store.ts";
 import { fold, ftsPhrase, tokenize, trigramsOf } from "./sessions.ts";
@@ -67,7 +67,7 @@ export interface SearchResult {
 
 /** The seam a future backend (Meilisearch, embeddings) implements; the CLI and the tool see only this. */
 export interface SearchIndex {
-  refresh(opts?: { rebuild?: boolean }): Promise<IndexStats>;
+  refresh(opts?: RefreshOptions): Promise<IndexStats>;
   search(q: SearchQuery): Promise<SearchResult>;
   stats(): IndexStats | undefined;
 }
