@@ -62,6 +62,10 @@ the README and this file disagree; this file wins for agents.
              are never archived.  Usage counters in skills/.usage.json (view/patch/create).
   Approval:  config.json {"memory":{"writeApproval":true},"skills":{"writeApproval":true}} stages
              writes in pending/memory · pending/skills-ops ; agentik memory|skills pending|approve|reject.
+             config.json is STRICT (src/config.ts ConfigError): bad JSON, unknown key, "true" string,
+             symlink, camel/snake disagreement → run|review|harvest|memory|skills|spawn exit 2 before doing
+             anything ("<path>: … — fix or delete the file (defaults are all off)"); harvest writes no session.
+             probe · context · postmortem are exempt. Absent file = defaults, never an error.
   Human pen: agentik memory hot | retain <fact> | remove "<exact or unique prefix>" [--target memory|user|project]
              [--workspace DIR] — remove never stages (the human is the approver), backup MEMORY.md.bak.<ts> first.
   Legacy:    "- (session) …" lines found in MEMORY.md are swept into sessions.sqlite on every open

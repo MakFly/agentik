@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { ConfigError, formatConfigError, readConfig } from "./config.ts";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
@@ -216,6 +217,12 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return 0;
   }
   const cmd = argv[0];
+  // Fail closed on a broken config.json before any command that could write memory, skills,
+  // sessions or spawn a worker. probe / context / postmortem never write and stay available.
+  if (!CONFIG_EXEMPT.has(cmd)) {
+    const problem = await preflightConfig(argv);
+    if (problem !== undefined) return problem;
+  }
   if (cmd === "probe") return probe(argv.slice(1));
   if (cmd === "spawn") return spawnForeign(argv.slice(1));
   if (cmd === "memory") return memoryCmd(argv.slice(1));
@@ -968,6 +975,33 @@ function positive(v: string | boolean | undefined): number | undefined {
 /** --agentik-home > AGENTIK_HOME > --profile / AGENTIK_PROFILE / default. */
 function homeFor(flags: { agentikHome?: string; profile?: string }): string {
   return agentikHome(flags.agentikHome, flags.profile);
+}
+
+const CONFIG_EXEMPT = new Set(["probe", "context", "postmortem"]);
+
+/** The home the command will use, from the raw argv (before any subcommand parses its flags). */
+function homeFromArgv(argv: string[]): string {
+  let agentikHomeFlag: string | undefined;
+  let profile: string | undefined;
+  for (let i = 0; i < argv.length - 1; i++) {
+    if (argv[i] === "--agentik-home") agentikHomeFlag = argv[i + 1];
+    else if (argv[i] === "--profile") profile = argv[i + 1];
+  }
+  return homeFor({ agentikHome: agentikHomeFlag, profile });
+}
+
+/** Exit code when `<home>/config.json` is unusable, `undefined` when it is fine or absent. */
+async function preflightConfig(argv: string[]): Promise<number | undefined> {
+  try {
+    await readConfig({ home: homeFromArgv(argv) });
+    return undefined;
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      console.error(`agentik: ${formatConfigError(err)}`);
+      return 2;
+    }
+    throw err;
+  }
 }
 
 /** `--timeout 0` is meaningful (no bound), so 0 must survive the parse. */

@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { approveMemory, approveSkillOps, rejectPending } from "../src/approval.ts";
 import { main } from "../src/cli.ts";
-import { readConfig } from "../src/config.ts";
+import { ConfigError, readConfig } from "../src/config.ts";
 import { retainNote } from "../src/memory.ts";
 import { memoryAdd, MEMORY_CAP, readEntries } from "../src/memory-store.ts";
 import { listPending, type PendingMemoryOp, type PendingSkillOp } from "../src/pending.ts";
@@ -42,12 +42,12 @@ class ScriptedReviewer implements Backend {
 }
 
 describe("config.json", () => {
-  test("absent, empty, or partial: defaults are off; camelCase and snake_case both read", async () => {
+  test("absent or partial: defaults are off; invalid JSON throws; camelCase and snake_case both read", async () => {
     const none = await makeWorkspace("config-none-");
     expect(await readConfig({ home: none })).toEqual({ memory: { writeApproval: false }, skills: { writeApproval: false } });
     const bad = await homeWith({} , "config-empty-");
     await writeFile(join(bad, "config.json"), "{not json", "utf8");
-    expect((await readConfig({ home: bad })).memory.writeApproval).toBe(false);
+    await expect(readConfig({ home: bad })).rejects.toThrow(ConfigError);
     const snake = await homeWith({ memory: { write_approval: true }, skills: { writeApproval: true } }, "config-snake-");
     expect(await readConfig({ home: snake })).toEqual({ memory: { writeApproval: true }, skills: { writeApproval: true } });
   });

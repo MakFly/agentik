@@ -51,7 +51,7 @@ export {
   pinSkill,
 } from "./skill-factory.ts";
 export { reviewAfterRun, recallBeforeRun, keywordsFromGoal, summarizeRun } from "./review.ts";
-export { readConfig, parseConfig, DEFAULT_CONFIG, type AgentikConfig } from "./config.ts";
+export { readConfig, parseConfig, ConfigError, formatConfigError, DEFAULT_CONFIG, type AgentikConfig } from "./config.ts";
 export { recordSkillUsage, readSkillUsage, describeUsage, type SkillUsageEntry, type SkillState } from "./skill-usage.ts";
 export { curateSkills, planCuration, rollbackSkills, snapshotSkills, readLedger, formatCurateResult } from "./curator.ts";
 export { listPending, readPending, removePending, pendingCounts, type PendingMemoryOp, type PendingSkillOp } from "./pending.ts";
