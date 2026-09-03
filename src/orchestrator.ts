@@ -40,6 +40,12 @@ export class Orchestrator {
   findings: InjectionFinding[] = [];
   events: OrchEvent[] = [];
   blockedUntilApproval = new Set<string>();
+  /**
+   * Why this run cannot be called `completed`: a failed acceptance, a mutating task that mutated
+   * nothing. Without this, a task the loop marked `failed` never reached the exit code — the
+   * status stayed `completed` and the run exited 0 with nothing done.
+   */
+  unproven: string[] = [];
 
   private emit(type: string, detail: Record<string, unknown> = {}): void {
     this.events.push({ at: new Date().toISOString(), type, detail });
@@ -227,10 +233,27 @@ export class Orchestrator {
     this.status = "synthesizing";
   }
 
+  /**
+   * "This part of the run is not proven done." Accumulates; the reason is kept for the report.
+   * Never changes the status on its own: only `complete()` decides, so a pending approval keeps
+   * its priority (`runs resume` needs `awaiting_approval`, not `blocked`).
+   */
+  markUnproven(reason: string): void {
+    this.unproven.push(reason);
+  }
+
   complete(): void {
     if (this.status === "overridden" || this.status === "rejected") return;
+    // Order matters: an approval the human still owes us outranks an unproven task. Demoting
+    // `awaiting_approval` to `blocked` here would make `agentik runs resume` unusable.
     if (this.pendingApprovals.length > 0) {
       this.status = "awaiting_approval";
+      return;
+    }
+    if (this.unproven.length > 0) {
+      // `blocked` already means "exit 3, record an incident" in the CLI and in SessionStatus.
+      this.status = "blocked";
+      this.emit("blocked_unproven", { reasons: this.unproven.slice(0, 10) });
       return;
     }
     this.status = "completed";

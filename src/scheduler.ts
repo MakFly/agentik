@@ -23,7 +23,12 @@ export interface DagTask {
 }
 
 export interface DagResult {
-  status: "done" | "stalled" | "blocked" | "failed";
+  /**
+   * Deliberately `string`: the scheduler is pure and asks exactly one question of a result
+   * (`=== "done"`, to release the dependants). It has no reason to know the loop's vocabulary,
+   * and a literal union here would make every new task status a scheduler edit.
+   */
+  status: string;
 }
 
 export interface RunDagOptions<T extends DagTask, R extends DagResult> {

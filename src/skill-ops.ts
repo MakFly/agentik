@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { agentikHome, memoryPaths } from "./home.ts";
+import { withHomeLock } from "./home-lock.ts";
 import { memoryContentProblem } from "./memory-store.ts";
 import { skillDescriptionProblem, skillNameProblem } from "./skill-factory.ts";
 import { writeSkillFile } from "./skill-write.ts";
@@ -30,7 +31,20 @@ export function skillFile(name: string, home?: string): string {
   return join(memoryPaths(agentikHome(home)).skills, name, "SKILL.md");
 }
 
-export async function applySkillPatch(
+/**
+ * The reviewer's `skill_manage patch`. "old_string matches exactly once" is a verdict about the
+ * body as it was read, so the read, the verdict and the write are one critical section — under a
+ * concurrent write the match count would be true of a file that no longer exists.
+ */
+export function applySkillPatch(
+  name: string,
+  args: { old_string?: unknown; new_string?: unknown },
+  opts?: { home?: string; by?: SkillCreator },
+): Promise<SkillOpResult> {
+  return withHomeLock("skills", () => patchLocked(name, args, opts), { home: opts?.home });
+}
+
+async function patchLocked(
   name: string,
   args: { old_string?: unknown; new_string?: unknown },
   opts?: { home?: string; by?: SkillCreator },
@@ -68,7 +82,16 @@ export function skillCreateProblem(name: string, args: { description?: unknown; 
   return undefined;
 }
 
-export async function applySkillCreate(
+/** Same shape: "does not exist yet" is checked and then acted on, so both go under one lock. */
+export function applySkillCreate(
+  name: string,
+  args: { description?: unknown; body?: unknown },
+  opts?: { home?: string; by?: SkillCreator },
+): Promise<SkillOpResult> {
+  return withHomeLock("skills", () => createLocked(name, args, opts), { home: opts?.home });
+}
+
+async function createLocked(
   name: string,
   args: { description?: unknown; body?: unknown },
   opts?: { home?: string; by?: SkillCreator },

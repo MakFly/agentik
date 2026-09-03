@@ -137,12 +137,15 @@ describe("TaskResult per task", () => {
     } finally {
       console.log = orig;
     }
-    expect(code).toBe(0);
+    // Exit 3: task-3 of this plan ("re-run a non-destructive check") is allowed run_command and
+    // changes nothing, so it is `refused` and the run is `blocked`. The shape of --json is what
+    // this test is about, and it is unchanged.
+    expect(code).toBe(3);
     const parsed = JSON.parse(chunks.find((c) => c.trim().startsWith("{"))!) as { planSource: string; taskResults: Array<{ taskId: string; status: string; durationMs: number }> };
     expect(parsed.planSource).toBe("model");
     expect(parsed.taskResults).toHaveLength(3);
+    expect(parsed.taskResults.map((r) => r.status)).toEqual(["done", "done", "refused"]);
     for (const r of parsed.taskResults) {
-      expect(r.status).toBe("done");
       expect(typeof r.durationMs).toBe("number");
     }
   });

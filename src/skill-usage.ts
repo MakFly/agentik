@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { agentikHome, memoryPaths } from "./home.ts";
+import { withHomeLock } from "./home-lock.ts";
 
 /**
  * `<home>/skills/.usage.json` — one record per skill: how often its body was loaded, how
@@ -59,26 +60,33 @@ export async function writeSkillUsage(usage: SkillUsage, opts?: { home?: string 
  * Count one use. A view or a patch bumps its counter and `lastUsedAt`; a create records who
  * made the skill and when. Any use brings a `stale` skill back to `active` — the curator
  * only ever marks, it does not decide what the reviewer or the human just did.
+ *
+ * Read-modify-write on one JSON map, so it is taken under the `skills` home lock. This is the
+ * counter `agentik skills curate` archives on: 20 simultaneous `agentik skills view` counted 14
+ * before the lock, which means a skill several workers load in parallel ages towards `stale` and
+ * `archived` faster than it is actually used — the curator punishing the popular skill.
  */
-export async function recordSkillUsage(
+export function recordSkillUsage(
   name: string,
   kind: SkillUsageKind,
   opts?: { home?: string; createdBy?: SkillCreator; now?: Date },
 ): Promise<SkillUsageEntry> {
-  const usage = await readSkillUsage(opts);
-  const at = (opts?.now ?? new Date()).toISOString();
-  const entry: SkillUsageEntry = usage[name] ?? { views: 0, patches: 0 };
-  if (kind === "view") entry.views += 1;
-  else if (kind === "patch") entry.patches += 1;
-  else {
-    entry.createdBy = opts?.createdBy ?? "reviewer";
-    entry.createdAt = at;
-  }
-  entry.lastUsedAt = at;
-  entry.state = "active";
-  usage[name] = entry;
-  await writeSkillUsage(usage, opts);
-  return entry;
+  return withHomeLock("skills", async () => {
+    const usage = await readSkillUsage(opts);
+    const at = (opts?.now ?? new Date()).toISOString();
+    const entry: SkillUsageEntry = usage[name] ?? { views: 0, patches: 0 };
+    if (kind === "view") entry.views += 1;
+    else if (kind === "patch") entry.patches += 1;
+    else {
+      entry.createdBy = opts?.createdBy ?? "reviewer";
+      entry.createdAt = at;
+    }
+    entry.lastUsedAt = at;
+    entry.state = "active";
+    usage[name] = entry;
+    await writeSkillUsage(usage, opts);
+    return entry;
+  }, { home: opts?.home });
 }
 
 /** One-line summary for `agentik skills list`. */

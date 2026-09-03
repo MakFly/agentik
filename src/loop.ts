@@ -1,4 +1,5 @@
-import { snapshotArtifacts, untouchedArtifacts } from "./artifacts.ts";
+import { gitDirty, gitDirtyChanged, snapshotArtifacts, untouchedArtifacts } from "./artifacts.ts";
+import { randomBytes } from "node:crypto";
 import { BackendError, systemPromptFor } from "./backends.ts";
 import { ensureIndex } from "./code-index.ts";
 import { repoMap } from "./repo-map.ts";
@@ -46,6 +47,22 @@ export { DEFAULT_MAX_STEPS };
  * `loop.ts` already imports `backends.ts` — owning the constant here would close an import cycle.
  */
 export { TASK_SUMMARY_MAX };
+
+/**
+ * A task allowed one of these was asked to CHANGE the workspace. If it ends with no mutation
+ * observed, the run has prose and nothing else — status `refused` (see `runTask`).
+ */
+const MUTATING_TOOLS = new Set(["write_file", "run_command", "fs_destructive"]);
+
+/**
+ * Tools whose `ToolResult.artifact` is a path they WROTE. `read_file` (and `search_code`) also
+ * carry an artifact — the path they are ABOUT — so "the task collected artifacts" proves nothing
+ * on its own: reading ten files would pass for work nobody did. Keep in sync with `tools.ts`.
+ */
+const WRITING_TOOLS = new Set(["write_file", "fs_destructive", "sandbox_ops", "server_admin"]);
+
+/** How much of the worker's final message is quoted as evidence in a refusal reason. */
+export const REFUSAL_QUOTE_MAX = 500;
 
 export interface LoopConfig {
   goal: string;
@@ -136,6 +153,13 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
   let planProblems: string[] = [];
   /** Monotone across the run: a call id is never reused, whatever task or phase made it. */
   let callSeq = 0;
+  /**
+   * Per RUN, not per process: two `runLoop` calls in the same workspace (concurrent CLIs, or two
+   * runs awaited together in one process) both wrote `.agentik/tool-results/worker_a-write_file-3.txt`,
+   * so one overwrote the other and a paged `read_file` returned the neighbour's bytes. Prefixing the
+   * spill FILE name is the smallest fix: the call id stays `<role>-<tool>-<seq>` in the evidence.
+   */
+  const spillNonce = randomBytes(3).toString("hex");
   /** Call ids the gate released: the destructive executor's second lock. */
   const approved = new Set<string>();
 
@@ -372,7 +396,7 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
     // Over the inline cap the full body goes to disk; the envelope keeps head + pointer + tail,
     // and the injection scan covers the whole body, not the visible part. A shaped output is
     // always written (force) so its "full output in <path>" line is true.
-    const spilled = await spillToolResult(opts.workspace, call.id, result.raw ?? result.output, `tool:${call.tool}`, {
+    const spilled = await spillToolResult(opts.workspace, `${spillNonce}-${call.id}`, result.raw ?? result.output, `tool:${call.tool}`, {
       inline: result.raw !== undefined ? result.output : undefined,
       force: result.shaped !== undefined,
       shaped: result.shaped,
@@ -538,6 +562,10 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
     const before = task.acceptance?.expectArtifacts?.length
       ? await snapshotArtifacts(opts.workspace, task.acceptance.expectArtifacts).catch(() => [])
       : [];
+    // Third witness, taken by the CONDUCTOR before the first model call: nothing in the prompt
+    // mentions it, so the worker cannot answer the test it does not know it is taking.
+    const mutating = task.allowedTools.some((t) => MUTATING_TOOLS.has(t));
+    const dirtyBefore = mutating ? gitDirty(opts.workspace) : undefined;
     for (let step = 1; step <= limit; step++) {
       if (orch.isStopped()) break;
       result.evidence.steps = step;
@@ -571,42 +599,56 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
       // A task that asked for an approval nobody gave is not done, whatever else it ran.
       result.status = "blocked";
       result.reason = `awaiting approval: ${result.pendingApprovalIds.join(", ")}`;
-    } else if (task.acceptance) {
-      // Acceptance: the plan said what "done" means; check it, do not take the worker's word.
-      const failures: string[] = [];
-      const acc: NonNullable<TaskResult["evidence"]["acceptance"]> = { ok: true, problems: [] };
-      if (task.acceptance.requireTools && result.evidence.executed === 0) failures.push("no tool executed");
-      if (before.length) {
-        const untouched = await untouchedArtifacts(opts.workspace, before).catch(() => []);
+    } else {
+      // The three witnesses of a mutation, unioned. Each covers a different way out:
+      //   1. a successful call of a tool that writes — misses a `sed -i` sent through run_command;
+      //   2. the before/after snapshot of the DECLARED paths — misses a `touch` (mtime, not content);
+      //   3. the git dirty delta — a content witness a `touch` cannot fool, absent outside a repo.
+      const untouched = before.length ? await untouchedArtifacts(opts.workspace, before).catch(() => []) : [];
+      const mutated =
+        result.evidence.calls.some((c) => c.ok && WRITING_TOOLS.has(c.tool)) ||
+        (before.length > 0 && untouched.length < before.length) ||
+        gitDirtyChanged(dirtyBefore, mutating ? gitDirty(opts.workspace) : undefined);
+      if (mutating && !mutated) {
+        // Structural, never lexical: the trigger is "mutation declared, mutation nil". A keyword
+        // list ("I cannot", "policy", "AGENTS.md") is beaten by a rephrasing — which is exactly the
+        // observed failure. The wording of the refusal is quoted as EVIDENCE, never as the criterion.
+        result.status = "refused";
+        result.reason = `mutating task (${task.allowedTools.filter((t) => MUTATING_TOOLS.has(t)).join(", ")}) changed nothing on disk; the worker's final message was: ${lastText.slice(0, REFUSAL_QUOTE_MAX)}`;
+      } else if (task.acceptance) {
+        // Acceptance: the plan said what "done" means; check it, do not take the worker's word.
+        const failures: string[] = [];
+        const acc: NonNullable<TaskResult["evidence"]["acceptance"]> = { ok: true, problems: [] };
+        if (task.acceptance.requireTools && result.evidence.executed === 0) failures.push("no tool executed");
         if (untouched.length) failures.push(`untouched: ${untouched.join(", ")}`);
-      }
-      if (task.acceptance.command) {
-        callSeq += 1;
-        const check: ToolCall = {
-          id: `orchestrator-run_command-${callSeq}`,
-          tool: "run_command",
-          args: { cmd: task.acceptance.command, timeout_s: 120 },
-          proposedBy: "orchestrator",
-          taskId: task.id,
-        };
-        const t1 = Date.now();
-        try {
-          // executeTool → runCommandTool: the acceptance output is shaped like a worker's.
-          const r = await executeTool(check, { workspace: opts.workspace, indexHome: opts.home });
-          noteShaped(r.shaped);
-          acc.command = { cmd: task.acceptance.command, ok: r.ok, output: r.output.slice(0, 500) };
-          result.evidence.calls.push({ callId: check.id, tool: "run_command", ok: r.ok, durationMs: Date.now() - t1, ...(r.shaped ? { shaped: r.shaped } : {}) });
-          if (!r.ok) failures.push(`check failed: ${task.acceptance.command}`);
-        } catch (err) {
-          failures.push(`check errored: ${err instanceof Error ? err.message : String(err)}`);
+        if (task.acceptance.command) {
+          callSeq += 1;
+          const check: ToolCall = {
+            id: `orchestrator-run_command-${callSeq}`,
+            tool: "run_command",
+            args: { cmd: task.acceptance.command, timeout_s: 120 },
+            proposedBy: "orchestrator",
+            taskId: task.id,
+          };
+          const t1 = Date.now();
+          try {
+            // executeTool → runCommandTool: the acceptance output is shaped like a worker's.
+            const r = await executeTool(check, { workspace: opts.workspace, indexHome: opts.home });
+            noteShaped(r.shaped);
+            acc.command = { cmd: task.acceptance.command, ok: r.ok, output: r.output.slice(0, 500) };
+            result.evidence.calls.push({ callId: check.id, tool: "run_command", ok: r.ok, durationMs: Date.now() - t1, ...(r.shaped ? { shaped: r.shaped } : {}) });
+            if (!r.ok) failures.push(`check failed: ${task.acceptance.command}`);
+          } catch (err) {
+            failures.push(`check errored: ${err instanceof Error ? err.message : String(err)}`);
+          }
         }
-      }
-      acc.ok = failures.length === 0;
-      acc.problems = failures;
-      result.evidence.acceptance = acc;
-      if (!acc.ok) {
-        result.status = "failed";
-        result.reason = `acceptance: ${failures.join("; ")}`;
+        acc.ok = failures.length === 0;
+        acc.problems = failures;
+        result.evidence.acceptance = acc;
+        if (!acc.ok) {
+          result.status = "failed";
+          result.reason = `acceptance: ${failures.join("; ")}`;
+        }
       }
     }
     result.endedAt = new Date().toISOString();
@@ -710,6 +752,12 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
     skipped: (task) => syntheticResult(task, "blocked", "run stopped before this task started"),
   });
   taskResults.push(...results);
+  // A task the orchestrator could not prove done must reach the exit code. `stalled[]` only holds
+  // tasks that never answered, so `failed` (acceptance) and `refused` (no mutation) used to end the
+  // run as `completed`, exit 0. `markUnproven` makes `complete()` say `blocked` instead (exit 3).
+  for (const r of results) {
+    if (r.status === "failed" || r.status === "refused") orch.markUnproven(`${r.taskId}: ${r.reason ?? r.status}`);
+  }
 
   if (orch.isStopped()) return report(orch, bits("overridden by orchestrator"));
 

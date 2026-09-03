@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { readConfig } from "./config.ts";
 import { agentikHome, legacyProjectSlug, memoryPaths, projectMemoryPath, projectSlug } from "./home.ts";
 import { checkSeal, DIVERGED_BODY, sealContent, sealFile, sealKey } from "./memory-seal.ts";
+import { withHomeLock } from "./home-lock.ts";
 import { resolveWorkspaceRoot } from "./workspace.ts";
 import { detectInjection } from "./injection.ts";
 import { logMemoryOp, type MemoryOpActor } from "./memory-log.ts";
@@ -209,6 +210,13 @@ export async function migrateProjectMemory(home: string, workspace: string): Pro
   const key = `${home}\n${abs}`;
   if (migrated.has(key)) return;
   migrated.add(key);
+  // Once per PROCESS is not once per machine: two sessions starting together would both find the
+  // legacy file and both move or merge it. Under the `memory` lock the second finds nothing left
+  // to do — which is why the existence checks are inside the critical section, not before it.
+  return withHomeLock("memory", () => migrateProjectMemoryLocked(home, abs, root), { home });
+}
+
+async function migrateProjectMemoryLocked(home: string, abs: string, root: string): Promise<void> {
   const projectDir = memoryPaths(home).projectDir;
   const legacyDir = join(projectDir, legacyProjectSlug(abs));
   const rootDir = join(projectDir, projectSlug(abs));
@@ -365,8 +373,22 @@ export function previewOps(ops: MemoryOperation[]): string {
  * scan, targets found, under the cap) is staged and reported as a success: the reviewer
  * decided, the human applies. `bypassApproval` is for `agentik memory approve`, which
  * replays a staged batch through the same validation against the file as it is now.
+ *
+ * Read → decide → write is held under the `memory` home lock from end to end, across processes.
+ * Without it two `agentik memory retain` started at the same moment both read the file, both
+ * appended their entry to what they had read, and the second write erased the first — while both
+ * printed a success and both journaled their op. The lock is re-entrant, so the human's pen
+ * (`memoryRemoveEntry`), the project migration and the seal update all nest inside it.
  */
 export async function memoryApply(
+  target: MemoryTarget,
+  ops: MemoryOperation[],
+  opts?: MemoryStoreOpts & { bypassApproval?: boolean },
+): Promise<MemoryOpResult> {
+  return withHomeLock("memory", () => applyLocked(target, ops, opts), { home: opts?.home });
+}
+
+async function applyLocked(
   target: MemoryTarget,
   ops: MemoryOperation[],
   opts?: MemoryStoreOpts & { bypassApproval?: boolean },
@@ -454,8 +476,20 @@ export type RemoveEntryResult =
  * prefix; zero or several matches is a refusal that names the candidates. No approval queue
  * (the human IS the approver), but a `<file>.bak.<ts>` copy is taken first, like the legacy
  * sweep does.
+ *
+ * The whole match → backup → remove sequence is one critical section: a concurrent write between
+ * the match and the removal would make the backup describe a file that no longer exists, and the
+ * "unique prefix" verdict would be about a state nobody has.
  */
-export async function memoryRemoveEntry(
+export function memoryRemoveEntry(
+  target: MemoryTarget,
+  needle: string,
+  opts?: MemoryStoreOpts,
+): Promise<RemoveEntryResult> {
+  return withHomeLock("memory", () => removeEntryLocked(target, needle, opts), { home: opts?.home });
+}
+
+async function removeEntryLocked(
   target: MemoryTarget,
   needle: string,
   opts?: MemoryStoreOpts,
@@ -536,8 +570,16 @@ export async function memorySnapshot(target: MemoryTarget, home?: string, opts?:
   return { target, header, body: shown.length ? shown.join("\n§\n") : "(empty)", usage, blockedCount };
 }
 
-/** The human's pen: accept the file as it is on disk. Journaled `reseal` by human. */
-export async function resealMemory(target: MemoryTarget, opts?: MemoryStoreOpts): Promise<{ file: string; status: "sealed" | "unsealed" | "diverged" }> {
+/**
+ * The human's pen: accept the file as it is on disk. Journaled `reseal` by human. Locked, so the
+ * seal it takes is of the file as no other agentik process is mid-rewriting it — a reseal over a
+ * half-written file would bless exactly the state the human meant to inspect.
+ */
+export function resealMemory(target: MemoryTarget, opts?: MemoryStoreOpts): Promise<{ file: string; status: "sealed" | "unsealed" | "diverged" }> {
+  return withHomeLock("memory", () => resealLocked(target, opts), { home: opts?.home });
+}
+
+async function resealLocked(target: MemoryTarget, opts?: MemoryStoreOpts): Promise<{ file: string; status: "sealed" | "unsealed" | "diverged" }> {
   const workspace = target === "project" ? opts?.workspace : undefined;
   const { file } = pathFor(target, opts?.home, workspace);
   const status = await sealFile(file, opts?.home);

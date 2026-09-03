@@ -86,7 +86,11 @@ describe("up to 5 subagents", () => {
       "--agentik-home",
       home,
     ]);
-    expect(code).toBe(0);
+    // Exit 3, not 0: the fallback plan's task-3 ("re-run a non-destructive check") is allowed
+    // run_command and mutates nothing, so it ends `refused` and the run is `blocked`. The five
+    // subagents still ran and worker_a still produced the deliverable — that is what this test is
+    // about. See "Proof of work" in CLAUDE.md for the read-only-check caveat.
+    expect(code).toBe(3);
     expect(existsSync(join(workspace, "src/greet.txt"))).toBe(true);
   });
 

@@ -3,3 +3,7 @@ node_modules
 *.log
 dist
 .claude/worktrees
+# Per-workspace agentik scratch: spilled tool outputs, sandbox receipts, run leftovers. Written
+# into every workspace agentik touches, including this one. Untracked and NOT ignored, a `git add
+# -A` would commit it — and if a worktree ever lands under it, commit a nested repository.
+.agentik/

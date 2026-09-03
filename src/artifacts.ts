@@ -54,6 +54,46 @@ export async function untouchedArtifacts(
   return before.filter((b, i) => !artifactChanged(b, after[i])).map((b) => b.path);
 }
 
+/**
+ * Third witness: what git says changed. `undefined` outside a repository (or when git is not
+ * usable there) — the caller must treat "no witness" as "no evidence either way", never as proof.
+ *
+ * The stat witness (`artifactChanged`) is beaten by `touch`: mtime moves, content does not. The
+ * porcelain entry set does not move for a `touch` on a tracked, unmodified file, so the delta
+ * between a call before the work and a call after it is a CONTENT witness.
+ *
+ * `GIT_OPTIONAL_LOCKS=0` like `src/workspace.ts`: reading the state of a repository must never
+ * take a lock a concurrent run (or the human's own shell) is waiting on.
+ */
+export function gitDirty(workspace: string): string[] | undefined {
+  try {
+    // `-- .` (like refreshIndex): the witness is about THIS workspace. Without the pathspec a run
+    // in a subdirectory would see every dirty file of the whole checkout — including a neighbour
+    // run's work, or the human's own edits — and read it as its own mutation.
+    const res = Bun.spawnSync(["git", "status", "--porcelain", "-z", "--untracked-files=all", "--", "."], {
+      cwd: workspace,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    });
+    if (res.exitCode !== 0) return undefined;
+    return res.stdout.toString().split("\0").filter((e) => e.length > 0);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * True only when git was readable at both ends AND the entry set moved. No witness (a plain
+ * directory, git unavailable) is `false`: absence of evidence, not evidence of absence.
+ */
+export function gitDirtyChanged(before: string[] | undefined, after: string[] | undefined): boolean {
+  if (!before || !after) return false;
+  if (before.length !== after.length) return true;
+  const seen = new Set(before);
+  return after.some((entry) => !seen.has(entry));
+}
+
 export function describeUntouched(paths: string[]): string {
   const list = paths.join(", ");
   return paths.length === 1

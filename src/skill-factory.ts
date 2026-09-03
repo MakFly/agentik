@@ -3,6 +3,7 @@ import { lstat, mkdir, readdir, readFile, readlink, realpath, rename, rm, symlin
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { agentikHome, memoryPaths } from "./home.ts";
+import { withHomeLock } from "./home-lock.ts";
 import { memoryContentProblem } from "./memory-store.ts";
 import { writeSkillFile } from "./skill-write.ts";
 
@@ -119,7 +120,15 @@ export interface SkillWriteOptions {
  * Write a skill in place. Name and description are validated as Hermes does on creation;
  * an update to an existing skill is exempt from the description limit.
  */
-export async function upsertSkill(
+export function upsertSkill(
+  opts: SkillWriteOptions,
+): Promise<{ path: string; name: string; action: "created" | "updated" }> {
+  // `created` vs `updated` is read off the filesystem and then acted on; locked, that verdict is
+  // still true when the write lands (and the description limit is applied to the right case).
+  return withHomeLock("skills", () => upsertLocked(opts), { home: opts.home });
+}
+
+async function upsertLocked(
   opts: SkillWriteOptions,
 ): Promise<{ path: string; name: string; action: "created" | "updated" }> {
   const problem = skillNameProblem(opts.name);
@@ -140,7 +149,15 @@ export async function upsertSkill(
   return { path: dest, name: opts.name, action };
 }
 
-export async function draftSkill(
+export function draftSkill(
+  opts: Omit<SkillWriteOptions, "linkHarness">,
+): Promise<{ path: string; name: string }> {
+  // A draft is a skills-store write like any other; `approveSkill` reads it back under the same
+  // lock, so a draft cannot be half-written when an approval picks it up.
+  return withHomeLock("skills", () => draftLocked(opts), { home: opts.home });
+}
+
+async function draftLocked(
   opts: Omit<SkillWriteOptions, "linkHarness">,
 ): Promise<{ path: string; name: string }> {
   const problem = skillNameProblem(opts.name);
@@ -158,7 +175,16 @@ export async function draftSkill(
   return { path, name: opts.name };
 }
 
-export async function approveSkill(
+export function approveSkill(
+  name: string,
+  opts?: { home?: string; linkHarness?: boolean },
+): Promise<{ path: string } | { error: string }> {
+  // Read the draft, scan it, write it, consume it: one critical section, or a second approval of
+  // the same draft writes it twice and the `rm` of the first removes the second's source.
+  return withHomeLock("skills", () => approveLocked(name, opts), { home: opts?.home });
+}
+
+async function approveLocked(
   name: string,
   opts?: { home?: string; linkHarness?: boolean },
 ): Promise<{ path: string } | { error: string }> {
@@ -183,7 +209,21 @@ export async function approveSkill(
   return { path: dest };
 }
 
-export async function updateSkill(
+/**
+ * Append to an existing skill body. Read → patch → write, so it must hold the `skills` lock for
+ * the whole sequence: 10 concurrent `agentik skill update` on one skill kept 2 lines, because
+ * each process patched the body it had read before the others wrote theirs. The backups and the
+ * ledger showed all 10 — the file was the only place the loss existed.
+ */
+export function updateSkill(
+  name: string,
+  patch: { description?: string; goal?: string; steps?: string[]; artifacts?: string[]; section?: string },
+  opts?: { home?: string },
+): Promise<{ path: string } | { error: string }> {
+  return withHomeLock("skills", () => updateLocked(name, patch, opts), { home: opts?.home });
+}
+
+async function updateLocked(
   name: string,
   patch: { description?: string; goal?: string; steps?: string[]; artifacts?: string[]; section?: string },
   opts?: { home?: string },
@@ -273,16 +313,21 @@ async function readPinned(skillsDir: string): Promise<string[]> {
   }
 }
 
-/** A pinned skill is one the human chose to keep visible everywhere. Nothing else gets linked. */
-export async function pinSkill(name: string, opts?: { home?: string; unpin?: boolean }): Promise<string[]> {
-  const paths = memoryPaths(agentikHome(opts?.home));
-  await mkdir(paths.skills, { recursive: true });
-  const current = new Set(await readPinned(paths.skills));
-  if (opts?.unpin) current.delete(name);
-  else current.add(name);
-  const next = [...current].sort();
-  await writeFile(join(paths.skills, PINNED_FILE), `${next.join("\n")}\n`, "utf8");
-  return next;
+/**
+ * A pinned skill is one the human chose to keep visible everywhere. Nothing else gets linked.
+ * `.pinned` is the same read-modify-write shape as the rest: two pins at once used to keep one.
+ */
+export function pinSkill(name: string, opts?: { home?: string; unpin?: boolean }): Promise<string[]> {
+  return withHomeLock("skills", async () => {
+    const paths = memoryPaths(agentikHome(opts?.home));
+    await mkdir(paths.skills, { recursive: true });
+    const current = new Set(await readPinned(paths.skills));
+    if (opts?.unpin) current.delete(name);
+    else current.add(name);
+    const next = [...current].sort();
+    await writeFile(join(paths.skills, PINNED_FILE), `${next.join("\n")}\n`, "utf8");
+    return next;
+  }, { home: opts?.home });
 }
 
 export function harnessSkillDirs(home = homedir()): string[] {
@@ -372,7 +417,14 @@ export async function unlinkHarnessSkills(opts?: {
  * by the marker sentence it always wrote. Hand-written and pinned skills stay. Nothing is
  * deleted — Hermes's curator never deletes either.
  */
-export async function archiveAutoGeneratedSkills(opts?: {
+export function archiveAutoGeneratedSkills(opts?: {
+  home?: string;
+}): Promise<{ archived: string[]; kept: string[] }> {
+  // Moves skill directories: a writer landing mid-pass would write into a folder being renamed.
+  return withHomeLock("skills", () => archiveLocked(opts), { home: opts?.home });
+}
+
+async function archiveLocked(opts?: {
   home?: string;
 }): Promise<{ archived: string[]; kept: string[] }> {
   const paths = memoryPaths(agentikHome(opts?.home));

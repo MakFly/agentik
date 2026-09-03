@@ -356,7 +356,12 @@ export interface TaskResult {
   taskId: string;
   assignee: WorkerRole;
   backend: string;
-  status: "done" | "stalled" | "blocked" | "failed";
+  /**
+   * `refused`: the task was allowed to mutate the workspace, the worker answered, and nothing
+   * moved on disk. A polite "I did not do it" is a failure, not a delivery — the trigger is
+   * structural (mutation declared, mutation nil), never a keyword in the prose.
+   */
+  status: "done" | "stalled" | "blocked" | "failed" | "refused";
   reason?: string;
   /** The worker's last prose, ≤ 2000 chars. */
   summary: string;

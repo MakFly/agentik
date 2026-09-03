@@ -37,6 +37,11 @@ export function memoryPaths(home: string) {
     db: join(home, "memory", "notes.sqlite"),
     /** Searchable session log: one row per run, FTS5 unicode61 + trigram. */
     sessionsDb: join(home, "sessions.sqlite"),
+    /**
+     * Cross-process leases over the read-modify-write stores of this home (see src/home-lock.ts).
+     * A lock, not data: deleting it when no agentik runs costs nothing.
+     */
+    locks: join(home, "locks.sqlite"),
     migratedMarker: join(home, "memory", ".migrated-v1"),
     pendingSkills: join(home, "pending", "skills"),
     /** Staged writes awaiting `agentik memory approve` (config memory.writeApproval). */

@@ -104,7 +104,10 @@ describe("cost of a run: the synthesis calls no tool", () => {
   test("a toolCall in the synthesize message is not executed (the final text is already written)", async () => {
     const ws = await makeWorkspace("run-cost-synth-");
     const plan: WorkerMessage["tasks"] = [
-      { id: "solo", assignee: "worker_a", instruction: "do the thing", allowedTools: ["read_file", "write_file"], maxSteps: 2 },
+      // read_file only: this test is about the SYNTHESIZE phase. A task allowed write_file that
+      // writes nothing is now `refused` (mutation declared, mutation nil) and the run is `blocked`,
+      // which would hide what is actually under test here.
+      { id: "solo", assignee: "worker_a", instruction: "do the thing", allowedTools: ["read_file"], maxSteps: 2 },
     ];
     const a = new Scripted("s-a", plan, { solo: [{ text: "solo done", toolCalls: [] }] });
     // The synthesizer is the last assigned subagent (worker_b here).

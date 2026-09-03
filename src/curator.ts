@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { agentikHome, memoryPaths } from "./home.ts";
+import { withHomeLock } from "./home-lock.ts";
 import { readPinnedSkills } from "./skill-factory.ts";
 import { readSkillUsage, writeSkillUsage, type SkillState, type SkillUsage } from "./skill-usage.ts";
 
@@ -170,19 +171,28 @@ export async function readLedger(opts?: { home?: string }): Promise<LedgerEntry[
   }
 }
 
-export async function appendLedger(entry: LedgerEntry, home: string): Promise<void> {
-  const path = memoryPaths(home).curatorLedger;
-  const ledger = await readLedger({ home });
-  ledger.push(entry);
-  await mkdir(memoryPaths(home).skills, { recursive: true });
-  await writeFile(path, `${JSON.stringify(ledger, null, 2)}\n`, "utf8");
+/** Read-modify-write on one JSON array: locked, or two concurrent writes lose a ledger row. */
+export function appendLedger(entry: LedgerEntry, home: string): Promise<void> {
+  return withHomeLock("skills", async () => {
+    const path = memoryPaths(home).curatorLedger;
+    const ledger = await readLedger({ home });
+    ledger.push(entry);
+    await mkdir(memoryPaths(home).skills, { recursive: true });
+    await writeFile(path, `${JSON.stringify(ledger, null, 2)}\n`, "utf8");
+  }, { home });
 }
 
 /**
  * One curation pass. Idempotent: a second pass right after the first finds nothing to do and
  * takes no snapshot. `dryRun` reports the plan and touches nothing.
  */
-export async function curateSkills(opts?: CurateOptions): Promise<CurateResult> {
+export function curateSkills(opts?: CurateOptions): Promise<CurateResult> {
+  // Plan and act under one lock: a skill viewed between the plan and the move would be archived
+  // on a count that is already out of date, and the usage map is rewritten wholesale below.
+  return withHomeLock("skills", () => curateLocked(opts), { home: opts?.home });
+}
+
+async function curateLocked(opts?: CurateOptions): Promise<CurateResult> {
   const home = agentikHome(opts?.home);
   const paths = memoryPaths(home);
   const now = opts?.now ?? new Date();
@@ -233,7 +243,16 @@ export function resolveSnapshot(spec: string, home?: string): string {
  * Restore `skills/` from a snapshot. The state being replaced is snapshotted first, so a
  * rollback is itself reversible. Snapshots and the ledger survive the restore.
  */
-export async function rollbackSkills(
+export function rollbackSkills(
+  spec: string,
+  opts?: { home?: string; now?: Date },
+): Promise<{ restored: string; safetySnapshot: string } | { error: string }> {
+  // This one empties `skills/` before extracting the snapshot. A reader landing in that window
+  // sees a store with no skills at all; a writer landing in it loses its skill entirely.
+  return withHomeLock("skills", () => rollbackLocked(spec, opts), { home: opts?.home });
+}
+
+async function rollbackLocked(
   spec: string,
   opts?: { home?: string; now?: Date },
 ): Promise<{ restored: string; safetySnapshot: string } | { error: string }> {
