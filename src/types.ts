@@ -380,6 +380,26 @@ export interface TaskResult {
   durationMs: number;
 }
 
+/**
+ * Which dirty paths of a workspace belong to a run. Built by `classifyOwnership`
+ * (`src/artifacts.ts`, where the full rationale lives); declared here because `RunReport` is in
+ * this leaf module and `types.ts` imports nothing.
+ */
+export interface RunOwnership {
+  /** `gitDirty` at the very start of the run; `undefined` outside a git repository. */
+  before?: string[];
+  /** `gitDirty` at the end of the run; `undefined` outside a git repository. */
+  after?: string[];
+  /** Dirty at the end, clean at the start: produced by this run. */
+  ours: string[];
+  /** Dirty at the start AND touched by this run: two authors in one file, never `ours`. */
+  contaminated: string[];
+  /** Dirty at the start, nothing says this run touched it. */
+  foreign: string[];
+  /** False when either witness is missing — absence of evidence, never proof of innocence. */
+  witness: boolean;
+}
+
 export interface RunReport {
   status: RunStatus;
   goal: Goal | null;
@@ -412,6 +432,15 @@ export interface RunReport {
   usage?: { inputTokens: number; cachedInputTokens: number; outputTokens: number; costUsd?: number; invocations: number; callsWithoutUsage: number };
   /** run_command outputs rewritten by a shaper over the whole run (acceptance commands included). */
   shaping?: { calls: number; savedChars: number };
+  /**
+   * Who owns the dirty files of the workspace at the end of this run: `gitDirty` taken at the very
+   * start of the RUN (not per task, and whether or not any task is mutating), the same at the end,
+   * and the classification of the two (`classifyOwnership` in `src/artifacts.ts`).
+   * `witness: false` = outside a git repository: absence of evidence, not proof of innocence. Two
+   * runs in the SAME directory make it ambiguous; only separate worktrees make it clean.
+   */
+  ownership?: RunOwnership;
+
   /** Wall clock of the whole run. */
   durationMs: number;
 }

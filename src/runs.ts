@@ -30,6 +30,16 @@ export interface RunRecord {
   report: RunReport;
   /** The deliverables as they were when the run ended: `runs resume` refuses if they moved since. */
   artifactSnapshot?: ArtifactSnapshot[];
+  /**
+   * Ownership of the workspace's dirty files travels next to that snapshot, but INSIDE
+   * `report.ownership` (`RunOwnership`: the `gitDirty` witness at the start of the run, the one at
+   * the end, and the ours / contaminated / foreign split). It is produced by `runLoop`, so it
+   * belongs to the report the loop returns rather than to a field the CLI would have to fill; the
+   * run file carries it either way, `agentik runs show` prints it through `formatReport`, and
+   * `--json` exposes it at `report.ownership`. Its two reserves are stated in
+   * `src/artifacts.ts`: no witness outside a git repository, and an ambiguous witness when two
+   * runs share one directory.
+   */
   /** The run this one resumed (approvals replayed by call hash). */
   resumedFrom?: string;
 }

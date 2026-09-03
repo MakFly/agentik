@@ -4,7 +4,8 @@ Conductor over three headless harnesses (claude / grok / codex). The human is th
 orchestrator. Bun + TypeScript. Tests: `bun test`. Typecheck: `bunx tsc --noEmit`. Both must be
 green before any merge into `develop`. Work happens on a feature branch in a git worktree
 (`git worktree add ../agentik-<topic> -b feat/<topic> develop`), one writer per worktree,
-merged `--ff-only` **from the main checkout** (a merge run inside the worktree is a no-op).
+merged `--ff-only` **from the main checkout** (a merge run inside the worktree is a no-op) — and
+never two at a time: `git merge --ff-only` is not atomic, see "Repository lock" below.
 
 ## Keep this file current
 
@@ -198,6 +199,86 @@ Invariants (tests enforce them, `tests/home-lock.test.ts` + `tests/concurrent-wr
 - `<home>/locks.sqlite` is a lock, not data: deleting it while no agentik runs costs nothing.
 - Not yet locked, same motif, deliberately left: `backends.json` (`src/availability.ts`) and
   `codex-capabilities.json` — both caches whose lost entry is re-learned on the next probe.
+
+## Repository lock — `git merge --ff-only` is not atomic
+
+```
+  THE BUG (measured, git 2.53.0, tests/repo-lock.test.ts)      THE LOCK (src/repo-lock.ts)
+  ──────────────────────────────────────────────────────      ───────────────────────────
+  3 × git merge --ff-only from ONE checkout:                  withRepoLock(workspace, fn, {waitMs, ttlMs})
+    1:128 fatal: Not possible to fast-forward, aborting.         │
+    2:128 cannot lock ref 'HEAD': is at 0a7b3ab…                 ├─ scope: the REPOSITORY, never the home nor
+          but expected 1be7ff7…                                  │    the cwd — the corrupted resource is the
+          Updating 1be7ff7..2e89485  Fast-forward  ← the TREE    │    shared ref + index. Anchor: `git rev-parse
+          was ALREADY updated                                    │    --path-format=absolute --git-common-dir`
+    3:0   Updating 1be7ff7..0a7b3ab  Fast-forward                │    (same question `src/index-hooks.ts` asks for
+  git updates the tree and the index FIRST, the ref LAST,        │    hooks), so every worktree of a repo AND
+  and restores NOTHING when the ref update loses. The loser      │    every profile share one file:
+  leaves STAGED files of a branch never merged (`A p2.txt`       │    <git-common-dir>/agentik-repo-lock.sqlite
+  while develop does not contain it); the next commit            ├─ row taken in BEGIN IMMEDIATE + busy_timeout
+  carries them. `--ff-only` protects from divergence,            │    5000, lease 60s renewed by an unref'd timer
+  not from the race. It is the incident the owner lived.         ├─ dead holder (expired lease OR same host and
+                                                                 │    kill(pid,0) → ESRCH) taken over at once
+  fastForwardMerge({workspace, ref}) → FastForwardResult          ├─ busy past waitMs (30s) → RepoLockUnavailable-
+     git status --porcelain BEFORE  ─┐                            │    Error naming pid/host/file, NOTHING is run
+     git merge --ff-only <ref>       ├─ all three under the lock  ├─ re-entrant per async context + one promise
+     git status --porcelain AFTER   ─┘                            │    chain per lock file (in-process queueing)
+     any entry that appeared during it → failure `raced`,         └─ neutral alone: one sqlite transaction
+     naming it, instead of leaving it for the next commit
+     other failures: not_a_repo · locked · merge_failed (git's own `fatal:` line, not its `hint:`)
+  NOT flock(1): a missing binary would fail OPEN (macOS/BSD) = the corruption itself; `-w` takes no
+  fraction (`flock: invalid timeout value: '0.5'`, measured); holding it across a TS section needs a
+  child + a shell + an EOF protocol; and BEGIN IMMEDIATE is already this repository's one lock idiom.
+```
+
+Invariants (tests enforce them, `tests/repo-lock.test.ts`):
+- The corruption is reproduced deterministically with real processes: a real `git merge --ff-only`
+  of a 4000-file branch, and a real `git update-ref refs/heads/main <tip> <base>` fired the moment
+  the merge's first file appears on disk (three concurrent merges reproduce it only by luck —
+  measured 8/20, 20/20 and 0/10 rounds under different load, which is a flake, not a proof). Result:
+  exit ≠ 0 on `cannot lock ref 'HEAD'`, >3000 files staged from a branch that is not an ancestor.
+- Three concurrent processes calling `fastForwardMerge` on one checkout leave `git status
+  --porcelain` EMPTY: one merges, the other two answer `merge_failed` (diverged), none `raced`.
+- The witness catches what the lock cannot: the lock binds agentik's processes, not a human's shell,
+  so an index that moves during the merge is reported `raced` with the entries — never silent.
+- A linked worktree and its main checkout resolve to the SAME lock file; a directory that is not a
+  git checkout is refused (`withRepoLock` rejects), never silently unlocked.
+- Order, if both locks are ever needed: **repo lock first, then home lock** (coarse → fine). Nothing
+  takes both today.
+- No caller yet, deliberately: this is the primitive and its test. Nothing in the tree merges.
+
+## Ownership of a run's dirty files — "à nous / contaminé / étranger"
+
+```
+  gitDirty(workspace) at the START of the RUN   ─┐  runLoop takes both (not per task, and whether
+  gitDirty(workspace) at the report             ─┘  or not a task is mutating: the per-task witness
+        │                                           of the proof of work is a boolean and cannot say
+        ▼                                           WHICH files a run produced)
+  classifyOwnership(before, after, touched) → RunOwnership {before, after, ours, contaminated, foreign, witness}
+     ours          dirty after, clean before                      → produced by this run
+     contaminated  dirty BEFORE and touched by this run           → two authors in one file, NEVER "ours"
+     foreign       dirty before, nothing says this run touched it → leave it alone
+  "touched by this run" = RunReport.artifacts (the run's own claim) OR a porcelain status that moved
+  (`??` → `A `); a claim can only DEMOTE a file to contaminated, never promote one to ours.
+  → RunReport.ownership → the run file (`report.ownership`, next to artifactSnapshot) → printed by
+    formatReport, so `agentik run` and `agentik runs show` both show it (`--json`: report.ownership).
+```
+
+Two reserves, stated in the code (`src/artifacts.ts`, `src/types.ts`) and here rather than hidden:
+- `gitDirty` returns `undefined` outside a git repository (or when git is unusable): `witness:
+  false`, every list empty. **Absence of a witness is not proof of innocence** — it means nobody was
+  watching, never "the run touched nothing".
+- Two runs in the SAME directory make the witness ambiguous by construction: the second sees the
+  first's files as already dirty (`foreign`, or `contaminated` as soon as it edits them) and cannot
+  tell them from the human's own work. Only two separate worktrees make the answer clean — which is
+  the whole point of the per-worktree isolation this prepares.
+
+Invariants (tests enforce them, `tests/ownership.test.ts`): a file already dirty before the run and
+edited by it comes out `contaminated`, never `ours` (the incident's exact shape, checked on a
+hand-built case AND on real `git status --porcelain` bytes); a `-z` rename's bare source path is
+still a path; an absolute artifact matches its repo-relative porcelain entry; half a witness is no
+witness; a whole `runLoop` carries `ownership` into `RunReport`, into the run file and into the
+printed report.
 
 ## Reviewer eval
 
@@ -406,7 +487,8 @@ string leaf through the memory scan (`[BLOCKED: …]`, never a raw token). Writt
 adds `runId` / `runPath`. An `awaiting_approval` run prints its approval ids and the relaunch hint
 (same goal with `--approve-high-blast` or `--yolo`; `runs resume` with a frozen call hash is F2).
 `agentik runs ls [--limit N] [--workspace DIR] [--json] | show <id|prefix> [--json]` (read-only, exempt
-from the config preflight). `.agentik-run` is no longer ignored by git (it was never written);
+from the config preflight); `show` prints `report.ownership` through `formatReport` (see "Ownership
+of a run's dirty files"). `.agentik-run` is no longer ignored by git (it was never written);
 `.agentik/` **is** ignored — it is written into every workspace agentik touches, this one included,
 and a `git add -A` would otherwise commit it (a nested repository, if a worktree ever lands there).
 **Resume**: `agentik runs resume <id|prefix> --approve <approvalId|all>` replays ONLY the tasks that

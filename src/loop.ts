@@ -1,4 +1,4 @@
-import { gitDirty, gitDirtyChanged, snapshotArtifacts, untouchedArtifacts } from "./artifacts.ts";
+import { classifyOwnership, gitDirty, gitDirtyChanged, snapshotArtifacts, untouchedArtifacts } from "./artifacts.ts";
 import { randomBytes } from "node:crypto";
 import { BackendError, systemPromptFor } from "./backends.ts";
 import { ensureIndex } from "./code-index.ts";
@@ -164,6 +164,14 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
   const approved = new Set<string>();
 
   const runStarted = Date.now();
+  /**
+   * Ownership witness of the WHOLE run, taken here — before the plan, before any task, and whether
+   * or not a task is mutating. `runTask` takes its own per-task witness for the proof of work and
+   * reduces it to a boolean; that boolean cannot say WHICH files a run produced, which is the
+   * question that matters when a checkout already carries somebody else's uncommitted work.
+   * `undefined` outside a git repository: no witness, and no claim of innocence either.
+   */
+  const runDirtyBefore = gitDirty(opts.workspace);
   const usage = emptyRunUsage();
   /** run_command outputs a shaper rewrote (worker calls and acceptance commands alike). */
   const shaping = { calls: 0, savedChars: 0 };
@@ -206,6 +214,10 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
     usage,
     shaping,
     codeIndex,
+    // The closing witness is taken here, at the report, so EVERY exit path has one — a rejected
+    // goal, a --plan-only run and a full run alike. `artifacts` is the run's own claim of what it
+    // wrote; it can only move an already-dirty file to `contaminated`, never to `ours`.
+    ownership: classifyOwnership(runDirtyBefore, gitDirty(opts.workspace), artifacts),
     durationMs: Date.now() - runStarted,
     workersInvoked,
     executed,
@@ -850,6 +862,19 @@ export function formatReport(r: RunReport): string {
       : []),
     "artifacts:",
     ...(r.artifacts.length ? r.artifacts.map((a) => `  - ${a}`) : ["  - (none)"]),
+    // Ownership of the dirty files, printed by `agentik run` and by `agentik runs show` (which
+    // formats the stored report). `contaminated` is the line that matters: those files hold this
+    // run's work AND somebody else's, so `git add` on them commits a third party's paragraph.
+    ...(r.ownership
+      ? r.ownership.witness
+        ? [
+            `ownership: ${r.ownership.ours.length} ours · ${r.ownership.contaminated.length} contaminated · ${r.ownership.foreign.length} foreign`,
+            ...(r.ownership.ours.length ? [`  - ours: ${r.ownership.ours.join(", ")}`] : []),
+            ...(r.ownership.contaminated.length ? [`  - CONTAMINATED (this run + work that was already there): ${r.ownership.contaminated.join(", ")}`] : []),
+            ...(r.ownership.foreign.length ? [`  - foreign (already dirty, not ours): ${r.ownership.foreign.join(", ")}`] : []),
+          ]
+        : ["ownership: no git witness — absence of evidence, not proof that nothing moved"]
+      : []),
     "findings:",
     ...(r.findings.filter((f) => f.detected).length
       ? r.findings
@@ -886,6 +911,7 @@ function report(
     usage: RunReport["usage"];
     shaping: NonNullable<RunReport["shaping"]>;
     codeIndex?: RunReport["codeIndex"];
+    ownership?: RunReport["ownership"];
     durationMs: number;
   },
 ): RunReport {
@@ -912,6 +938,7 @@ function report(
     usage: bits.usage && bits.usage.invocations + bits.usage.callsWithoutUsage > 0 ? bits.usage : undefined,
     shaping: { ...bits.shaping },
     ...(bits.codeIndex ? { codeIndex: bits.codeIndex } : {}),
+    ...(bits.ownership ? { ownership: bits.ownership } : {}),
     durationMs: bits.durationMs,
   };
 }
