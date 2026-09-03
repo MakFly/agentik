@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { agentikHome, memoryPaths } from "./home.ts";
+import { withHomeLock } from "./home-lock.ts";
 import { sealFile } from "./memory-seal.ts";
 import { resolveWorkspaceRoot, workspaceKeys } from "./workspace.ts";
 
@@ -251,6 +252,18 @@ const LEGACY_LINE = /^- \(session\) (.*)$/;
 export async function sweepLegacySessionLines(home: string): Promise<number> {
   const paths = memoryPaths(home);
   if (!existsSync(paths.hot)) return 0;
+  // This runs on every open of the sessions store, including read-only ones, and in the steady
+  // state it has nothing to do. So the probe stays lock-free, and only a file that really holds a
+  // legacy line pays for the `memory` lock — the same lock every MEMORY.md write takes, because
+  // this rewrites MEMORY.md whole and would otherwise erase a `memory retain` landing beside it.
+  if (!(await readFile(paths.hot, "utf8")).split("\n").some((line) => LEGACY_LINE.test(line))) return 0;
+  return withHomeLock("memory", () => sweepLocked(home), { home });
+}
+
+async function sweepLocked(home: string): Promise<number> {
+  const paths = memoryPaths(home);
+  if (!existsSync(paths.hot)) return 0;
+  // Re-read inside the lock: another process may have swept the same lines while we waited.
   const body = await readFile(paths.hot, "utf8");
   const kept: string[] = [];
   const moved: SessionInput[] = [];
@@ -290,6 +303,18 @@ export async function migrateLegacyMemory(opts?: { home?: string }): Promise<Mig
     // The one-shot import is done, but a client running older code can still append
     // `- (session)` lines to HOT afterwards. Sweep them out on every open; it is a no-op
     // when there is nothing to sweep.
+    const swept = await sweepLegacySessionLines(home);
+    return swept ? { ran: true, fromHot: swept, fromNotes: 0 } : none;
+  }
+  // The one-shot import rewrites MEMORY.md too, and "is the marker there?" must be answered and
+  // acted on without a second process answering it at the same time.
+  return withHomeLock("memory", () => migrateLegacyLocked(home), { home });
+}
+
+async function migrateLegacyLocked(home: string): Promise<MigrationResult> {
+  const paths = memoryPaths(home);
+  const none: MigrationResult = { ran: false, fromHot: 0, fromNotes: 0 };
+  if (existsSync(paths.migratedMarker)) {
     const swept = await sweepLegacySessionLines(home);
     return swept ? { ran: true, fromHot: swept, fromNotes: 0 } : none;
   }
@@ -422,6 +447,9 @@ export async function openSessionsDb(home: string): Promise<Database> {
 async function openSessions(home: string): Promise<Database> {
   await mkdir(home, { recursive: true });
   const db = new Database(memoryPaths(home).sessionsDb, { create: true });
+  // A foreground harvest and its detached reviewer can open the shared store together. Set this
+  // before schema creation too: CREATE TABLE is itself a write and otherwise races as SQLITE_BUSY.
+  db.run("PRAGMA busy_timeout = 5000");
   db.run(`CREATE TABLE IF NOT EXISTS sessions (
     id INTEGER PRIMARY KEY,
     goal TEXT NOT NULL,

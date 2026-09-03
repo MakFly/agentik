@@ -47,6 +47,7 @@ import {
   type IncidentRecord,
 } from "./incidents.ts";
 import { formatIncidentForReview, formatReviewOutcome, runReview, type ReviewOutcome } from "./reviewer.ts";
+import { claimReviewJob, enqueueReviewJob, finishReviewJob, formatReviewJob, listReviewJobs, renewReviewJob, storedOutcome } from "./review-jobs.ts";
 import { formatRunLine, listRuns, readRun, writeRun, type RunRecord } from "./runs.ts";
 import { callHash } from "./guardrails.ts";
 import { formatMemoryOp, listMemoryOps } from "./memory-log.ts";
@@ -190,11 +191,14 @@ Commands:
                                Without --backend the case's script.json replays; exit 1 if a rule
                                fails. Never touches ~/.agentik. Cases: tests/fixtures/review-cases.
   agentik review ["<goal>"] [--transcript FILE | --session ID | --incident ID] [--backend sonnet|codex|claude]
+  agentik review --jobs [--limit N] [--json] | --job ID | --drain
                                Background review: a model reads what happened and decides what
                                to remember (MEMORY.md / USER.md) or which skill to patch/create.
                                Bounded: 16 iterations, 1 skill create, cap forces consolidation.
-                               run does this automatically on live runs (--no-review to skip);
-                               harvest --transcript FILE chains into it.
+                               run and harvest enqueue this automatically (--no-review to skip).
+                               The queue snapshots the transcript, then a detached worker reviews
+                               it after the harness closes. --jobs is read-only; --job retries one
+                               failed/partial job; --drain is the detached worker entry point.
                                --incident ID is the postmortem: one question — why, and what
                                prevents it — answered with incident classify|resolve|merge,
                                a memory fact, or a skill Pitfalls patch (seen ≥2).
@@ -536,21 +540,22 @@ async function runMain(runArgv: string[], resume?: ResumePayload): Promise<numbe
   if (!flags.json) console.log(`memory: ${harvested.memoryLayer} #${harvested.sessionId}`);
   await recordRunIncidents({ goal, report, home, workspace, profile: flags.profile, quiet: flags.json });
 
-  // Background review: a model decides what this run taught us. Live runs only — a mock run
-  // has nothing to learn from — and skippable with --no-review.
+  // Background review: queue a durable snapshot before the foreground process returns. Live
+  // runs only — a mock run has nothing to learn from — and skippable with --no-review.
   if (live && !flags.noReview) {
-    const outcome = await runReview({
+    const queued = await queueReview({
       goal,
       transcript: `${formatReport(report)}\n\nsynthesis:\n${report.synthesis}`,
       workspace,
       home,
-      backend: workers.find((w) => !w.id.startsWith("mock")) ?? workerA,
+      profile: flags.profile,
+      backend: backendSpec,
       maxIterations: flags.maxIterations,
       sessionId: harvested.sessionId,
     });
     if (!flags.json) {
-      console.log(formatReviewOutcome(outcome));
-      await printPendingHint(home);
+      console.log(`review: queued ${queued.job.id}${queued.pid ? ` (worker ${queued.pid})` : " (worker launch pending)"}`);
+      if (queued.error) console.error(`review: worker not started — ${queued.error}; retry with \`agentik review --drain\``);
     }
   }
 
@@ -677,6 +682,28 @@ async function runsCmd(args: string[]): Promise<number> {
 async function reviewCmd(args: string[]): Promise<number> {
   const { goal, flags } = parseRun(args);
   const home = homeFor(flags);
+  if (flags.jobs) {
+    if (flags.job || flags.drain || goal || flags.transcript || flags.session || flags.incident) {
+      console.error("agentik review: --jobs cannot be combined with a job, goal, or review input");
+      return 2;
+    }
+    const jobs = await listReviewJobs({ home, limit: flags.limit });
+    if (flags.json) console.log(JSON.stringify(jobs.map(({ transcript: _transcript, ...job }) => job), null, 2));
+    else if (!jobs.length) console.log("review jobs: none");
+    else for (const job of jobs) console.log(formatReviewJob(job));
+    return 0;
+  }
+  if (flags.job || flags.drain) {
+    if (flags.job && flags.drain) {
+      console.error("agentik review: --job and --drain cannot be combined");
+      return 2;
+    }
+    if (goal || flags.transcript || flags.session || flags.incident) {
+      console.error("agentik review: a queued job cannot be combined with a goal or review input");
+      return 2;
+    }
+    return runReviewJobs({ home, id: flags.job, drain: Boolean(flags.drain), quiet: Boolean(flags.quiet) });
+  }
   if (flags.eval) {
     // The eval never touches this home: every case gets a temporary home and workspace. The
     // backend is the only thing taken from here (auth). No --backend → the scripted reviewer
@@ -773,6 +800,85 @@ async function reviewCmd(args: string[]): Promise<number> {
   // A backend that dies after the writes landed ended the review early, it did not undo it.
   const landed = outcome.memoryOps + outcome.projectOps + outcome.userOps + outcome.skillOps + outcome.incidentOps > 0;
   return outcome.stoppedBecause === "backend_error" && !landed ? 1 : 0;
+}
+
+/** Persist first, then launch an independent runner. A launch failure leaves a visible queued job. */
+async function queueReview(input: {
+  goal: string;
+  transcript: string;
+  workspace: string;
+  home: string;
+  profile?: string;
+  backend?: string;
+  maxIterations?: number;
+  stepTimeoutS?: number;
+  sessionId: number;
+}): Promise<{ job: Awaited<ReturnType<typeof enqueueReviewJob>>; pid?: number; error?: string }> {
+  const job = await enqueueReviewJob(input, { home: input.home });
+  try {
+    // Bun documents detached as a new POSIX session (setsid); ignored stdio and unref mean a
+    // terminal closing the harness neither owns nor waits for this reviewer.
+    const child = Bun.spawn(
+      [process.execPath, import.meta.path, "review", "--drain", "--agentik-home", input.home],
+      { cwd: input.workspace, env: process.env, detached: true, stdio: ["ignore", "ignore", "ignore"] },
+    );
+    child.unref();
+    return { job, pid: child.pid };
+  } catch (err) {
+    return { job, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function runReviewJobs(opts: { home: string; id?: string; drain: boolean; quiet: boolean }): Promise<number> {
+  let code = 0;
+  do {
+    // A manual `--job` is an explicit retry of failed/partial work. The detached drainer only
+    // consumes new or abandoned work, so a backend failure cannot spin forever or duplicate a
+    // memory operation after an uncertain crash.
+    const job = await claimReviewJob({ home: opts.home, id: opts.id, retry: Boolean(opts.id) });
+    if (!job) {
+      if (opts.id && !opts.quiet) console.error(`agentik review: queued job ${opts.id} is absent, terminal, or another review is active`);
+      return opts.id ? 2 : code;
+    }
+    const heartbeat = setInterval(() => {
+      void renewReviewJob(job.id, job.leaseToken, { home: opts.home }).catch(() => {
+        // Finishing checks the token too; an unavailable DB cannot turn into a false success.
+      });
+    }, Math.max(1_000, Math.floor(120_000 / 3)));
+    heartbeat.unref();
+    try {
+      const backend = await pickReviewBackend(job.backend, opts.home, job.stepTimeoutS);
+      const outcome = await runReview({
+        goal: job.goal,
+        transcript: job.transcript,
+        workspace: job.workspace,
+        home: opts.home,
+        backend,
+        maxIterations: job.maxIterations,
+        sessionId: job.sessionId,
+      });
+      const landed = outcome.memoryOps + outcome.projectOps + outcome.userOps + outcome.skillOps + outcome.incidentOps > 0;
+      const status = outcome.stoppedBecause === "backend_error" ? (landed ? "partial" : "failed") : "completed";
+      const saved = await finishReviewJob(job.id, job.leaseToken, { status, outcome: storedOutcome(outcome), error: outcome.stoppedBecause === "backend_error" ? outcome.events.join("\n") : undefined }, { home: opts.home });
+      if (!saved) {
+        code = 1;
+        if (!opts.quiet) console.error(`review: ${job.id} lost its lease; its result was not recorded`);
+      } else if (!opts.quiet) {
+        console.log(`review: ${job.id} ${status}`);
+        console.log(formatReviewOutcome(outcome));
+        await printPendingHint(opts.home);
+      }
+      if (status === "failed") code = 1;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const saved = await finishReviewJob(job.id, job.leaseToken, { status: "failed", error: message }, { home: opts.home });
+      code = 1;
+      if (!opts.quiet) console.error(`review: ${job.id} ${saved ? "failed" : "lost its lease"} — ${message}`);
+    } finally {
+      clearInterval(heartbeat);
+    }
+    if (!opts.drain) return code;
+  } while (true);
 }
 
 const POSTMORTEM_USAGE =
@@ -1333,6 +1439,9 @@ export function parseRun(args: string[]): {
     profile?: string;
     transcript?: string;
     session?: string;
+    job?: string;
+    jobs?: boolean;
+    drain?: boolean;
     noReview?: boolean;
     idleTimeout?: number;
     allowHighBlast?: boolean;
@@ -1420,6 +1529,8 @@ export function parseRun(args: string[]): {
     else if (a === "--no-index") flags.noIndex = true;
     else if (a === "--link-harness") flags.linkHarness = true;
     else if (a === "--no-review") flags.noReview = true;
+    else if (a === "--jobs") flags.jobs = true;
+    else if (a === "--drain") flags.drain = true;
     else if (a === "--max-iterations") {
       flags.maxIterations = args[i + 1];
       i++;
@@ -1485,6 +1596,9 @@ export function parseRun(args: string[]): {
       profile: str(flags.profile),
       transcript: str(flags.transcript),
       session: str(flags.session),
+      job: str(flags.job),
+      jobs: Boolean(flags.jobs),
+      drain: Boolean(flags.drain),
       noReview: Boolean(flags.noReview),
       maxIterations:
         Number.isFinite(Number(flags.maxIterations)) && Number(flags.maxIterations) > 0
@@ -1692,17 +1806,32 @@ async function harvestCmd(args: string[]): Promise<number> {
     }
   }
   if (flags.transcript && !flags.noReview) {
-    // The conductor wrote down what happened; hand it to the reviewer in the same call.
-    return reviewCmd([
-      harvestGoal,
-      "--transcript",
-      flags.transcript,
-      "--workspace",
-      flags.workspace ?? process.cwd(),
-      ...(flags.agentikHome ? ["--agentik-home", flags.agentikHome] : []),
-      ...(flags.profile ? ["--profile", flags.profile] : []),
-      ...(flags.backend ? ["--backend", flags.backend] : []),
-    ]);
+    // Copy the bounded, masked transcript into the durable job before returning. The worker
+    // never depends on the caller's temporary transcript file still existing.
+    let transcript: string;
+    try {
+      transcript = await readFile(flags.transcript, "utf8");
+    } catch (err) {
+      console.error(`agentik harvest: cannot read --transcript ${flags.transcript}: ${err instanceof Error ? err.message : String(err)}`);
+      return 2;
+    }
+    const queued = await queueReview({
+      goal: harvestGoal,
+      transcript,
+      workspace,
+      home: homeFor(flags),
+      profile: flags.profile,
+      backend: flags.backend,
+      maxIterations: flags.maxIterations,
+      stepTimeoutS: flags.stepTimeout,
+      sessionId: harvested.sessionId,
+    });
+    console.log(`review: queued ${queued.job.id}${queued.pid ? ` (worker ${queued.pid})` : " (worker launch pending)"}`);
+    if (queued.error) {
+      console.error(`review: worker not started — ${queued.error}; retry with \`agentik review --drain\``);
+      return 1;
+    }
+    return 0;
   }
   console.log("skill: none here — the model-driven review decides (agentik review, or harvest --transcript FILE)");
   return 0;

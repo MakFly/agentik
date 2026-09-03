@@ -243,14 +243,14 @@ describe("agentik review / harvest --transcript (CLI)", () => {
     expect(existsSync(join(home, "memory/MEMORY.md"))).toBe(false);
   });
 
-  test("review with nothing to review exits 2; harvest --transcript chains into the review", async () => {
+  test("review with nothing to review exits 2; harvest --transcript queues a durable review", async () => {
     const home = await makeWorkspace("cli-review2-");
     const ws = await makeWorkspace("cli-review2-ws-");
     expect(await main(["review", "g", "--workspace", ws, "--agentik-home", home, "--backend", "mock"])).toBe(2);
     await Bun.write(join(ws, "t.md"), "notes");
     const code = await main(["harvest", "did a thing", "--workspace", ws, "--agentik-home", home, "--transcript", join(ws, "t.md"), "--backend", "mock"]);
     expect(code).toBe(0);
-    // A session was recorded, so a bare review now has something to look at.
+    // A session was recorded, so a bare foreground review still has something to look at.
     expect(await main(["review", "--workspace", ws, "--agentik-home", home, "--backend", "mock"])).toBe(0);
   });
 });
