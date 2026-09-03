@@ -307,6 +307,14 @@ printed report.
 - `/ak`, `/agentik` and `harness/rules/agentik.md` share ONE doctrine: adaptive 0–5 (`Default 2`
   is gone), the mechanism sentence, waves, no `isolation: worktree` on 3+ agents in one message
   (claude-code#83311, #34645), `agentik run` past ~5 writers or when a DAG / proof of work is needed.
+- **Witness**: `bash bench/fanout/run.sh` (`bench/fanout/README.md`) runs a real `claude -p "/ak …"` on a
+  planted repo and groups the Agent calls by `message.id` — stream-json emits one event per content
+  block, so counting events reads a 3-call wave as sequential. Measured 2026-09-03: wave 1 = Korben +
+  Cornelius + Ruby Rhod in one message, wave 2 = Leeloo, 332 s, $1.58, tests green.
+- Worktrees: NOT used by `/ak` on purpose — only slot a writes, so there is nothing to isolate and a
+  worktree costs deps / `.env` / ports plus the 3+ agent bugs. They become the answer the day two
+  writers share one goal (one worktree per writer, created serially by the conductor, merged with
+  `fastForwardMerge` under the repo lock).
 - Sources: code.claude.com sub-agents / agents / agent-teams / workflows / worktrees;
   obra/superpowers `dispatching-parallel-agents`; wshobson/agents `file-ownership.md`;
   anthropics/claude-code #7406 #60001 #72566 #83311 #34645 #38719.
