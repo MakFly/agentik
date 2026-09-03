@@ -1,6 +1,17 @@
-import { describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CREW_NAMES,
@@ -13,14 +24,51 @@ import {
 const root = join(import.meta.dir, "..");
 const skill = join(root, "harness/skill/SKILL.md");
 const akSkill = join(root, "harness/ak/SKILL.md");
-const home = homedir();
 const agentsDir = join(root, "harness/agents");
+const installer = join(root, "harness/install.sh");
+const grokRuleSrc = join(root, "harness/rules/agentik.md");
+const home = homedir();
 
 function themedFile(name: string): string {
   return `${name.replace(/ /g, "-")}.md`;
 }
 
-describe("harness install (Claude / Grok / Codex)", () => {
+/**
+ * Every (source file → path relative to a harness home) that `harness/install.sh` must create.
+ * Derived from `CREW_NAMES` / `SUBAGENT_ROLES`, never from a second hard-coded list: renaming a
+ * slot in `src/types.ts` without touching the installer fails here.
+ */
+function expectedLinks(): Array<{ src: string; dest: string }> {
+  const out: Array<{ src: string; dest: string }> = [];
+  for (const h of [".claude", ".grok", ".codex"]) {
+    out.push({ src: skill, dest: `${h}/skills/agentik/SKILL.md` });
+    out.push({ src: akSkill, dest: `${h}/skills/ak/SKILL.md` });
+    for (const role of SUBAGENT_ROLES) {
+      const letter = role.slice(-1);
+      const name = `agentik-worker-${letter}.md`;
+      out.push({ src: join(agentsDir, name), dest: `${h}/agents/${name}` });
+      const slot = CREW_NAMES[role];
+      for (const n of [slot.fifthElement, slot.starWars, slot.matrix, slot.bttf]) {
+        const file = themedFile(n);
+        out.push({ src: join(agentsDir, file), dest: `${h}/agents/${file}` });
+      }
+    }
+  }
+  out.push({ src: grokRuleSrc, dest: ".grok/rules/agentik.md" });
+  return out;
+}
+
+/** Directory-level symlinks the installer creates (the files above live inside them). */
+const LINKED_DIRS = [
+  ".claude/skills/agentik",
+  ".grok/skills/agentik",
+  ".codex/skills/agentik",
+  ".claude/skills/ak",
+  ".grok/skills/ak",
+  ".codex/skills/ak",
+];
+
+describe("harness sources (repository files only — no machine state)", () => {
   test("canonical skill names the three harnesses and the 5-subagent cap", () => {
     const body = readFileSync(skill, "utf8");
     expect(body).toContain("name: agentik");
@@ -83,42 +131,32 @@ describe("harness install (Claude / Grok / Codex)", () => {
     }
   });
 
-  /**
-   * The install links point at one checkout. From a worktree they point at another one, whose
-   * files may legitimately lag behind: check content only when the link resolves into this
-   * checkout, and existence always.
-   */
-  const sameAsHere = (installed: string, source: string) => {
-    expect(existsSync(installed)).toBe(true);
-    if (realpathSync(installed).startsWith(`${root}/`)) {
-      expect(readFileSync(installed, "utf8")).toBe(readFileSync(source, "utf8"));
+  test("the grok rule (installed at ~/.grok/rules/agentik.md) points at agentik", () => {
+    const body = readFileSync(grokRuleSrc, "utf8");
+    for (const term of [
+      "agentik-worker-a",
+      "agentik-worker-e",
+      "Korben",
+      "Fifth Element",
+      "Star Wars",
+      "Matrix",
+      "Retour vers le futur",
+      "Never 6",
+      "/ak",
+    ]) {
+      expect(body).toContain(term);
     }
-  };
+  });
 
-  test("skill and five agents are linked into each harness home", () => {
-    const skillTargets = [
-      join(home, ".claude/skills/agentik/SKILL.md"),
-      join(home, ".grok/skills/agentik/SKILL.md"),
-      join(home, ".codex/skills/agentik/SKILL.md"),
-    ];
-    for (const p of skillTargets) sameAsHere(p, skill);
-    for (const letter of ["a", "b", "c", "d", "e"] as const) {
-      const name = `agentik-worker-${letter}.md`;
-      const src = join(root, "harness/agents", name);
-      for (const dir of [".claude/agents", ".grok/agents", ".codex/agents"]) {
-        sameAsHere(join(home, dir, name), src);
-      }
-    }
-    for (const role of SUBAGENT_ROLES) {
-      const slot = CREW_NAMES[role];
-      for (const n of [slot.fifthElement, slot.starWars, slot.matrix, slot.bttf]) {
-        const file = themedFile(n);
-        const src = join(agentsDir, file);
-        for (const dir of [".claude/agents", ".grok/agents", ".codex/agents"]) {
-          sameAsHere(join(home, dir, file), src);
-        }
-      }
-    }
+  test("/ak dump-and-run skill is global and adaptive (0–5, never 6)", () => {
+    const body = readFileSync(akSkill, "utf8");
+    expect(body).toContain("name: ak");
+    expect(body).toContain("/ak");
+    expect(body).toContain("Never 6");
+    expect(body).toContain("+ c");
+    expect(body).toContain("+ d");
+    expect(body).toContain("+ e");
+    expect(body).toContain("agentik-worker-a");
   });
 
   test("the skills and the CLI help name the hardening flags of spawn", async () => {
@@ -151,47 +189,186 @@ describe("harness install (Claude / Grok / Codex)", () => {
       expect(claudeMd).toContain(term);
     }
   });
+});
 
-  test("/ak dump-and-run skill is global and adaptive (0–5, never 6)", () => {
-    const ak = join(root, "harness/ak/SKILL.md");
-    const body = readFileSync(ak, "utf8");
-    expect(body).toContain("name: ak");
-    expect(body).toContain("/ak");
-    expect(body).toContain("Never 6");
-    expect(body).toContain("+ c");
-    expect(body).toContain("+ d");
-    expect(body).toContain("+ e");
-    expect(body).toContain("agentik-worker-a");
-    for (const p of [
-      join(home, ".claude/skills/ak/SKILL.md"),
-      join(home, ".grok/skills/ak/SKILL.md"),
-      join(home, ".codex/skills/ak/SKILL.md"),
-    ]) {
-      sameAsHere(p, ak);
+/**
+ * The install LOGIC, run against a throwaway HOME under os.tmpdir() — never `~`, never
+ * `<repo>/.tmp/`. A fresh clone passes this suite: it depends on the repository and on `bash`,
+ * on nothing that a previous `harness/install.sh` (or a harness CLI migration) left behind.
+ */
+describe("harness install (Claude / Grok / Codex) — logic, temporary HOME", () => {
+  let tmpHome = "";
+
+  beforeAll(async () => {
+    tmpHome = await mkdtemp(join(tmpdir(), "agentik-harness-home-"));
+  });
+  afterAll(async () => {
+    if (tmpHome) await rm(tmpHome, { recursive: true, force: true });
+  });
+
+  async function runInstaller(): Promise<{ code: number; out: string; err: string }> {
+    const p = Bun.spawn(["bash", installer], {
+      env: { ...process.env, HOME: tmpHome },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [out, err, code] = await Promise.all([
+      new Response(p.stdout).text(),
+      new Response(p.stderr).text(),
+      p.exited,
+    ]);
+    return { code, out, err };
+  }
+
+  test("install.sh links every skill, agent and rule into a fresh home, and is idempotent", async () => {
+    const links = expectedLinks();
+    expect(links.length).toBe(3 * (2 + 5 * 5) + 1); // 3 harnesses × (2 skills + 5 × (1 + 4 names)) + grok rule
+    for (const pass of [1, 2]) {
+      const r = await runInstaller();
+      expect(r.code === 0 ? "ok" : `pass ${pass} exit ${r.code}: ${r.err}`).toBe("ok");
+      expect(r.out).toContain("agentik harness installed:");
+      for (const { src, dest } of links) {
+        const installed = join(tmpHome, dest);
+        expect(existsSync(installed) ? dest : `MISSING after pass ${pass}: ${dest}`).toBe(dest);
+        expect(realpathSync(installed)).toBe(realpathSync(src));
+        expect(readFileSync(installed, "utf8")).toBe(readFileSync(src, "utf8"));
+      }
+      for (const dir of LINKED_DIRS) {
+        const p = join(tmpHome, dir);
+        expect(lstatSync(p).isSymbolicLink()).toBe(true);
+      }
+      expect(lstatSync(join(tmpHome, ".grok/rules/agentik.md")).isSymbolicLink()).toBe(true);
+      expect(lstatSync(join(tmpHome, ".claude/agents/Korben.md")).isSymbolicLink()).toBe(true);
     }
   });
 
-  test("home AGENTS.md (Claude + Codex) and Grok rules point at agentik", () => {
-    const agents = readFileSync(join(home, ".codex/AGENTS.md"), "utf8");
-    expect(agents).toContain("agentik-worker-a");
-    expect(agents).toContain("Korben");
-    expect(agents).toContain("Fifth Element");
-    expect(agents).toContain("Star Wars");
-    expect(agents).toContain("Matrix");
-    expect(agents).toContain("Retour vers le futur");
-    expect(agents).toContain("Never 6");
-    expect(agents).toContain("/ak");
-    const claudeAgents = join(home, ".claude/AGENTS.md");
-    expect(existsSync(claudeAgents)).toBe(true);
-    expect(lstatSync(claudeAgents).isSymbolicLink() || realpathSync(claudeAgents).endsWith("AGENTS.md")).toBe(
-      true,
+  test("install.sh writes nothing outside the HOME it is given", async () => {
+    await runInstaller();
+    // Only the three harness homes are created; no stray file at the top of the temporary home.
+    expect(readdirSync(tmpHome).sort()).toEqual([".claude", ".codex", ".grok"]);
+  });
+});
+
+/**
+ * The only tests that look at the real machine. They are an observation, not a contract: a fresh
+ * clone (or a harness CLI that wiped its own home, as the codex migration did to `~/.codex`) has
+ * not run `harness/install.sh` yet, and that is not a defect of this repository. They SKIP with a
+ * named reason instead of failing.
+ */
+const machineMissing = expectedLinks()
+  .filter(({ dest }) => !existsSync(join(home, dest)))
+  .map(({ dest }) => dest);
+
+if (machineMissing.length > 0) {
+  console.warn(
+    `harness.test: skipping the machine checks — ${machineMissing.length} link(s) absent from ${home}, ` +
+      `first: ${machineMissing.slice(0, 3).join(", ")}. Run \`bash harness/install.sh\` to install them.`,
+  );
+}
+
+const codexAgentsMd = join(home, ".codex/AGENTS.md");
+const claudeAgentsMd = join(home, ".claude/AGENTS.md");
+if (!existsSync(codexAgentsMd)) {
+  console.warn(
+    `harness.test: skipping the AGENTS.md check — ${codexAgentsMd} is absent. ` +
+      "It is hand-written per machine; `harness/install.sh` does not create it.",
+  );
+}
+if (!existsSync(claudeAgentsMd)) {
+  console.warn(`harness.test: skipping the AGENTS.md check — ${claudeAgentsMd} is absent (hand-written too).`);
+}
+
+describe("harness install — this machine (skipped when not installed here)", () => {
+  test.skipIf(machineMissing.length > 0)("every installed link resolves to a real agentik checkout", () => {
+    for (const { src, dest } of expectedLinks()) {
+      const installed = join(home, dest);
+      expect(existsSync(installed)).toBe(true);
+      // From a worktree the links point at another checkout, whose files may legitimately lag
+      // behind: compare content only when the link resolves into THIS checkout.
+      if (realpathSync(installed).startsWith(`${root}/`)) {
+        expect(readFileSync(installed, "utf8")).toBe(readFileSync(src, "utf8"));
+      } else {
+        expect(realpathSync(installed).endsWith(dest.split("/").pop()!)).toBe(true);
+      }
+    }
+  });
+
+  test.skipIf(!existsSync(codexAgentsMd))("home AGENTS.md (Codex, hand-written) points at agentik", () => {
+    const agents = readFileSync(codexAgentsMd, "utf8");
+    for (const term of [
+      "agentik-worker-a",
+      "Korben",
+      "Fifth Element",
+      "Star Wars",
+      "Matrix",
+      "Retour vers le futur",
+      "Never 6",
+      "/ak",
+    ]) {
+      expect(agents).toContain(term);
+    }
+  });
+
+  test.skipIf(!existsSync(claudeAgentsMd))("home AGENTS.md (Claude) is a link or a real AGENTS.md", () => {
+    expect(
+      lstatSync(claudeAgentsMd).isSymbolicLink() || realpathSync(claudeAgentsMd).endsWith("AGENTS.md"),
+    ).toBe(true);
+  });
+});
+
+/**
+ * `bin/agentik` is the first thing a fresh clone runs. Under `set -euo pipefail`, `command -v bun`
+ * failing used to abort the script with exit 1 and NOT ONE character of output.
+ */
+describe("bin/agentik — the launcher a fresh clone runs", () => {
+  const launcher = join(root, "bin/agentik");
+  let tmp = "";
+
+  beforeAll(async () => {
+    tmp = await mkdtemp(join(tmpdir(), "agentik-launcher-"));
+    // A PATH with no `bun` in it, but with the coreutils the launcher itself needs.
+    const bin = join(tmp, "bin");
+    mkdirSync(bin, { recursive: true });
+    for (const cmd of ["bash", "sh", "env", "readlink", "dirname", "cat"]) {
+      const real = Bun.which(cmd);
+      if (real) symlinkSync(real, join(bin, cmd));
+    }
+    mkdirSync(join(tmp, "home"), { recursive: true });
+    const fake = join(tmp, "fakebun");
+    writeFileSync(fake, '#!/bin/sh\necho "FAKEBUN $*"\n');
+    chmodSync(fake, 0o755);
+  });
+  afterAll(async () => {
+    if (tmp) await rm(tmp, { recursive: true, force: true });
+  });
+
+  async function launch(env: Record<string, string>, ...args: string[]) {
+    const p = Bun.spawn(["bash", launcher, ...args], { env, stdout: "pipe", stderr: "pipe" });
+    const [out, err, code] = await Promise.all([
+      new Response(p.stdout).text(),
+      new Response(p.stderr).text(),
+      p.exited,
+    ]);
+    return { code, out, err };
+  }
+
+  test("without bun it names the prerequisite and where to get it, and exits 2", async () => {
+    const r = await launch({ PATH: join(tmp, "bin"), HOME: join(tmp, "home") }, "--help");
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("bun not found");
+    expect(r.err).toContain("https://bun.sh");
+    expect(r.err).toContain("BUN=");
+    expect(r.err.trim().length).toBeGreaterThan(40);
+  });
+
+  test("BUN=<path> is honoured and the CLI entrypoint is what gets executed", async () => {
+    const r = await launch(
+      { ...process.env, BUN: join(tmp, "fakebun"), HOME: join(tmp, "home") } as Record<string, string>,
+      "--help",
     );
-    const grokRule = join(home, ".grok/rules/agentik.md");
-    expect(existsSync(grokRule)).toBe(true);
-    const grokBody = readFileSync(grokRule, "utf8");
-    expect(grokBody).toContain("agentik-worker-e");
-    expect(grokBody).toContain("/ak");
-    expect(grokBody).toContain("Fifth Element");
-    expect(grokBody).toContain("Korben");
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("FAKEBUN");
+    expect(r.out).toContain(join(root, "src/cli.ts"));
+    expect(r.out).toContain("--help");
   });
 });

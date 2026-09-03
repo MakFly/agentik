@@ -9,14 +9,20 @@
  *     (`renderDenyRules`: claude `Bash(rm -rf *)`, grok `--deny Bash(…)`, codex nothing — it has
  *     no deny flag, so B2 detects a posteriori with `re`).
  *
- * Classification runs on every *view* of a command: the raw line, each `&&`/`;`/`|` segment,
- * each segment with wrappers stripped (`env`, `nohup`, `sudo`, `VAR=x`, `xargs`, …) and the body
- * of every `bash -c "…"`. A rule anchored with `^` sees the command in first position; an
- * unanchored rule (`curl … | sh`, fork bomb, `drop database` inside a quoted SQL string) sees the
- * raw line. Quoted arguments are re-quoted in a view so `grep "rm -rf" README.md` stays medium.
+ * Classification runs on every *view* of a command: the raw line, each `&&`/`||`/`;`/`|`/`&`/
+ * NEWLINE segment, each segment with wrappers stripped (`env`, `nohup`, `sudo`, `VAR=x`,
+ * `xargs`, …), each of those with `argv[0]` reduced to its BASENAME, and every LINE of the body
+ * of a `bash -c "…"`. A rule anchored with `^` sees the command in first position; an unanchored
+ * rule (`curl … | sh`, fork bomb, `drop database` inside a quoted SQL string) sees the raw line.
+ * Quoted arguments are re-quoted in a view so `grep "rm -rf" README.md` stays medium.
+ *
+ * The last two views are holes that were measured, not theory: `/bin/rm -rf /` and
+ * `bash -lc "set -e\nrm -rf /"` both came out `medium` — no ApprovalRequest at the gate, an empty
+ * `floorViolations()` on the spawn side, and codex has no deny flag, so that list is its only
+ * protection.
  */
 
-import { shellSplit, type ShellToken } from "./argv.ts";
+import { NEWLINE_OP, shellSplit, type ShellToken } from "./argv.ts";
 
 export type CommandLevel = "medium" | "high" | "hardline";
 
@@ -167,9 +173,34 @@ export const COMMAND_RULES: CommandRule[] = [...HARDLINE_RULES, ...HIGH_BLAST_DE
 const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish", "busybox"]);
 const WRAPPERS_NO_ARG = new Set(["nohup", "time", "command", "exec", "builtin", "stdbuf", "unbuffer", "caffeinate"]);
 
+/**
+ * The last path component of a command word. Every rule is anchored on a bare name (`^rm`,
+ * `^sudo`), so `/bin/rm -rf /` would otherwise walk past all 25 of them; the basename is a VIEW,
+ * never what runs. A quoted token is data and keeps its slashes.
+ */
+function baseName(text: string): string {
+  const i = text.lastIndexOf("/");
+  return i < 0 || i === text.length - 1 ? text : text.slice(i + 1);
+}
+
+/** The same tokens with argv[0] reduced to its basename, or null when that changes nothing. */
+function basenameView(tokens: ShellToken[]): ShellToken[] | null {
+  const head = tokens[0];
+  if (!head || head.op || head.quoted || !head.text.includes("/")) return null;
+  const base = baseName(head.text);
+  if (!base || base === head.text) return null;
+  return [{ ...head, text: base }, ...tokens.slice(1)];
+}
+
+/**
+ * Render tokens back as a line. A token that was quoted in the source, or that holds whitespace
+ * or a quote, is re-quoted so `grep "rm -rf" README.md` stays medium. An UNQUOTED `$HOME` is an
+ * expansion, not data, and is rendered bare: quoting it made `sudo rm -rf $HOME` come out `high`
+ * (releasable by `--yolo`) while `sudo rm -rf /home` was hardline.
+ */
 function quoteView(tokens: ShellToken[]): string {
   return tokens
-    .map((t) => (t.op ? t.text : /[\s'"|&;<>()`$]/.test(t.text) || t.text === "" ? `'${t.text.replace(/'/g, "'\\''")}'` : t.text))
+    .map((t) => (t.op ? t.text : t.quoted || /[\s'"()`]/.test(t.text) || t.text === "" ? `'${t.text.replace(/'/g, "'\\''")}'` : t.text))
     .join(" ");
 }
 
@@ -179,7 +210,8 @@ function stripWrappers(tokens: ShellToken[]): ShellToken[] {
   for (;;) {
     while (t.length && !t[0].quoted && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[0].text)) t = t.slice(1);
     if (!t.length || t[0].quoted) return t;
-    const head = t[0].text;
+    // Basename, so `/usr/bin/sudo rm -rf /etc` strips to `rm -rf /etc` like the bare form.
+    const head = baseName(t[0].text);
     if (WRAPPERS_NO_ARG.has(head)) {
       t = t.slice(1);
       continue;
@@ -226,19 +258,32 @@ export function commandSegments(input: string | string[]): string[] {
     seg = [];
     if (!clean.length) return;
     views.push(quoteView(clean));
+    const cleanBase = basenameView(clean);
+    if (cleanBase) views.push(quoteView(cleanBase));
     const stripped = stripWrappers(clean);
-    if (stripped.length && stripped !== clean) views.push(quoteView(stripped));
-    // `bash -c "…"` / `sh -lc "…"`: the string is a whole new line.
-    if (stripped.length >= 3 && SHELLS.has(stripped[0].text)) {
+    if (stripped.length && stripped !== clean) {
+      views.push(quoteView(stripped));
+      const strippedBase = basenameView(stripped);
+      if (strippedBase) views.push(quoteView(strippedBase));
+    }
+    // `bash -c "…"` / `sh -lc "…"` / `/bin/bash -c "…"`: the string is a whole new script.
+    if (stripped.length >= 3 && SHELLS.has(baseName(stripped[0].text))) {
       const cIdx = stripped.findIndex((x, i) => i > 0 && !x.quoted && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(x.text));
       if (cIdx > 0 && stripped[cIdx + 1]) {
         const body = stripped[cIdx + 1].text;
-        views.push(body, ...commandSegments(body));
+        views.push(body);
+        // Each LINE of the script is its own command: an anchored rule must see it in first
+        // position, and `commandViews` collapses whitespace, so a flat body hides every line but
+        // the first.
+        for (const line of body.split(/[\r\n]+/)) {
+          if (!line.trim()) continue;
+          views.push(line, ...commandSegments(line));
+        }
       }
     }
   };
   for (const tok of tokens) {
-    if (tok.op === "control" && (tok.text === "&&" || tok.text === "||" || tok.text === ";" || tok.text === "|" || tok.text === "&")) {
+    if (tok.op === "control" && (tok.text === "&&" || tok.text === "||" || tok.text === ";" || tok.text === "|" || tok.text === "&" || tok.text === NEWLINE_OP)) {
       flush();
       continue;
     }

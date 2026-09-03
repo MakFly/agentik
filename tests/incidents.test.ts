@@ -9,6 +9,8 @@ import {
   listIncidents,
   mergeIncidents,
   normalizeSymptom,
+  SYMPTOM_CLASS_MAX,
+  symptomClass,
   recordIncident,
   resolveIncident,
   searchIncidents,
@@ -220,4 +222,146 @@ describe("incidents FTS: an index created over an already-populated table is reb
     expect((await searchIncidents("opencodex", { home, workspace: "/w" })).map((i) => i.id)).toEqual([rec.id]);
     expect((await searchIncidents("opencodx", { home, workspace: "/w" })).map((i) => i.id)).toEqual([rec.id]);
   });
+});
+
+/**
+ * The bug this block exists for, measured on the owner's own home: after a whole day of real
+ * failures `agentik postmortem` showed ONE incident, `seen 1×`. The dedup key was the symptom,
+ * and for a claude worker that dies the symptom is the CLI's error object — whose first field is
+ * a fresh `session_id` UUID. 200 characters of key were spent on an identifier that is unique by
+ * construction (and its hex letters survived the digit folding), so two occurrences of the SAME
+ * failure opened two rows at `seen 1`. `agentik context` only shows KNOWN FAILURES from
+ * `seen >= 2` and the review prompt calls `seen 1` noise: nothing was ever learned.
+ */
+describe("incidents — the dedup key is a failure CLASS, not the payload", () => {
+  const claudeFailure = (session: string, at: string, ms: number) =>
+    `stalled worker_a@claude-sonnet: exit: claude -p failed (1): {"type":"result","subtype":"error_during_execution",` +
+    `"is_error":true,"duration_ms":${ms},"num_turns":7,"session_id":"${session}","timestamp":"${at}"}`;
+
+  test("two occurrences of one claude failure with different session ids are ONE incident seen 2×", async () => {
+    const home = await makeWorkspace("inc-class-");
+    const base = { goal: "fix the drawer", workspace: "/tmp/ws-class", harness: "claude-sonnet" };
+    const one = claudeFailure("6f3a1b2c-1111-4aaa-8bbb-0123456789ab", "2026-09-03T10:11:12.345Z", 41233);
+    const two = claudeFailure("d40e77aa-2222-4ccc-9ddd-fedcba987654", "2026-09-03T14:02:00.000Z", 9821);
+    const a = await recordIncident({ ...base, symptom: one }, { home });
+    const b = await recordIncident({ ...base, symptom: two }, { home });
+
+    expect(b.id).toBe(a.id);
+    expect(b.seen).toBe(2);
+    // The row carries the class, short enough for the KNOWN FAILURES line (cap 60 there).
+    expect(b.symptom).toBe("stalled worker_a@claude-sonnet: exit: claude -p failed (1)");
+    // …and the payload of BOTH occurrences is still readable, in the errors.
+    expect(b.errors).toEqual([one, two]);
+    expect(await listIncidents({ home })).toHaveLength(1);
+    // seen >= 2 is exactly the threshold agentik context uses for KNOWN FAILURES.
+    expect((await searchIncidents("claude", { home, workspace: "/tmp/ws-class", minSeen: 2 })).map((h) => h.id)).toEqual([a.id]);
+  });
+
+  test("a payload that is not JSON still dedups: the UUID, the ISO stamp and the sha are folded in the key", async () => {
+    const home = await makeWorkspace("inc-fold-");
+    const base = { goal: "g", workspace: "/tmp/ws-fold", harness: "claude" };
+    const a = await recordIncident(
+      { ...base, symptom: "claude -p failed (1): API Error: request 6f3a1b2c-1111-4aaa-8bbb-0123456789ab at 2026-09-03T10:11:12.345Z on 9f1c3ade4b77 failed" },
+      { home },
+    );
+    const b = await recordIncident(
+      { ...base, symptom: "claude -p failed (1): API Error: request d40e77aa-2222-4ccc-9ddd-fedcba987654 at 2026-09-04T22:59:01.000Z on 0badc0ffee11 failed" },
+      { home },
+    );
+    expect(b.id).toBe(a.id);
+    expect(b.seen).toBe(2);
+
+    expect(normalizeSymptom("run 20260903T101112Z-a1b2c3 at 2026-09-03T10:11:12.345Z")).toBe("run <ts>-<id> at <ts>");
+    expect(normalizeSymptom("session 6F3A1B2C-1111-4AAA-8BBB-0123456789AB died")).toBe("session <id> died");
+    expect(normalizeSymptom("sha 9f1c3ade4b77e0 and token ab12cd34ef56gh78")).toBe("sha <id> and token <id>");
+    // Unchanged where it was already right: a plain digit run, a model name, an English word.
+    expect(normalizeSymptom("Claude killed after 900s")).toBe("claude killed after #s");
+    expect(normalizeSymptom("claude-sonnet-4-5 refused")).toBe("claude-sonnet-#-# refused");
+    expect(normalizeSymptom("the deadbeef facade decoded")).toBe("the deadbeef facade decoded");
+  });
+
+  test("symptomClass: cuts the payload, keeps the headline, never empties a [BLOCKED: …] symptom", () => {
+    expect(symptomClass('stalled worker_a@claude-sonnet: exit: claude -p failed (1): {"type":"result"}')).toBe(
+      "stalled worker_a@claude-sonnet: exit: claude -p failed (1)",
+    );
+    expect(symptomClass('codex turn.failed: [{"error":"adapter_eof"}]')).toBe("codex turn.failed");
+    expect(symptomClass("  claude   killed after 1800s (timeout) ")).toBe("claude killed after 1800s (timeout)");
+    expect(symptomClass("[BLOCKED: looks like a secret (anthropic_key)]")).toBe("[BLOCKED: looks like a secret (anthropic_key)]");
+    const long = `grok failed: ${"detail ".repeat(40)}end`;
+    const cut = symptomClass(long);
+    expect(cut.length).toBeLessThanOrEqual(SYMPTOM_CLASS_MAX + 1);
+    expect(cut.endsWith("…")).toBe(true);
+    expect(cut.startsWith("grok failed: detail")).toBe(true);
+  });
+
+  test("two different classes stay two incidents: a timeout is not an exit", async () => {
+    const home = await makeWorkspace("inc-distinct-");
+    const base = { goal: "g", workspace: "/tmp/ws-d", harness: "claude" };
+    const a = await recordIncident({ ...base, symptom: 'claude -p killed after 600s (timeout); its answer is incomplete: {"session_id":"6f3a1b2c-1111-4aaa-8bbb-0123456789ab"}' }, { home });
+    const b = await recordIncident({ ...base, symptom: 'claude -p failed (1): {"session_id":"6f3a1b2c-1111-4aaa-8bbb-0123456789ab"}' }, { home });
+    expect(b.id).not.toBe(a.id);
+    expect(await listIncidents({ home })).toHaveLength(2);
+    // A class long enough to be cut is still stable: the tail that grows is not the key.
+    const long = `grok failed: ${"detail ".repeat(40)}end`;
+    const e = await recordIncident({ ...base, symptom: long }, { home });
+    const f = await recordIncident({ ...base, symptom: `${long} and more` }, { home });
+    expect(f.id).toBe(e.id);
+    expect(f.seen).toBe(2);
+    expect(await listIncidents({ home })).toHaveLength(3);
+  });
+
+  test("a legacy row whose symptom is a full blob absorbs the next occurrence instead of opening a new one", async () => {
+    const home = await makeWorkspace("inc-legacy-");
+    const blob = claudeFailure("6f3a1b2c-1111-4aaa-8bbb-0123456789ab", "2026-09-03T10:11:12.345Z", 41233);
+    // Seed the row the OLD code would have written: the whole payload in `symptom`.
+    const seed = await recordIncident({ goal: "g", workspace: "/tmp/ws-legacy", harness: "claude", symptom: "placeholder" }, { home });
+    const db = new Database(memoryPaths(home).sessionsDb);
+    db.run("UPDATE incidents SET symptom = ? WHERE id = ?", [blob, seed.id]);
+    db.close();
+    const next = await recordIncident(
+      { goal: "g", workspace: "/tmp/ws-legacy", harness: "claude", symptom: claudeFailure("d40e77aa-2222-4ccc-9ddd-fedcba987654", "2026-09-04T01:02:03.000Z", 12) },
+      { home },
+    );
+    expect(next.id).toBe(seed.id);
+    expect(next.seen).toBe(2);
+  });
+
+  test("the read-modify-write is a transaction: 8 real processes racing from an empty key leave ONE incident, seen 8×", async () => {
+    const home = await makeWorkspace("inc-race-");
+    const workspace = "/tmp/ws-race";
+    const src = join(import.meta.dir, "..", "src", "incidents.ts");
+    // Create the schema first with ANOTHER class: the race under test is the dedup read-modify-
+    // write, not the DDL. The class the 8 processes report has no open row when they start —
+    // which is exactly the shape that used to insert N rows: they all read "nothing open".
+    await recordIncident({ goal: "g", workspace, harness: "claude", symptom: "claude killed after 600s (timeout)" }, { home });
+    const startAt = Date.now() + 1500;
+    const procs = Array.from({ length: 8 }, (_, i) =>
+      Bun.spawn(
+        [
+          "bun",
+          "-e",
+          `const { recordIncident } = await import(${JSON.stringify(src)});
+           // A wall-clock barrier: bun's own startup would otherwise stagger the 8 writers.
+           while (Date.now() < ${startAt} - 20) await Bun.sleep(1);
+           while (Date.now() < ${startAt}) {}
+           const s = ${JSON.stringify(claudeFailure("$SESSION", "$STAMP", 0))}
+             .replace("$SESSION", "6f3a1b2c-1111-4aaa-8bbb-01234567890" + ${i})
+             .replace("$STAMP", "2026-09-0" + ${i} + "T10:11:12.345Z");
+           await recordIncident({ goal: "g", workspace: ${JSON.stringify(workspace)}, harness: "claude", symptom: s }, { home: ${JSON.stringify(home)} });`,
+        ],
+        { env: { ...process.env, AGENTIK_INDEX_AUTO: "0" }, stdout: "pipe", stderr: "pipe" },
+      ),
+    );
+    const ran = await Promise.all(
+      procs.map(async (p) => ({ code: await p.exited, err: await new Response(p.stderr).text() })),
+    );
+    expect(ran.filter((r) => r.code !== 0).map((r) => r.err.trim())).toEqual([]);
+    const all = await listIncidents({ home });
+    const stalled = all.filter((r) => r.symptom.startsWith("stalled"));
+    expect(stalled.map((r) => r.symptom)).toEqual(["stalled worker_a@claude-sonnet: exit: claude -p failed (1)"]);
+    expect(stalled[0].seen).toBe(8);
+    // The 8 distinct payloads are all still readable, in the errors of that one row.
+    expect(stalled[0].errors).toHaveLength(8);
+    expect(all).toHaveLength(2);
+  }, 60_000);
 });

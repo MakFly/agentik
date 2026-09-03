@@ -10,6 +10,13 @@
  *   - a shaper sees stdout only; the `exit N` line and stderr are the caller's, byte for byte;
  *   - a line that reads as a failure (`FAILURE_LINE_RE`) is always kept — a shaper that drops one
  *     gets it appended back by `shapeOutput`;
+ *   - **a shaper never eats content it cannot summarise**: a recognised command whose output holds
+ *     a body the shape has no room for (`git log -p`, `git log --stat`, `git log --name-only`:
+ *     one `hash subject` line per commit would swallow the whole patch) returns `undefined`, and
+ *     `shapeOutput` passes the raw text through. Bailing out is the safe mode of this file;
+ *   - what a shaper drops in bulk is **announced** (`…[N lines omitted]`, `…[N other lines
+ *     omitted]`, `(+N body lines)`, `(new file)` / `(renamed)` / `(binary)`), so the model never
+ *     believes it read something it did not;
  *   - fail-open: a non-zero exit whose stdout holds no failure line is returned raw — an unknown
  *     failure format is never compressed;
  *   - a shaped text that is not shorter is discarded; `savedChars` is never negative.
@@ -52,6 +59,11 @@ function clip(line: string, max = LINE_MAX): string {
 
 function clipHard(line: string, max = LINE_MAX): string {
   return line.length <= max ? line : `${line.slice(0, max - 1)}…`;
+}
+
+/** `…[N other lines omitted]` — a shaper that drops lines it did not summarise says so. */
+function omittedNote(n: number): string {
+  return `…[${n} other line${n === 1 ? "" : "s"} omitted]`;
 }
 
 function splitLines(text: string): string[] {
@@ -127,6 +139,7 @@ function shapeGitStatus(stdout: string): string | undefined {
   const keep: string[] = [];
   let section: "staged" | "unstaged" | "untracked" | "unmerged" | undefined;
   let recognised = false;
+  let dropped = 0;
   const add = (g: string, p: string) => {
     const list = groups.get(g) ?? [];
     list.push(p);
@@ -170,9 +183,11 @@ function shapeGitStatus(stdout: string): string | undefined {
         continue;
       }
       if (section === "untracked") add("untracked", body);
+      else dropped += 1;
       continue;
     }
-    // hints "(use "git add <file>..." …)" and anything else: dropped
+    // git's own hints are noise; anything else is content and is counted
+    if (!/^\s*\(use "/.test(line)) dropped += 1;
   }
   if (!recognised) return undefined;
   const out = [...keep];
@@ -182,6 +197,7 @@ function shapeGitStatus(stdout: string): string | undefined {
     const shown = paths.slice(0, GROUP_PATH_CAP);
     out.push(`${g} (${paths.length}): ${shown.join(" ")}${paths.length > shown.length ? ` +${paths.length - shown.length} more` : ""}`);
   }
+  if (dropped) out.push(omittedNote(dropped));
   return out.join("\n");
 }
 
@@ -189,22 +205,68 @@ function shapeGitStatus(stdout: string): string | undefined {
 
 const DIFF_HEADER_RE = /^(index [0-9a-f]+\.\.[0-9a-f]+|new file mode|deleted file mode|old mode|new mode|similarity index|dissimilarity index|rename from|rename to|copy from|copy to|Binary files)/;
 
+/**
+ * The per-file header lines carry facts no hunk repeats: a rename with no hunk at all, a new or
+ * deleted file, a mode change, a binary file. Dropping them made `### <path>` the ENTIRE shaped
+ * body of a pure rename. They come back as a note on the `###` line instead.
+ */
+function diffHeaderNote(line: string, modes: { old?: string }): string | undefined {
+  let m: RegExpExecArray | null;
+  if (/^new file mode /.test(line)) return "new file";
+  if (/^deleted file mode /.test(line)) return "deleted";
+  m = /^old mode (\d+)$/.exec(line);
+  if (m) {
+    modes.old = m[1];
+    return undefined;
+  }
+  m = /^new mode (\d+)$/.exec(line);
+  if (m) return `mode ${modes.old ?? "?"}→${m[1]}`;
+  m = /^similarity index (\d+%)$/.exec(line);
+  if (m) return `${m[1]} similar`;
+  m = /^dissimilarity index (\d+%)$/.exec(line);
+  if (m) return `${m[1]} dissimilar`;
+  if (/^rename (from|to) /.test(line)) return "renamed";
+  if (/^copy (from|to) /.test(line)) return "copied";
+  if (/^Binary files? /.test(line)) return "binary, differs";
+  return undefined;
+}
+
 function shapeGitDiff(stdout: string): string | undefined {
   const out: string[] = [];
   let seenHeader = false;
   let inHunk = false;
+  let headerIdx = -1;
+  let notes: string[] = [];
+  let modes: { old?: string } = {};
+  const flushNotes = () => {
+    if (headerIdx >= 0 && notes.length) out[headerIdx] += ` (${[...new Set(notes)].join(", ")})`;
+    notes = [];
+    modes = {};
+    headerIdx = -1;
+  };
   for (const line of splitLines(stdout)) {
     if (line.startsWith("diff --git ")) {
+      flushNotes();
       const m = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
-      out.push(`### ${m ? m[2] : line.slice("diff --git ".length)}`);
+      headerIdx = out.length;
+      // a/old b/new differ on a rename or a copy: both paths are the content, keep both
+      out.push(`### ${m ? (m[1] === m[2] ? m[2] : `${m[1]} → ${m[2]}`) : line.slice("diff --git ".length)}`);
       seenHeader = true;
       inHunk = false;
       continue;
     }
-    if (line.startsWith("@@")) inHunk = true;
-    if (!inHunk && (DIFF_HEADER_RE.test(line) || /^(--- |\+\+\+ )/.test(line))) continue;
+    if (line.startsWith("@@")) {
+      flushNotes();
+      inHunk = true;
+    }
+    if (!inHunk && (DIFF_HEADER_RE.test(line) || /^(--- |\+\+\+ )/.test(line))) {
+      const note = diffHeaderNote(line, modes);
+      if (note) notes.push(note);
+      continue;
+    }
     out.push(line);
   }
+  flushNotes();
   if (!seenHeader) return undefined;
   while (out.length && out[out.length - 1] === "") out.pop();
   if (out.length > DIFF_LINE_CAP) {
@@ -216,14 +278,35 @@ function shapeGitDiff(stdout: string): string | undefined {
 
 // ───────────────────────────────────────── git log ─────────────────────────────────────────
 
+const LOG_FIELD_RE = /^(Author|Date|AuthorDate|Commit|CommitDate|Reflog|Notes|Signed-off-by|Tagger|gpg):/;
+
+/**
+ * One `hash subject` line per commit — and NOTHING else in the output, or the shaper bails.
+ *
+ * `git log -p` measured on this repository: 188 609 chars of patch reduced to 689 chars of subject
+ * lines, with no marker of any kind; the model would believe it had read the diffs. Every body a
+ * log can carry (`-p`, `--stat`, `--numstat`, `--name-only`, `--raw`, `--show-signature`, a
+ * `--graph` prefix, a custom `--format`) shows up as a line that is neither a `commit` header, a
+ * field, nor a 4-space-indented message line — so an unrecognised line returns `undefined` and
+ * `shapeOutput` hands back the raw output. A merge and the dropped message body are announced.
+ */
 function shapeGitLog(stdout: string): string | undefined {
   const out: string[] = [];
   let hash: string | undefined;
   let subject: string | undefined;
+  let body = 0;
+  let merge = false;
   const flush = () => {
-    if (hash) out.push(`${hash.slice(0, 7)} ${subject ?? "(no subject)"}`);
+    if (hash) {
+      const notes: string[] = [];
+      if (merge) notes.push("merge");
+      if (body) notes.push(`+${body} body line${body === 1 ? "" : "s"}`);
+      out.push(`${hash.slice(0, 7)} ${subject ?? "(no subject)"}${notes.length ? ` (${notes.join(", ")})` : ""}`);
+    }
     hash = undefined;
     subject = undefined;
+    body = 0;
+    merge = false;
   };
   for (const line of splitLines(stdout)) {
     const c = /^commit ([0-9a-f]{7,40})\b/.exec(line);
@@ -232,9 +315,19 @@ function shapeGitLog(stdout: string): string | undefined {
       hash = c[1];
       continue;
     }
-    if (!hash) continue;
-    if (/^(Author|Date|Merge|AuthorDate|Commit|CommitDate|Reflog|Notes):/.test(line) || !line.trim()) continue;
-    if (subject === undefined && /^ {4}\S/.test(line)) subject = line.trim();
+    if (!line.trim()) continue;
+    if (!hash) return undefined; // content before the first commit: --graph, a custom --format
+    if (/^Merge:/.test(line)) {
+      merge = true;
+      continue;
+    }
+    if (LOG_FIELD_RE.test(line)) continue;
+    if (line.startsWith("    ")) {
+      if (subject === undefined) subject = line.trim();
+      else body += 1;
+      continue;
+    }
+    return undefined; // a patch, a --stat block, a file list: not summarisable into one line
   }
   flush();
   return out.length ? out.join("\n") : undefined;
@@ -271,6 +364,7 @@ function shapeTestRun(stdout: string): string | undefined {
   let passSlot = -1;
   let window = 0;
   let stack = 0;
+  let dropped = 0;
   for (const line of lines) {
     if (!line.trim()) continue;
     const prog = PYTEST_PROGRESS_RE.exec(line);
@@ -315,7 +409,11 @@ function shapeTestRun(stdout: string): string | undefined {
     if (window > 0) {
       window -= 1;
       out.push(line);
+      continue;
     }
+    // neither a counted pass/skip nor kept context: a runner banner, a coverage table, the
+    // program's own stdout. Not summarisable — so it is counted and announced, never silent.
+    dropped += 1;
   }
   if (passed === 0 && failures === 0 && skipped === 0) return undefined;
   if (passed > 0 || skipped > 0) {
@@ -323,6 +421,7 @@ function shapeTestRun(stdout: string): string | undefined {
     if (skipped > 0) bits.push(`${skipped} skipped`);
     out.splice(passSlot < 0 ? 0 : passSlot, 0, bits.join(", "));
   }
+  if (dropped) out.push(omittedNote(dropped));
   return out.join("\n");
 }
 
@@ -339,22 +438,41 @@ const TSC_PRETTY_RE = /^(.+?):(\d+):(\d+) - (error|warning) (TS\d+): (.*)$/;
 function shapeTsc(stdout: string): string | undefined {
   const files = new Map<string, string[]>();
   const tail: string[] = [];
+  const errors = new Map<string, number>();
+  let current: string[] | undefined;
+  let dropped = 0;
   for (const line of splitLines(stdout)) {
     const m = TSC_PLAIN_RE.exec(line) ?? TSC_PRETTY_RE.exec(line);
     if (m) {
       const list = files.get(m[1]) ?? [];
       list.push(clipHard(`  L${m[2]} ${m[4]} ${m[5]}: ${m[6]}`));
       files.set(m[1], list);
+      errors.set(m[1], (errors.get(m[1]) ?? 0) + 1);
+      current = list;
       continue;
     }
-    if (/^Found \d+ error/.test(line) || /^error TS\d+:/.test(line)) tail.push(line);
+    if (/^Found \d+ error/.test(line) || /^error TS\d+:/.test(line)) {
+      tail.push(line);
+      current = undefined;
+      continue;
+    }
+    if (!line.trim()) continue;
+    // an indented line after an error is the REST of that error ("Type 'undefined' is not
+    // assignable…"): the reason, not decoration. Kept under its error instead of dropped.
+    if (current && /^\s+\S/.test(line)) {
+      current.push(clipHard(`    ${line.trim()}`));
+      continue;
+    }
+    dropped += 1;
   }
   if (!files.size && !tail.length) return undefined;
   const out: string[] = [];
   for (const [file, list] of files) {
-    out.push(`${file}: ${list.length} error${list.length === 1 ? "" : "s"}`, ...list);
+    const n = errors.get(file) ?? list.length;
+    out.push(`${file}: ${n} error${n === 1 ? "" : "s"}`, ...list);
   }
   out.push(...tail);
+  if (dropped) out.push(omittedNote(dropped));
   return out.join("\n");
 }
 
@@ -436,6 +554,7 @@ function shapeList(stdout: string, _exit: number | null, argv: string[]): string
   const groups = new Map<string, string[]>();
   let currentDir: string | undefined;
   let entries = 0;
+  let longFormat = false;
   const isFind = base(argv) !== "ls";
   for (const line of splitLines(stdout)) {
     if (!line.trim()) continue;
@@ -452,6 +571,7 @@ function shapeList(stdout: string, _exit: number | null, argv: string[]): string
     if (long) {
       name = long[2].replace(/ -> .*$/, "");
       if (long[1] === "d") dirMark = "/";
+      longFormat = true; // `ls -l` was asked for the metadata; say that the tree drops it
     }
     let dir: string;
     if (currentDir !== undefined) dir = currentDir;
@@ -494,6 +614,7 @@ function shapeList(stdout: string, _exit: number | null, argv: string[]): string
     if (row.trim()) out.push(row);
   }
   if (omitted) out.push(`…[${omitted} more entries]`);
+  if (longFormat) out.push("…[long format: mode, owner, size, date and link target omitted]");
   return out.join("\n");
 }
 

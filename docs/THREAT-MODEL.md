@@ -56,7 +56,90 @@ Untrusted content is **data**, never the instruction channel. High-blast-radius 
    (`.agentik/tool-results/<callId>.txt`) and is what the injection scan, the secret masking,
    the guardrails and the run file work on. A non-zero exit in an unrecognised format is passed
    raw (fail-open), so a shaper can neither hide a failure nor launder an injection padded into
-   the lines it drops.
+   the lines it drops. A shaper also never *eats* a body it cannot summarise: `git log -p`,
+   `git log --stat`, `git log --name-only` and a `--graph` prefix return the raw output rather
+   than one `hash subject` line per commit (measured before the fix: 188 609 chars of patch shaped
+   into 689 chars of subjects, with no marker — the model would have believed it read the diffs).
+   What a shaper does drop in bulk is announced in the shaped text itself: `…[N lines omitted]`,
+   `…[N other lines omitted]`, `(+N body lines)`, `(merge)`, `(new file)`, `(deleted)`,
+   `(renamed)`, `(binary, differs)`, `…[long format: … omitted]`.
+
+## Egress — what leaves this machine, and what never expires
+
+The controls above are about what comes **in** (untrusted content becoming an instruction). This
+section is the other direction: which text leaves the machine, to whom, and how long agentik keeps
+it. It reports no vulnerability; it states the paths, each one with the file that implements it, so
+the human orchestrator can decide. Nothing here is hypothetical: it is the code at `2d1f3e5`.
+
+### 1. One run can reach three vendors
+
+`--backend auto` is the default (`src/cli.ts`, `const backendSpec = flags.backend ?? "auto"`) and
+`autoCycle` (`src/backends.ts`) hands the worker slots, in order, `claude-sonnet`, `codex`,
+`claude-opus`, `grok` — whichever the local CLIs are logged into (`agentik probe`). So the tasks of
+a single goal are split across Anthropic, OpenAI and xAI accounts, and a backend that dies mid-run
+fails over to the next of the cycle (`RunReport.backendSwitches`), which can move a task from one
+vendor to another inside the same run. agentik itself holds no API key and opens no HTTPS
+connection to a model provider: every call is a `spawnManaged` of the vendor's own CLI with the
+user's local credentials (`ClaudeBackend` / `CodexBackend` / `GrokBackend` in `src/backends.ts`;
+`agentik spawn` does the same for a foreign harness). What travels is the goal, the plan, each task
+instruction, the DATA envelopes and the tool outputs quoted back into the next call.
+
+### 2. Context from one repository reaches another repository's prompt
+
+`buildContext` (`src/context.ts`) always renders, in this order: **USER PROFILE** (`memory/USER.md`),
+**MEMORY** (`memory/MEMORY.md`, global by construction — "true in every project"), the **skills
+index** (the name and description of every skill in the home), then PROJECT MEMORY (the only
+per-repository store), RELATED SESSIONS and KNOWN FAILURES.
+
+- `agentik spawn` prepends that whole block to the task as an untrusted envelope
+  (`spawnContextBlock` in `src/cli.ts`, cap 6000 chars) — so the global memory written while
+  working on repository A is in the prompt sent to a foreign harness for repository B.
+- `agentik run` gives the same block to the **planner** (`runContextBlock`, `src/loop.ts`; task
+  contexts are left out for an unrelated reason: the gate rescans every envelope).
+- RELATED SESSIONS are workspace-filtered, with one deliberate hole: a session row whose workspace
+  is `""` is never hidden (`src/sessions.ts`, "a session of unknown workspace … is never hidden by
+  the filter"). Those rows are the ones imported from the legacy stores and any `agentik harvest`
+  run without `--workspace`; their goal and summary — another project's — are searchable from every
+  workspace.
+- The **repo map** (`src/repo-map.ts`) goes to the planner and to a spawned worker: paths, exported
+  symbols and hot spots of the current checkout, never a body line.
+
+### 3. Nothing expires by itself
+
+The stores that feed those prompts have no retention policy:
+
+- **Sessions and incidents** (`sessions.sqlite`): no expiry and no delete path at all — the single
+  `DELETE FROM incidents` in the tree is `incident merge` (`src/incidents.ts`). Every goal, summary,
+  verdict, cause and fix is kept for ever, and `searchSessions` / `searchIncidents` put them back
+  into the next `agentik context` (RELATED SESSIONS, KNOWN FAILURES).
+- **Runs** (`<home>/runs/<id>.json`): the whole report — task summaries, executed tools, inline tool
+  output. A sweeper exists (`gcRuns`, `keepDays` 30 / `keepLast`, and `removeRun` in `src/runs.ts`)
+  but it runs only when a human calls it: nothing purges at the end of a run, on a timer, or on a
+  size cap.
+- **Spilled tool output** (`<workspace>/.agentik/tool-results/<nonce>-<callId>.txt`,
+  `src/tool-results.ts`): the raw stdout of every large tool call, written into the workspace and
+  never deleted by agentik.
+- The **code index** is the exception: `gcIndexes` (90 days unused, `agentik index gc`) is wired.
+
+Every string that lands in those files goes through the secret/injection scan first (`src/runs.ts`
+masks every string leaf, `recordIncident` masks goal, symptom, cause and fix, `spillToolResult`
+masks line by line), so what persists should hold no raw token. That is a filter on known secret
+shapes, not a proof that nothing sensitive was written.
+
+### 4. What the human can do today, with what already exists
+
+- `agentik spawn --no-context` builds no context envelope at all (`src/cli.ts`): the task runs
+  without USER, MEMORY, skills, sessions or known failures. `agentik run` has no such flag today —
+  the switch exists as a library option (`LoopConfig.memoryContext`, `src/loop.ts`).
+- **Separate homes**: `--profile P` (→ `~/.agentik/profiles/P`), `--agentik-home DIR`, or
+  `AGENTIK_HOME` (`agentikHome` in `src/home.ts`) give a client, a repository or an experiment its
+  own memory, sessions, incidents, runs and index. Two homes never see each other; this is the only
+  hard partition of the global memory.
+- **Pin the vendor**: `--backend claude|codex|grok` instead of the three-vendor rotation;
+  `--no-index` removes the repo map from `context`, `run` and `spawn` (and turns `search_code` off).
+- **Keep the fact local**: the reviewer's `project` target writes to
+  `memory/projects/<slug>/MEMORY.md`, which is never mixed into another repository's context; and
+  `agentik memory remove "<text>"` is the human's pen on the global file (with a `.bak` first).
 
 ## Sources (retrieved and attributed)
 

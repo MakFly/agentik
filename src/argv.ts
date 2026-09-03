@@ -6,15 +6,26 @@
  * per call") instead of a silent literal `|` argument, and the policy classifier still sees
  * every segment of a string it did not execute (`bash -c "…"`, `a && b`) because the harness
  * side (B2) classifies commands a foreign CLI ran on its own.
+ *
+ * An unquoted newline is a separator here exactly like `;` — a shell ends a command on it — and a
+ * `\<newline>` is a line continuation that joins the words. Treating `\n` as plain whitespace
+ * flattened every multi-line script into one view where no `^`-anchored rule could bite.
  */
 
 export interface ShellToken {
   text: string;
   /** Quoted or escaped somewhere: never an operator, even if it looks like one. */
   quoted: boolean;
-  /** Control operator (`&&`, `||`, `|`, `;`, `&`, `(`, `)`) or redirection (`>`, `>>`, `<`, `2>&1`). */
+  /** Control operator (`&&`, `||`, `|`, `;`, `&`, `\n`, `(`, `)`) or redirection (`>`, `>>`, `<`, `2>&1`). */
   op?: "control" | "redirect";
 }
+
+/**
+ * An unquoted newline. A shell ends a command on it exactly as it does on `;`, so the policy
+ * must see it as a separator: a multi-line `bash -c` body flattened into one view left every
+ * `^`-anchored rule (rm -rf /, sudo, mkfs…) unable to bite past the first line.
+ */
+export const NEWLINE_OP = "\n";
 
 export type ArgvParse =
   | { ok: true; argv: string[] }
@@ -67,11 +78,28 @@ export function shellSplit(input: string): ShellToken[] {
       i = j + 1;
       continue;
     }
+    // Line continuation `\<newline>`: the two characters vanish and the words join, so
+    // `rm -rf \<newline>/` is seen as `rm -rf /` and not as two harmless-looking lines.
+    if (c === "\\" && (input[i + 1] === "\n" || input[i + 1] === "\r")) {
+      i += input[i + 1] === "\r" && input[i + 2] === "\n" ? 3 : 2;
+      continue;
+    }
     if (c === "\\" && i + 1 < n) {
       cur += input[i + 1];
       quoted = true;
       has = true;
       i += 2;
+      continue;
+    }
+    // An unquoted newline ends the command, like `;`. Runs are collapsed and a leading one is
+    // dropped, so `"ls\n"` and `"\nls"` stay a single plain command.
+    if (c === "\n" || c === "\r") {
+      flush();
+      const last = tokens[tokens.length - 1];
+      if (tokens.length && !(last.op === "control" && last.text === NEWLINE_OP)) {
+        tokens.push({ text: NEWLINE_OP, quoted: false, op: "control" });
+      }
+      i += 1;
       continue;
     }
     if (/\s/.test(c)) {
@@ -117,7 +145,12 @@ export function shellSplit(input: string): ShellToken[] {
   return tokens;
 }
 
-const ONE_COMMAND = "one command per call — pipes, `;`, `&&`, redirections and `$(…)` are refused; run_command executes a single argv with no shell";
+const ONE_COMMAND = "one command per call — pipes, `;`, `&&`, newlines, redirections and `$(…)` are refused; run_command executes a single argv with no shell";
+
+/** `\n` in an error message has to be readable, not an actual line break. */
+function opName(text: string): string {
+  return text === NEWLINE_OP ? "\\n" : text;
+}
 
 /**
  * argv for `run_command`. A string is shell-split; an array is taken as-is. Any operator token
@@ -134,8 +167,10 @@ export function parseArgv(input: string | string[] | undefined): ArgvParse {
     return { ok: true, argv };
   }
   const tokens = shellSplit(input);
+  // A trailing newline is punctuation, not a second command; anything else is a separator.
+  while (tokens.length && tokens[tokens.length - 1].op === "control" && tokens[tokens.length - 1].text === NEWLINE_OP) tokens.pop();
   if (tokens.length === 0) return { ok: false, problem: "empty command" };
   const op = tokens.find((t) => t.op);
-  if (op) return { ok: false, problem: `operator "${op.text}": ${ONE_COMMAND}` };
+  if (op) return { ok: false, problem: `operator "${opName(op.text)}": ${ONE_COMMAND}` };
   return { ok: true, argv: tokens.map((t) => t.text) };
 }

@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { parseArgv } from "./argv.ts";
 import { killManaged, spawnManaged } from "./backends.ts";
 import { classifyCommand } from "./command-policy.ts";
@@ -64,6 +64,12 @@ export function blastForCall(tool: string, args: Record<string, unknown>): Blast
   return base;
 }
 
+/**
+ * LEXICAL containment: `resolve` + `relative`, no filesystem call. Kept as it is — `artifacts.ts`
+ * and `plan-schema.ts` call it on paths that may not exist yet and must stay synchronous — but it
+ * is NOT sufficient on its own: a directory symlink inside the workspace (`link -> /tmp/outside`)
+ * passes it. Every fs executor goes through `resolveSafeReal` below.
+ */
 export function resolveSafe(workspace: string, rel: string): string {
   const root = resolve(workspace);
   const full = resolve(root, rel);
@@ -72,6 +78,54 @@ export function resolveSafe(workspace: string, rel: string): string {
     throw new Error(`path escapes workspace: ${rel}`);
   }
   return full;
+}
+
+function isInside(root: string, p: string): boolean {
+  return p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
+}
+
+/** A path an fs executor may act on: the lexical target, and where the filesystem really sends it. */
+export interface SafePath {
+  /** The path to act ON (never the resolved target: deleting a symlink must remove the link). */
+  full: string;
+  /** Where `full` really lands once every symlink of its existing prefix is resolved. */
+  real: string;
+  /** `realpath` of the workspace root, the prefix `real` is checked against. */
+  root: string;
+}
+
+/**
+ * REAL containment. `resolveSafe` is lexical, so `link/target` with `link -> /tmp/outside` reads
+ * as an ordinary workspace path and `write_file` / `read_file` / `fs_destructive` all land
+ * outside. And `lstat`ing the final component only tests the LAST link of the chain, never a
+ * directory link in the middle.
+ *
+ * So: `realpath` the workspace root, `realpath` the DEEPEST EXISTING ancestor of the requested
+ * path (the path itself when it exists), re-append the components that do not exist yet, and
+ * check the prefix. A path that does not exist is decided by its parent — `link/newfile` is
+ * refused before the file is created, not after.
+ *
+ * Returns `full` (lexical) to act on, so a symlink is deleted rather than followed.
+ */
+export async function resolveSafeReal(workspace: string, rel: string): Promise<SafePath> {
+  const full = resolveSafe(workspace, rel);
+  const root = await realpath(workspace).catch(() => resolve(workspace));
+  const tail: string[] = [];
+  let probe = full;
+  for (;;) {
+    const real = await realpath(probe).catch(() => undefined);
+    if (real !== undefined) {
+      const target = tail.length ? join(real, ...tail) : real;
+      if (!isInside(root, target)) {
+        throw new Error(`path escapes workspace: ${rel} is a symlink pointing outside the workspace (or is reached through a directory symlink)`);
+      }
+      return { full, real: target, root };
+    }
+    const parent = dirname(probe);
+    if (parent === probe) throw new Error(`path escapes workspace: ${rel}`);
+    tail.unshift(basename(probe));
+    probe = parent;
+  }
 }
 
 /** Per-review state the skill tool needs: read-before-write and the one-create budget. */
@@ -113,6 +167,8 @@ export async function executeTool(call: ToolCall, host: ToolHost): Promise<ToolR
       return searchCodeTool(call, host);
     case "write_file":
       return writeFileTool(call, host);
+    case "edit_file":
+      return editFileTool(call, host);
     case "run_command":
       return runCommandTool(call, host);
     case "sandbox_ops":
@@ -147,7 +203,7 @@ export async function executeTool(call: ToolCall, host: ToolHost): Promise<ToolR
  */
 async function readFileTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {
   const rel = String(call.args.path ?? "");
-  const full = resolveSafe(host.workspace, rel);
+  const { full } = await resolveSafeReal(host.workspace, rel);
   let body: string;
   try {
     body = await readFile(full, "utf8");
@@ -217,13 +273,69 @@ function pathGlobArg(v: unknown): string | undefined {
 async function writeFileTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {
   const rel = String(call.args.path ?? "");
   const content = String(call.args.content ?? "");
-  const full = resolveSafe(host.workspace, rel);
-  await mkdir(dirname(full), { recursive: true });
-  await writeFile(full, content, "utf8");
+  const resolved = await resolveSafeReal(host.workspace, rel);
+  // `.git/` and `.agentik/` were protected from `fs_destructive` only: overwriting `.git/config`
+  // or a run file is the same blast radius as deleting it.
+  const protectedBy = protectedProblem(host.workspace, resolved);
+  if (protectedBy) return { callId: call.id, ok: false, output: `write_file refused: ${protectedBy}` };
+  await mkdir(dirname(resolved.full), { recursive: true });
+  await writeFile(resolved.full, content, "utf8");
   return {
     callId: call.id,
     ok: true,
     output: `wrote ${rel} (${content.length} bytes)`,
+    artifact: rel,
+  };
+}
+
+/**
+ * Anchor edit: replace an exact string inside an existing file. `write_file` can only overwrite a
+ * whole file, and `run_command sed` / `git apply` change the tree without a `ToolResult.artifact`,
+ * so the mutation witness never sees them. A missing or ambiguous anchor writes NOTHING.
+ */
+async function editFileTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {
+  const rel = String(call.args.path ?? "").trim();
+  if (!rel) return { callId: call.id, ok: false, output: "edit_file: path is required" };
+  const oldRaw = call.args.old_string ?? call.args.oldString;
+  const newRaw = call.args.new_string ?? call.args.newString;
+  if (typeof oldRaw !== "string" || oldRaw === "") {
+    return { callId: call.id, ok: false, output: "edit_file: old_string is required and must be a non-empty exact anchor copied from the file (write_file creates a file)" };
+  }
+  if (typeof newRaw !== "string") {
+    return { callId: call.id, ok: false, output: 'edit_file: new_string is required (use "" to delete the anchor)' };
+  }
+  if (oldRaw === newRaw) return { callId: call.id, ok: false, output: "edit_file: old_string and new_string are identical; nothing to do" };
+  const replaceAll = call.args.replace_all === true || call.args.replaceAll === true;
+  const resolved = await resolveSafeReal(host.workspace, rel);
+  const protectedBy = protectedProblem(host.workspace, resolved);
+  if (protectedBy) return { callId: call.id, ok: false, output: `edit_file refused: ${protectedBy}` };
+  let body: string;
+  try {
+    body = await readFile(resolved.full, "utf8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return {
+      callId: call.id,
+      ok: false,
+      output: code === "ENOENT"
+        ? `edit_file: ${rel} does not exist in the workspace (write_file creates it)`
+        : `edit_file: cannot read ${rel}: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  const hits = body.split(oldRaw).length - 1;
+  if (hits === 0) {
+    return { callId: call.id, ok: false, output: `edit_file: anchor not found in ${rel}; read the file and copy the exact text (whitespace included). Nothing was written` };
+  }
+  if (hits > 1 && !replaceAll) {
+    return { callId: call.id, ok: false, output: `edit_file: anchor is ambiguous in ${rel} (${hits} occurrences); extend old_string with surrounding lines, or pass replace_all: true. Nothing was written` };
+  }
+  const at = body.indexOf(oldRaw);
+  const next = replaceAll ? body.split(oldRaw).join(newRaw) : body.slice(0, at) + newRaw + body.slice(at + oldRaw.length);
+  await writeFile(resolved.full, next, "utf8");
+  return {
+    callId: call.id,
+    ok: true,
+    output: `edited ${rel} (${replaceAll ? hits : 1} replacement${(replaceAll ? hits : 1) > 1 ? "s" : ""}, ${next.length} bytes)`,
     artifact: rel,
   };
 }
@@ -370,25 +482,41 @@ async function serverAdminTool(call: ToolCall, host: ToolHost): Promise<ToolResu
 /** Never a target of fs_destructive, whatever the approval says. */
 const FS_PROTECTED = [".git", ".agentik"];
 
-function fsProblem(workspace: string, rel: string): string | undefined {
-  const clean = rel.trim();
-  if (!clean || clean === "." || clean === "/" || clean === "./") return "refuses the workspace root";
-  let full: string;
-  try {
-    full = resolveSafe(workspace, clean);
-  } catch (err) {
-    return err instanceof Error ? err.message : String(err);
+/**
+ * `.git/` and `.agentik/` are checked on BOTH the lexical path and where it really lands: with
+ * `g -> .git` inside the workspace, `g/config` is lexically innocent and really is `.git/config`.
+ */
+function protectedProblem(workspace: string, sp: SafePath): string | undefined {
+  for (const [base, p] of [[resolve(workspace), sp.full], [sp.root, sp.real]] as const) {
+    const top = relative(base, p).split(/[\\/]/)[0];
+    if (FS_PROTECTED.includes(top)) return `${top}/ is protected`;
   }
-  const relToRoot = relative(resolve(workspace), full);
-  const top = relToRoot.split(/[\\/]/)[0];
-  if (FS_PROTECTED.includes(top)) return `${top}/ is protected`;
   return undefined;
+}
+
+type FsCheck = { ok: false; problem: string } | { ok: true; path: SafePath };
+
+async function fsProblem(workspace: string, rel: string): Promise<FsCheck> {
+  const clean = rel.trim();
+  if (!clean || clean === "." || clean === "/" || clean === "./") return { ok: false, problem: "refuses the workspace root" };
+  let path: SafePath;
+  try {
+    path = await resolveSafeReal(workspace, clean);
+  } catch (err) {
+    return { ok: false, problem: err instanceof Error ? err.message : String(err) };
+  }
+  if (path.real === path.root) return { ok: false, problem: "refuses the workspace root" };
+  const protectedBy = protectedProblem(workspace, path);
+  if (protectedBy) return { ok: false, problem: protectedBy };
+  return { ok: true, path };
 }
 
 /**
  * The one destructive executor, bounded: delete or move INSIDE the workspace, never the root,
- * `.git/` or `.agentik/`, never through a symlink that points outside, never over an existing
- * target. Double lock: the gate must have released this very call id (`host.approved`).
+ * `.git/` or `.agentik/` (lexically OR through a link), never through a symlink that points
+ * outside — the containment is `resolveSafeReal`, which resolves the whole existing prefix, not
+ * an `lstat` of the last component — never over an existing target. Double lock: the gate must
+ * have released this very call id (`host.approved`).
  */
 async function fsDestructiveTool(call: ToolCall, host: ToolHost): Promise<ToolResult> {
   if (!host.approved?.has(call.id)) {
@@ -397,9 +525,9 @@ async function fsDestructiveTool(call: ToolCall, host: ToolHost): Promise<ToolRe
   const action = String(call.args.action ?? "");
   const rel = String(call.args.path ?? "");
   if (action !== "delete" && action !== "move") return { callId: call.id, ok: false, output: `fs_destructive: action must be delete or move (got "${action}")` };
-  const problem = fsProblem(host.workspace, rel);
-  if (problem) return { callId: call.id, ok: false, output: `fs_destructive ${action} refused: ${problem}` };
-  const full = resolveSafe(host.workspace, rel);
+  const checked = await fsProblem(host.workspace, rel);
+  if (!checked.ok) return { callId: call.id, ok: false, output: `fs_destructive ${action} refused: ${checked.problem}` };
+  const full = checked.path.full;
   let st;
   try {
     st = await lstat(full);
@@ -418,9 +546,9 @@ async function fsDestructiveTool(call: ToolCall, host: ToolHost): Promise<ToolRe
     return { callId: call.id, ok: true, output: `deleted ${rel}`, artifact: rel };
   }
   const toRel = String(call.args.to ?? "");
-  const toProblem = fsProblem(host.workspace, toRel);
-  if (toProblem) return { callId: call.id, ok: false, output: `fs_destructive move refused (target): ${toProblem}` };
-  const toFull = resolveSafe(host.workspace, toRel);
+  const toChecked = await fsProblem(host.workspace, toRel);
+  if (!toChecked.ok) return { callId: call.id, ok: false, output: `fs_destructive move refused (target): ${toChecked.problem}` };
+  const toFull = toChecked.path.full;
   if (await lstat(toFull).then(() => true, () => false)) {
     return { callId: call.id, ok: false, output: `fs_destructive move refused: ${toRel} exists (no overwrite)` };
   }

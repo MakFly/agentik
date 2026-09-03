@@ -1,5 +1,13 @@
 node_modules
-.tmp
+
+# Test scratch, 100% DISPOSABLE — `rm -rf .tmp` between two suite runs is always safe.
+# `tests/helpers.ts` makeWorkspace() mkdtemp's one directory per test case in here and nothing
+# ever removes them: measured 18866 directories / 191674 files / 1.3 GB after two days of runs.
+# It lives inside the checkout on purpose: a workspace under a git-ignored path is what the code
+# index tests need to exercise walk mode. A test that needs a NON-git directory must use
+# os.tmpdir() instead (CLAUDE.md, "Code index" — git resolves .tmp's hooks to this repo's).
+.tmp/
+
 *.log
 dist
 .claude/worktrees

@@ -3,8 +3,25 @@
 set -euo pipefail
 SELF="$(readlink -f "$0")"
 ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
-BUN="${BUN:-$HOME/.bun/bin/bun}"
+BUN="${BUN:-${HOME:-}/.bun/bin/bun}"
 if [[ ! -x "$BUN" ]]; then
-  BUN="$(command -v bun)"
+  # `command -v` fails when bun is absent; under `set -e` that used to exit 1 in silence.
+  BUN="$(command -v bun || true)"
+fi
+if [[ -z "$BUN" || ! -x "$BUN" ]]; then
+  cat >&2 <<'EOF'
+agentik: bun not found.
+
+agentik runs on Bun (TypeScript executed directly, sqlite built in). There is no node fallback.
+
+  install bun:  curl -fsSL https://bun.sh/install | bash        (https://bun.sh)
+  then:         exec $SHELL        # or add ~/.bun/bin to your PATH
+  verify:       bun --version
+
+Already have bun somewhere else? Point this script at it:
+
+  BUN=/path/to/bun agentik --help
+EOF
+  exit 2
 fi
 exec "$BUN" "$ROOT/src/cli.ts" "$@"

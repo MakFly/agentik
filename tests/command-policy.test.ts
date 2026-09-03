@@ -98,11 +98,72 @@ const TABLE: Array<[string, CommandLevel]> = [
   ["mkdir -p a/b", "medium"],
   ["dd if=in.img of=out.img", "medium"],
   ["kill 1234", "medium"],
+
+  // ── an absolute (or relative) PATH must not walk past a `^`-anchored rule ──
+  // hardline
+  ["/bin/rm -rf /", "hardline"],
+  ["/usr/bin/sudo rm -rf /etc", "hardline"],
+  ['/bin/bash -c "rm -rf /"', "hardline"],
+  ["/usr/bin/env -i /bin/rm -rf $HOME", "hardline"],
+  ["/sbin/mkfs.ext4 /dev/sda1", "hardline"],
+  ["/usr/bin/timeout 5 /bin/rm -rf ~", "hardline"],
+  // high
+  ["/bin/rm -rf node_modules", "high"],
+  ["/usr/bin/git push --force origin main", "high"],
+  ["/usr/bin/git reset --hard HEAD~1", "high"],
+  ["/bin/sudo apt install x", "high"],
+  ["/usr/local/bin/docker system prune -af", "high"],
+  ["./node_modules/.bin/kubectl delete pod x", "high"],
+  ["/usr/bin/killall node", "high"],
+  ["/bin/sh -c 'git push -f'", "high"],
+  // medium — the benign neighbour of every path form
+  ["/bin/rm -f a.o", "medium"],
+  ["/usr/bin/git push origin main", "medium"],
+  ["/usr/bin/git status", "medium"],
+  ["/usr/local/bin/docker ps", "medium"],
+  ["/bin/ls -la", "medium"],
+  ["/usr/bin/find . -name x", "medium"],
+  ['/bin/grep "rm -rf" README.md', "medium"],
+  ["/bin/echo shutdown", "medium"],
+  ["cat /usr/bin/sudo", "medium"],
+  ["ls /sbin/mkfs.ext4", "medium"],
+
+  // ── an unquoted NEWLINE ends a command exactly like `;` ──
+  // hardline
+  ["set -e\nrm -rf /", "hardline"],
+  ["bash -lc 'set -e\nrm -rf /'", "hardline"],
+  ["bash -c 'cd /tmp\nsudo rm -rf /etc'", "hardline"],
+  ["/bin/bash -c 'echo hi\n\n/bin/rm -rf /'", "hardline"],
+  ["rm -rf \\\n/", "hardline"],
+  // high
+  ["cd x\nrm -rf build", "high"],
+  ["sh -c 'echo hi\ngit push -f'", "high"],
+  ["ls\r\nkillall node", "high"],
+  ["bash -c 'npm ci\n\ndocker system prune -af'", "high"],
+  ["bash -c 'set -euo pipefail\ncd /srv\nkubectl delete pod x'", "high"],
+  // medium — a newline inside quotes is data, and a benign script stays benign
+  ["git commit -m 'ligne1\nligne2'", "medium"],
+  ["git commit -m 'fix\nrm -rf /'", "medium"],
+  ["bun test\nbunx tsc --noEmit", "medium"],
+  ["bash -c 'npm ci\nbun test'", "medium"],
+  ["echo 'rm -rf /'\necho done", "medium"],
+
+  // ── an UNQUOTED expansion behind a wrapper is the expansion, not data ──
+  ["sudo rm -rf $HOME", "hardline"],
+  ["env -i rm -rf $HOME", "hardline"],
+  ["nohup rm -rf ${HOME}", "hardline"],
+  ["bash -c 'rm -rf $HOME'", "hardline"],
+  ["/usr/bin/sudo rm -rf $HOME/", "hardline"],
+  // …and a QUOTED one stays data
+  ["git commit -m \"rm -rf $HOME\"", "medium"],
+  ["rg '$HOME' docs", "medium"],
+  ["echo \"$HOME\"", "medium"],
+  ["du -sh $HOME", "medium"],
 ];
 
 describe("command policy: classifyCommand", () => {
   for (const [cmd, level] of TABLE) {
-    test(`${level.padEnd(8)} ${cmd}`, () => {
+    test(`${level.padEnd(8)} ${cmd.replace(/\r/g, "\\r").replace(/\n/g, "\\n")}`, () => {
       expect(classifyCommand(cmd)).toBe(level);
     });
   }
@@ -125,6 +186,42 @@ describe("command policy: classifyCommand", () => {
     expect(views).toContain("git push -f");
     expect(views).toContain("cd x");
     expect(views.some((v) => v.includes("> log"))).toBe(false);
+  });
+
+  test("a newline is a command separator, in a line and inside a `-c` body", () => {
+    expect(commandSegments("cd x\nrm -rf build")).toContain("rm -rf build");
+    expect(commandSegments("cd x\r\nrm -rf build")).toContain("rm -rf build");
+    // The body of a `-c` is a script: every LINE of it is a command in first position.
+    expect(commandSegments("bash -lc 'set -e\ncd /srv\nsudo rm -rf /etc'")).toContain("sudo rm -rf /etc");
+    // …but a newline inside a quoted ARGUMENT stays data.
+    expect(commandSegments("git commit -m 'ligne1\nrm -rf /'").some((v) => /^rm -rf \//.test(v))).toBe(false);
+    // A `\<newline>` continuation joins the words instead of hiding the target on a second line.
+    expect(commandSegments("rm -rf \\\n/tmp/x")).toContain("rm -rf /tmp/x");
+  });
+
+  test("a path in argv[0] is reduced to its basename in an extra view, never in what runs", () => {
+    expect(commandSegments("/bin/rm -rf /")).toContain("rm -rf /");
+    expect(commandSegments("/bin/rm -rf /")).toContain("/bin/rm -rf /");
+    expect(commandSegments("/usr/bin/sudo rm -rf /etc")).toContain("rm -rf /etc");
+    expect(commandSegments('/bin/bash -c "git push -f"')).toContain("git push -f");
+    // Only argv[0]: a path as an ARGUMENT is not a command.
+    expect(commandSegments("cat /usr/bin/sudo").some((v) => /^sudo/.test(v))).toBe(false);
+  });
+
+  test("matchCommandRules names the rules through a path and through a newline", () => {
+    expect(matchCommandRules("/usr/bin/sudo rm -rf /etc").rules).toEqual(["rm_rf_root", "rm_rf", "sudo"]);
+    expect(matchCommandRules("bash -lc 'set -e\nsudo rm -rf /etc'").rules).toEqual(["rm_rf_root", "rm_rf", "sudo"]);
+    expect(matchCommandRules("/bin/ls -la").rules).toEqual([]);
+    expect(matchCommandRules("git commit -m 'a\nb'").rules).toEqual([]);
+  });
+
+  test("an argv array is classified through its path and its `-c` script too", () => {
+    expect(classifyCommand(["/bin/rm", "-rf", "/"])).toBe("hardline");
+    expect(classifyCommand(["/bin/bash", "-c", "rm -rf /"])).toBe("hardline");
+    expect(classifyCommand(["bash", "-c", "cd /tmp\nrm -rf /"])).toBe("hardline");
+    expect(classifyCommand(["/bin/rm", "-rf", "build"])).toBe("high");
+    expect(classifyCommand(["/bin/rm", "-f", "a.o"])).toBe("medium");
+    expect(classifyCommand(["git", "commit", "-m", "ligne1\nrm -rf /"])).toBe("medium");
   });
 });
 
@@ -178,6 +275,29 @@ describe("argv: one command per call", () => {
     expect(parseArgv("")).toEqual({ ok: false, problem: "empty command" });
     expect(parseArgv([])).toEqual({ ok: false, problem: "empty command" });
   });
+
+  test("an unquoted newline is a control token; a quoted one is data", () => {
+    expect(shellSplit("a\nb").map((t) => (t.op ? `<${t.text === "\n" ? "\\n" : t.text}>` : t.text))).toEqual(["a", "<\\n>", "b"]);
+    expect(shellSplit("a\r\n\nb").filter((t) => t.op)).toHaveLength(1);
+    expect(shellSplit("\na").filter((t) => t.op)).toHaveLength(0);
+    expect(shellSplit("git commit -m 'l1\nl2'").filter((t) => t.op)).toHaveLength(0);
+    expect(shellSplit("git commit -m 'l1\nl2'").map((t) => t.text)).toEqual(["git", "commit", "-m", "l1\nl2"]);
+    expect(shellSplit('echo "a\nb"').map((t) => t.text)).toEqual(["echo", "a\nb"]);
+    expect(shellSplit("rm -rf \\\n/tmp/x").map((t) => t.text)).toEqual(["rm", "-rf", "/tmp/x"]);
+  });
+
+  test("parseArgv refuses a multi-line string, keeps a trailing newline harmless", () => {
+    const multi = parseArgv("ls\nrm -rf /");
+    expect(multi.ok).toBe(false);
+    if (!multi.ok) {
+      expect(multi.problem).toContain('operator "\\n"');
+      expect(multi.problem).toContain("one command per call");
+    }
+    expect(parseArgv("ls -la\n")).toEqual({ ok: true, argv: ["ls", "-la"] });
+    expect(parseArgv("\nls -la\n\n")).toEqual({ ok: true, argv: ["ls", "-la"] });
+    expect(parseArgv("git commit -m 'l1\nl2'")).toEqual({ ok: true, argv: ["git", "commit", "-m", "l1\nl2"] });
+    expect(parseArgv("\n")).toEqual({ ok: false, problem: "empty command" });
+  });
 });
 
 describe("gate: hardline is refused before any approval exists", () => {
@@ -211,6 +331,27 @@ describe("gate: hardline is refused before any approval exists", () => {
     expect(blastForCall("run_command", { argv: ["rm", "-rf", "/"] })).toBe("high");
     expect(blastForCall("run_command", { cmd: "git push -f" })).toBe("high");
     expect(blastForCall("run_command", { cmd: "git push origin main" })).toBe("medium");
+  });
+
+  test("blastForCall: neither a path nor a newline downgrades a call to medium", () => {
+    expect(blastForCall("run_command", { argv: ["/bin/rm", "-rf", "/"] })).toBe("high");
+    expect(blastForCall("run_command", { cmd: "/usr/bin/git push --force" })).toBe("high");
+    expect(blastForCall("run_command", { cmd: "bash -lc 'set -e\nrm -rf /'" })).toBe("high");
+    expect(blastForCall("run_command", { argv: ["bash", "-c", "cd /tmp\nsudo rm -rf /etc"] })).toBe("high");
+    expect(blastForCall("run_command", { cmd: "/bin/ls -la" })).toBe("medium");
+  });
+
+  test("proposeTool: a hardline hidden behind a path or a second line is still refused", () => {
+    resetIdsForTests();
+    const orch = new Orchestrator();
+    orch.submitGoal("clean the workspace");
+    const path = orch.proposeTool(call({ argv: ["/bin/rm", "-rf", "/"] }), [], ["run_command"]);
+    expect(path.allowed).toBe(false);
+    expect(path.reason).toBe("hardline");
+    const line = orch.proposeTool(call({ argv: ["/bin/bash", "-c", "set -e\nrm -rf /"] }, "c2"), [], ["run_command"]);
+    expect(line.allowed).toBe(false);
+    expect(line.reason).toBe("hardline");
+    expect(orch.pendingApprovals).toHaveLength(0);
   });
 
   test("--yolo (session approval) does not release a hardline command", async () => {
@@ -255,6 +396,21 @@ describe("run_command executor", () => {
     expect(hard.output).toContain("hardline");
     const missing = await executeTool(call({ argv: ["definitely-not-a-binary-xyz"] }), await host());
     expect(missing.ok).toBe(false);
+  });
+
+  test("a path form and a multi-line string are refused by the executor too", async () => {
+    const pathHigh = await executeTool(call({ cmd: "/bin/rm -rf build" }), await host());
+    expect(pathHigh.ok).toBe(false);
+    expect(pathHigh.output).toContain("high-blast-radius; not executed");
+    const pathHard = await executeTool(call({ argv: ["/bin/rm", "-rf", "/"] }), await host());
+    expect(pathHard.ok).toBe(false);
+    expect(pathHard.output).toContain("hardline");
+    const script = await executeTool(call({ cmd: "echo ok\nrm -rf /" }), await host());
+    expect(script.ok).toBe(false);
+    expect(script.output).toContain("one command per call");
+    const shellScript = await executeTool(call({ argv: ["/bin/bash", "-c", "echo ok\nrm -rf /"] }), await host());
+    expect(shellScript.ok).toBe(false);
+    expect(shellScript.output).toContain("hardline");
   });
 
   test("timeout_s is clamped to [1,120] and a timed-out command is killed and reported", async () => {

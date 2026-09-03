@@ -12,7 +12,7 @@ import { HARNESS_EFFORTS, routingFor, type Routing, type RoutingOptions } from "
 import { workerToolNames } from "./tool-catalog.ts";
 import { MockBackend } from "./mock-backend.ts";
 import { renderEnvelopes } from "./trust.ts";
-import { extractUsage } from "./usage.ts";
+import { extractUsage, type InvocationUsage } from "./usage.ts";
 import {
   clampSubagentCount,
   INSTRUCTION_MAX,
@@ -559,12 +559,23 @@ export type BackendFailure = "timeout" | "auth" | "exit" | "parse";
 export class BackendError extends Error {
   readonly backendId: string;
   readonly kind: BackendFailure;
+  /**
+   * What the invocation cost BEFORE it failed. A CLI that dies on turn 6 has already bought
+   * every token of turns 1..6 and prints its own accounting on stdout as it goes (claude's
+   * `is_error` object carries `usage` and `total_cost_usd`; codex's JSONL carries every
+   * `turn.completed`). Extracting it only on the success path made a run that failed over
+   * under-report its cost by the whole failed attempt — measured on
+   * `bench/ablation/runs/noL5-1.json`: one `claude -p failed (1)` worth $0.1460 dropped from a
+   * run whose total then printed $0.1534, i.e. half the real bill.
+   */
+  readonly usage?: InvocationUsage;
 
-  constructor(backendId: string, kind: BackendFailure, message: string) {
+  constructor(backendId: string, kind: BackendFailure, message: string, usage?: InvocationUsage) {
     super(message);
     this.name = "BackendError";
     this.backendId = backendId;
     this.kind = kind;
+    if (usage) this.usage = usage;
   }
 }
 
@@ -574,29 +585,42 @@ export const DEFAULT_STEP_TIMEOUT_MS = 600_000;
 const AUTH_FAILURE =
   /\b(not logged in|logged out|no credentials|unauthori[sz]ed|authentication (failed|required)|invalid api key|session expired|subscription (has )?expired|quota exceeded|rate limit)\b/i;
 
+/**
+ * `harness` is read for one reason: the usage of a FAILED invocation. It is billed exactly like a
+ * successful one, so it is extracted from the same stdout, before the error is thrown, and carried
+ * on the error (`BackendError.usage`). Nothing else about the classification changed.
+ */
 function classifyExit(
   backendId: string,
   cmd: string,
   res: { stdout: string; stderr: string; exitCode: number; timedOut: boolean },
   timeoutMs: number,
+  harness: HarnessName,
 ): BackendError | undefined {
+  if (!res.timedOut && res.exitCode === 0) return undefined;
+  // A dying CLI still printed what it spent; a stdout with no accounting simply yields undefined.
+  let usage: InvocationUsage | undefined;
+  try {
+    usage = extractUsage(harness, res.stdout);
+  } catch {
+    /* accounting is never worth failing the failure over */
+  }
   if (res.timedOut) {
     return new BackendError(
       backendId,
       "timeout",
       `${cmd} killed after ${Math.round(timeoutMs / 1000)}s (timeout); its answer is incomplete`,
+      usage,
     );
   }
-  if (res.exitCode !== 0) {
-    const blob = `${res.stderr}\n${res.stdout}`;
-    const kind: BackendFailure = AUTH_FAILURE.test(blob) ? "auth" : "exit";
-    return new BackendError(
-      backendId,
-      kind,
-      `${cmd} failed (${res.exitCode}): ${(res.stderr || res.stdout).trim().slice(0, 400)}`,
-    );
-  }
-  return undefined;
+  const blob = `${res.stderr}\n${res.stdout}`;
+  const kind: BackendFailure = AUTH_FAILURE.test(blob) ? "auth" : "exit";
+  return new BackendError(
+    backendId,
+    kind,
+    `${cmd} failed (${res.exitCode}): ${(res.stderr || res.stdout).trim().slice(0, 400)}`,
+    usage,
+  );
 }
 
 export class ClaudeBackend implements Backend {
@@ -634,7 +658,7 @@ export class ClaudeBackend implements Backend {
     const effort = routing.effort ?? "high";
     const args = claudeCliArgs(prompt, model, effort);
     const res = await this.run("claude", args, this.timeoutMs, request.workspace);
-    const err = classifyExit(this.id, "claude -p", res, this.timeoutMs);
+    const err = classifyExit(this.id, "claude -p", res, this.timeoutMs, "claude");
     if (err) throw err;
     return { ...decodeClaudeStdout(res.stdout), usage: extractUsage("claude", res.stdout), routing: { model, effort } };
   }
@@ -657,7 +681,7 @@ export class GrokBackend implements Backend {
     const routing = routingFor("grok", request.phase, { role: request.role });
     const args = grokCliArgs(prompt, request.workspace, routing);
     const res = await this.run("grok", args, this.timeoutMs, request.workspace);
-    const err = classifyExit(this.id, "grok --yolo --single", res, this.timeoutMs);
+    const err = classifyExit(this.id, "grok --yolo --single", res, this.timeoutMs, "grok");
     if (err) throw err;
     // Usage is read from the envelope BEFORE it is unwrapped (GROK_ENVELOPE_KEYS stays as is).
     return { ...decodeGrokStdout(res.stdout), usage: extractUsage("grok", res.stdout), ...(routing.model || routing.effort ? { routing } : {}) };
@@ -721,6 +745,7 @@ export class CodexBackend implements Backend {
       "codex exec --yolo",
       { ...res, stderr: codexFailureSummary(res.stdout) || res.stderr },
       this.timeoutMs,
+      "codex",
     );
     if (err) throw err;
     return { ...decodeCodexStdout(res.stdout), usage: extractUsage("codex", res.stdout), ...(routing.model || routing.effort ? { routing } : {}) };

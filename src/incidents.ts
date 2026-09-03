@@ -13,9 +13,11 @@ import { openSessionsDb } from "./sessions.ts";
  * is not written down happens again, and one seen twice is not transient.
  *
  * Same key on the same workspace and harness while unresolved -> `seen` grows instead of a
- * new row. Secrets are masked at write time with the memory-store scan; the raw token is
- * never stored. Two FTS5 indexes (unicode61 + trigram) over goal/symptom/cause/fix, kept in
- * sync by triggers, exactly like sessions.
+ * new row. The key is a failure CLASS (`incidentKey` = `symptomClass` then `normalizeSymptom`),
+ * never the payload the CLI printed: see `symptomClass` for the bug that cost the whole loop.
+ * Secrets are masked at write time with the memory-store scan; the raw token is never stored.
+ * Two FTS5 indexes (unicode61 + trigram) over goal/symptom/cause/fix, kept in sync by triggers,
+ * exactly like sessions.
  */
 
 export interface IncidentInput {
@@ -79,6 +81,8 @@ export interface IncidentListOptions {
 const DEFAULT_SEARCH_LIMIT = 3;
 const MAX_ERRORS = 20;
 const SYMPTOM_KEY_MAX = 200;
+/** A failure CLASS is a headline, not a payload: what a human would put in a bug title. */
+export const SYMPTOM_CLASS_MAX = 120;
 const TRIGRAM_MIN_FRACTION = 0.6;
 
 interface Row {
@@ -100,9 +104,70 @@ interface Row {
   resolved_at: string | null;
 }
 
-/** Lowercase, whitespace collapsed, digit runs folded to `#`, cut at 200: the dedup key. */
+/**
+ * Everything that changes between two occurrences of the SAME failure and carries no meaning:
+ * an ISO timestamp, a UUID (claude prints a `session_id` in every error object), a long hex run
+ * (a git sha, a request id), a mixed letters+digits identifier, then any digit run. Order
+ * matters: the timestamp and the UUID must be eaten before their own digits are.
+ */
+const VOLATILE: ReadonlyArray<readonly [RegExp, string]> = [
+  // 2026-09-03T10:11:12.345Z / 2026-09-03 10:11:12+02:00 / 2026-09-03
+  [/\d{4}-\d{2}-\d{2}(?:[t ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:z|[+-]\d{2}:?\d{2})?)?/g, "<ts>"],
+  // 20260903T101112Z — the run id's own stamp
+  [/\d{8}t\d{6}z/g, "<ts>"],
+  // a run id is `<stamp>-<6 hex>`: once the stamp is folded, the nonce is what is left
+  [/<ts>-[0-9a-f]{4,12}\b/g, "<ts>-<id>"],
+  [/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/g, "<id>"],
+  // a hex run of 8+ that really mixes letters and digits: a sha, a request id — never an English word
+  [/\b(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{8,}\b/g, "<id>"],
+  // an opaque identifier: 12+ chars mixing letters and digits, no dash (a model name keeps its shape)
+  [/\b(?=[a-z0-9_]*[0-9])(?=[a-z0-9_]*[a-z])[a-z0-9_]{12,}\b/g, "<id>"],
+  [/\d+/g, "#"],
+];
+
+/** Lowercase, whitespace collapsed, volatile runs folded, cut at 200. Not the key on its own. */
 export function normalizeSymptom(symptom: string): string {
-  return symptom.toLowerCase().replace(/\s+/g, " ").trim().replace(/\d+/g, "#").slice(0, SYMPTOM_KEY_MAX);
+  let out = symptom.toLowerCase().replace(/\s+/g, " ").trim();
+  for (const [re, to] of VOLATILE) out = out.replace(re, to);
+  return out.slice(0, SYMPTOM_KEY_MAX);
+}
+
+/** A structured payload starts here: `{"…`, `{ "…`, `[{…`. `[BLOCKED: …]` is not one. */
+const PAYLOAD_START = /[{]\s*["'{]|\[\s*\{/;
+
+/**
+ * The failure CLASS of a symptom: the short headline, without the payload that follows it.
+ *
+ * Why this exists: for a claude worker that dies, the symptom the CLI hands us is
+ * `stalled worker_a@claude-sonnet: exit: claude -p failed (1): {"type":"result","session_id":
+ * "6f3a…", …}` — 400 characters of JSON whose first field is a fresh UUID. Keyed on that blob,
+ * the SAME failure opened a new row every time (`seen 1×` forever), and `agentik context` only
+ * shows KNOWN FAILURES from `seen >= 2`: the learning loop was structurally mute.
+ *
+ * What identifies a recurring failure is what a human would write in a bug title — who failed and
+ * how (`stalled worker_a@claude-sonnet: exit: claude -p failed (1)`) — not the payload, which is
+ * evidence. The payload is not thrown away: `recordIncident` stores it in `errors`, which are
+ * unioned across occurrences, so every distinct blob of the last 20 occurrences stays readable.
+ */
+export function symptomClass(symptom: string): string {
+  const one = symptom.replace(/\s+/g, " ").trim();
+  const payload = one.match(PAYLOAD_START);
+  let head = payload && payload.index !== undefined ? one.slice(0, payload.index) : one;
+  head = head.replace(/[\s:;,\-–—>|(]+$/, "").trim();
+  if (!head) head = one.slice(0, SYMPTOM_CLASS_MAX).trim();
+  if (head.length <= SYMPTOM_CLASS_MAX) return head;
+  const cut = head.slice(0, SYMPTOM_CLASS_MAX);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > SYMPTOM_CLASS_MAX / 2 ? cut.slice(0, space) : cut).replace(/[\s:;,\-–—>|(]+$/, "")}…`;
+}
+
+/**
+ * The dedup key: the class, normalized. Applied to the STORED symptom as well as to the incoming
+ * one, so a row written before this existed (a full blob in `symptom`) still absorbs the next
+ * occurrence instead of opening yet another `seen 1×` line.
+ */
+export function incidentKey(symptom: string): string {
+  return normalizeSymptom(symptomClass(symptom));
 }
 
 /** What memory-store refuses to write is masked here, at write time. The disk never sees a token. */
@@ -129,47 +194,67 @@ export async function recordIncident(input: IncidentInput, opts?: { home?: strin
     // Keyed on the repository root: the same failure in two worktrees is one incident (seen+1).
     const workspace = input.workspace ? resolveWorkspaceRoot(resolve(input.workspace)) : "";
     const harness = input.harness ?? "";
-    const symptom = maskIncidentText(input.symptom);
-    if (!symptom) throw new Error("incident: a symptom is required");
-    const key = normalizeSymptom(symptom);
-    const errors = maskErrors(input.errors);
+    const full = maskIncidentText(input.symptom);
+    if (!full) throw new Error("incident: a symptom is required");
+    // The row carries the CLASS; the payload the caller handed us is evidence and goes to the
+    // errors, which are unioned occurrence after occurrence (last 20 kept).
+    const symptom = symptomClass(full);
+    const key = incidentKey(symptom);
+    const errors = maskErrors(symptom === full ? input.errors : [...(input.errors ?? []), full]);
 
-    const open = db
-      .query<Row, [string, string]>(
-        "SELECT * FROM incidents WHERE workspace = ? AND harness = ? AND resolved_at IS NULL ORDER BY last_at DESC, id DESC",
-      )
-      .all(workspace, harness)
-      .find((r) => normalizeSymptom(r.symptom) === key);
-    if (open) {
-      const merged = maskErrors([...parseErrors(open.errors), ...errors]);
-      db.run("UPDATE incidents SET seen = seen + 1, last_at = ?, errors = ? WHERE id = ?", [
-        now,
-        JSON.stringify(merged),
-        open.id,
-      ]);
-      return toRecord(db.query<Row, [number]>("SELECT * FROM incidents WHERE id = ?").get(open.id)!);
+    // Read-modify-write: without a transaction two processes both read "no open row" and both
+    // insert, which is the same failure counted twice as `seen 1×`. BEGIN IMMEDIATE takes the
+    // write lock up front (busy_timeout 5000 in openSessionsDb) — the repository's lock idiom.
+    db.run("BEGIN IMMEDIATE");
+    try {
+      const open = db
+        .query<Row, [string, string]>(
+          "SELECT * FROM incidents WHERE workspace = ? AND harness = ? AND resolved_at IS NULL ORDER BY last_at DESC, id DESC",
+        )
+        .all(workspace, harness)
+        .find((r) => incidentKey(r.symptom) === key);
+      let id: number;
+      if (open) {
+        const merged = maskErrors([...parseErrors(open.errors), ...errors]);
+        db.run("UPDATE incidents SET seen = seen + 1, last_at = ?, errors = ? WHERE id = ?", [
+          now,
+          JSON.stringify(merged),
+          open.id,
+        ]);
+        id = open.id;
+      } else {
+        const res = db.run(
+          `INSERT INTO incidents (goal, workspace, profile, harness, backend, exit_code, stop_reason, errors, symptom, cause, fix, seen, first_at, last_at, resolved_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL)`,
+          [
+            maskIncidentText(input.goal.replace(/\s+/g, " ").trim()),
+            workspace,
+            input.profile ?? "",
+            harness,
+            input.backend ?? "",
+            typeof input.exitCode === "number" && Number.isFinite(input.exitCode) ? input.exitCode : null,
+            input.stopReason ?? "",
+            JSON.stringify(errors),
+            symptom,
+            input.cause ? maskIncidentText(input.cause) : "",
+            input.fix ? maskIncidentText(input.fix) : "",
+            now,
+            now,
+          ],
+        );
+        id = Number(res.lastInsertRowid);
+      }
+      const row = db.query<Row, [number]>("SELECT * FROM incidents WHERE id = ?").get(id)!;
+      db.run("COMMIT");
+      return toRecord(row);
+    } catch (err) {
+      try {
+        db.run("ROLLBACK");
+      } catch {
+        // Nothing to roll back (BEGIN itself failed): the original error is the one that matters.
+      }
+      throw err;
     }
-
-    const res = db.run(
-      `INSERT INTO incidents (goal, workspace, profile, harness, backend, exit_code, stop_reason, errors, symptom, cause, fix, seen, first_at, last_at, resolved_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL)`,
-      [
-        maskIncidentText(input.goal.replace(/\s+/g, " ").trim()),
-        workspace,
-        input.profile ?? "",
-        harness,
-        input.backend ?? "",
-        typeof input.exitCode === "number" && Number.isFinite(input.exitCode) ? input.exitCode : null,
-        input.stopReason ?? "",
-        JSON.stringify(errors),
-        symptom,
-        input.cause ? maskIncidentText(input.cause) : "",
-        input.fix ? maskIncidentText(input.fix) : "",
-        now,
-        now,
-      ],
-    );
-    return toRecord(db.query<Row, [number]>("SELECT * FROM incidents WHERE id = ?").get(Number(res.lastInsertRowid))!);
   } finally {
     db.close();
   }

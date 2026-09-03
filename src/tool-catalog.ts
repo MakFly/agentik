@@ -14,7 +14,13 @@ export const TOOL_CATALOG: ToolSpec[] = [
     description:
       "Search the local code index of the workspace: {query, regex?, path?, k?, offset?} → hits grouped by file with L<start>-<end> <symbol> ranges and quoted lines (identifiers, exact substrings, or a bounded regex verified on the live files). Cheaper than grepping; read_file for the full body",
   },
-  { name: "write_file", blastRadius: "medium", description: "Write a workspace file" },
+  { name: "write_file", blastRadius: "medium", description: "Write a workspace file (whole content; edit_file for a change inside an existing file)" },
+  {
+    name: "edit_file",
+    blastRadius: "medium",
+    description:
+      "Edit a workspace file by anchor: {path, old_string, new_string, replace_all?}. old_string is exact text copied from the file and must match ONCE (or pass replace_all); a missing or ambiguous anchor fails and writes nothing. Prefer it to rewriting a whole file",
+  },
   {
     name: "run_command",
     blastRadius: "medium",

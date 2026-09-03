@@ -2,6 +2,7 @@ import { classifyOwnership, gitDirty, gitDirtyChanged, snapshotArtifacts, untouc
 import { randomBytes } from "node:crypto";
 import { BackendError, systemPromptFor } from "./backends.ts";
 import { ensureIndex } from "./code-index.ts";
+import { buildContext } from "./context.ts";
 import { repoMap } from "./repo-map.ts";
 import { Orchestrator } from "./orchestrator.ts";
 import { callHash, ToolGuard } from "./guardrails.ts";
@@ -64,6 +65,66 @@ const WRITING_TOOLS = new Set(["write_file", "fs_destructive", "sandbox_ops", "s
 /** How much of the worker's final message is quoted as evidence in a refusal reason. */
 export const REFUSAL_QUOTE_MAX = 500;
 
+/**
+ * The `agentik context` block a RUN's planner gets: user profile, global memory, this workspace's
+ * project memory, the skills index, the related sessions and the known failures. Same cap and same
+ * envelope as `agentik spawn` (SPAWN_CONTEXT_CAP / SPAWN_CONTEXT_ORIGIN in src/cli.ts — duplicated
+ * as a value, not imported: `cli.ts` imports `loop.ts`, so reading it here would close a cycle).
+ *
+ * Until this existed the whole learning loop of the product — everything `agentik review` writes
+ * after every session — was invisible to `agentik run` itself: only `spawn` and `context` ever
+ * called `buildContext`. A run planned as if the memory were empty.
+ */
+export const RUN_CONTEXT_CAP = 6000;
+export const RUN_CONTEXT_ORIGIN = "agentik:context";
+
+/**
+ * Does the block say anything, or is it four empty headers? Structural: a fact is a `- ` bullet
+ * (a skill, a related session, a known failure) or a non-`(empty)` line inside a memory body — the
+ * bodies are the sections whose header carries the `… chars]` usage suffix. A home with nothing in
+ * it (a fresh profile, every test that passes a temporary home) then costs the planner no envelope
+ * at all instead of 212 chars of "(empty)" it has to read as untrusted data.
+ */
+export function contextHasFacts(block: string): boolean {
+  let inMemoryBody = false;
+  for (const raw of block.split("\n")) {
+    const line = raw.trim();
+    if (!line) {
+      inMemoryBody = false;
+      continue;
+    }
+    if (/ chars\]$/.test(line)) {
+      inMemoryBody = true;
+      continue;
+    }
+    if (line.startsWith("- ")) return true;
+    if (inMemoryBody && line !== "(empty)") return true;
+  }
+  return false;
+}
+
+/**
+ * Built ONCE per run, for the planner only. Never in a trusted position: it is `wrapUntrusted`
+ * DATA like every other retrieved thing, so a memory entry that quotes an injection is a finding,
+ * not an instruction. A failure is one stderr line and `undefined` — a memory that cannot be read
+ * must not kill a run.
+ *
+ * `code: false`: the run renders the repo map as its own `agentik:code` envelope, exactly as spawn
+ * does, so the 6000-char budget is not spent twice on the same map.
+ */
+export async function runContextBlock(goal: string, workspace: string, home: string): Promise<Envelope | undefined> {
+  let block: string;
+  try {
+    block = await buildContext({ goal, workspace, home, code: false });
+  } catch (err) {
+    console.error(`agentik run: could not build context: ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
+  }
+  if (!contextHasFacts(block)) return undefined;
+  const body = block.length > RUN_CONTEXT_CAP ? `${block.slice(0, RUN_CONTEXT_CAP)}…[truncated]` : block;
+  return wrapUntrusted(body, RUN_CONTEXT_ORIGIN, "retrieved");
+}
+
 export interface LoopConfig {
   goal: string;
   workspace: string;
@@ -71,6 +132,13 @@ export interface LoopConfig {
   home?: string;
   /** Refresh the code index once and hand the planner a repo map (default true; no index → nothing). */
   codeIndex?: boolean;
+  /**
+   * Hand the planner the `agentik context` block (memory, skills, related sessions, known
+   * failures) as UNTRUSTED data (default true, in the spirit of `codeIndex`). Requires `home`:
+   * `buildContext` runs the legacy migration and seals a memory file on first sight, so a caller
+   * that named no home — a library user, most tests — must never make it write into `~/.agentik`.
+   */
+  memoryContext?: boolean;
   workerA: Backend;
   workerB: Backend;
   /** Extra subagents (worker_c..e). Combined pool is capped at MAX_SUBAGENTS. */
@@ -428,6 +496,10 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
       ...(result.shaped ? { shaped: result.shaped } : {}),
     });
     if (result.ok) {
+      // Progress: a writing tool that really ran changed the workspace, so the guard's memory of
+      // failures and of identical results is about a world that no longer exists. Taken from the
+      // executor's answer (`result.ok` on a WRITING tool), never from the worker's claim.
+      if (WRITING_TOOLS.has(call.tool)) guard?.progress();
       if (evidence) evidence.executed += 1;
       executed.push({
         tool: call.tool,
@@ -455,9 +527,17 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
     result: TaskResult | undefined,
     guard?: ToolGuard,
   ) => {
-    const gateContext = context.filter((e) => e.trust === "untrusted");
     for (const draft of msg.toolCalls ?? []) {
       if (orch.isStopped()) return;
+      // Recomputed for EVERY call of the batch, not once per message. A message may carry several
+      // independent calls (the act directive asks for exactly that), and each one appends its
+      // output — a retrieved page, a tool result — to `context`. Snapshotting the filter before the
+      // loop meant call #2 was gated against the state before call #1 ran, so an injection the
+      // batch itself pulled in was invisible to the gate until the next model round-trip. Not an
+      // exploitable bypass (the arguments of a batch are written before the model sees any of its
+      // results), but "the gate rescans every untrusted envelope on every call" is the property
+      // this repository claims, and it now holds to the letter.
+      const gateContext = context.filter((e) => e.trust === "untrusted");
       callSeq += 1;
       const call: ToolCall = {
         id: `${role}-${draft.tool}-${callSeq}`,
@@ -671,6 +751,14 @@ export async function runLoop(opts: LoopConfig): Promise<RunReport> {
   // PLAN (skipped on resume: the stored plan is the plan)
   const planner = SUBAGENT_ROLES[0];
   const planContext: Envelope[] = [];
+  // What the product learned about this user, this repository and its past failures — built ONCE
+  // per run, here, and given to the planner only. Task contexts are left alone for the same reason
+  // code hits are (below): the gate rescans every untrusted envelope on every call, so an entry
+  // quoting an injection would refuse the workers of the very repository that stores the fixture.
+  if (opts.memoryContext !== false && opts.home !== undefined && !opts.resume) {
+    const ctx = await runContextBlock(orch.goalText(), opts.workspace, opts.home);
+    if (ctx) planContext.push(ctx);
+  }
   // The planner sees the repo map (paths + exported symbols, never a body line) as DATA. Task
   // contexts do NOT get code hits automatically: the gate rescans every untrusted envelope on
   // every call, and a workspace whose fixtures quote injections would block its own workers.

@@ -74,9 +74,9 @@ describe("shapeOutput — every shaper reduces without hiding a failure", () => 
     const r = shapeOutput(["git", "log", "-3"], raw, "", 0);
     expect(r.shaper).toBe("git-log");
     expect(r.text.split("\n")).toEqual([
-      "f1e0479 review eval: a case whose backend errored never passes",
+      "f1e0479 review eval: a case whose backend errored never passes (+2 body lines)",
       "0db2a21 review: known incidents as DATA in a normal review; eval scores only skill writes that landed",
-      "4157b82 live fixes: a claim without text no longer crashes the report; a throwing review tool is a refusal",
+      "4157b82 live fixes: a claim without text no longer crashes the report; a throwing review tool is a refusal (merge)",
     ]);
     const oneline = "f1e0479 review eval\n0db2a21 review\n";
     const kept = shapeOutput(["git", "log", "--oneline"], oneline, "", 0);
@@ -113,11 +113,18 @@ describe("shapeOutput — every shaper reduces without hiding a failure", () => 
     const lines = r.text.split("\n");
     expect(lines[0]).toBe("src/tools.ts: 2 errors");
     expect(lines[1]).toMatch(/^  L268 error TS2322: Type 'string \| undefined' is not assignable to type 'string'\.$/);
-    expect(lines[2].startsWith("  L271 error TS2741: Property 'raw' is missing")).toBe(true);
-    expect(lines[2].length).toBeLessThanOrEqual(160);
-    expect(lines[2].endsWith("…")).toBe(true);
-    expect(lines[3]).toBe("src/loop.ts: 1 error");
-    expect(lines[4]).toBe("  L318 error TS2339: Property 'shaped' does not exist on type 'ToolResult'.");
+    // the indented rest of TS2322 is the reason, not decoration: kept under its error
+    expect(lines[2]).toBe("    Type 'undefined' is not assignable to type 'string'.");
+    expect(lines[3].startsWith("  L271 error TS2741: Property 'raw' is missing")).toBe(true);
+    expect(lines[3].length).toBeLessThanOrEqual(160);
+    expect(lines[3].endsWith("…")).toBe(true);
+    expect(lines[4]).toBe("src/loop.ts: 1 error");
+    expect(lines[5]).toBe("  L318 error TS2339: Property 'shaped' does not exist on type 'ToolResult'.");
+    expect(r.text).not.toContain("other line");
+    // a diagnostics block is neither an error nor its reason: dropped, and said so
+    const diag = shapeOutput(["tsc", "--noEmit", "--diagnostics"], `${raw}\nFiles:            268\nLines:         120345\nCheck time:     1.42s\nFound 3 errors.\n`, "", 2);
+    expect(diag.text).toContain("Found 3 errors.");
+    expect(diag.text).toContain("…[3 other lines omitted]");
     failureLinesSurvive(raw, r.text);
     expect(SHAPERS.find((s) => s.match(["tsc", "-p", "."]))?.id).toBe("tsc");
   });
@@ -220,5 +227,106 @@ describe("shapeOutput — every shaper reduces without hiding a failure", () => 
     expect(r.savedChars).toBe(raw.length - r.text.length);
     expect(r.text).not.toContain("stderr");
     for (const s of SHAPERS) expect(typeof s.id).toBe("string");
+  });
+});
+
+/**
+ * A shaper that keeps its shape by dropping the body is a lie by omission: the model reads a
+ * short, well-formed answer and believes it saw everything. Measured on this repository before
+ * the fix: `git log -p -2` = 188 609 chars of patch shaped into 689 chars of subject lines.
+ */
+describe("shapeOutput — a shaper never eats a body it cannot summarise", () => {
+  const commit = (hash: string, subject: string, ...rest: string[]) =>
+    [`commit ${hash}`, "Author: Kévin Aubrée <kev@example.com>", "Date:   Tue Sep 1 18:02:11 2026 +0200", "", `    ${subject}`, "", ...rest].join("\n");
+
+  test("git log -p, --stat, --name-only and --graph fall back to the raw output", () => {
+    const patch = commit(
+      "f1e04795b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7",
+      "review eval: a case whose backend errored never passes",
+      "diff --git a/src/review-eval.ts b/src/review-eval.ts",
+      "index 3f2a1b4..9c8d7e6 100644",
+      "--- a/src/review-eval.ts",
+      "+++ b/src/review-eval.ts",
+      "@@ -12,7 +12,7 @@ export async function runReviewEval(",
+      "-  if (!outcome) return { ok: true };",
+      '+  if (!outcome) return { ok: false, reason: "backend threw" };',
+      "",
+    );
+    const p = shapeOutput(["git", "log", "-p", "-1"], patch, "", 0);
+    expect(p.shaper).toBeUndefined();
+    expect(p.text).toBe(patch);
+    expect(p.savedChars).toBe(0);
+    // the diff body is what a worker asked for: every hunk line is still there
+    expect(p.text).toContain('+  if (!outcome) return { ok: false, reason: "backend threw" };');
+
+    const stat = commit("0db2a21c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a", "review: known incidents as DATA", " src/reviewer.ts | 12 ++++++------", " 1 file changed, 6 insertions(+), 6 deletions(-)", "");
+    expect(shapeOutput(["git", "log", "--stat", "-1"], stat, "", 0)).toEqual({ text: stat, savedChars: 0 });
+
+    const names = commit("4157b82d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b", "live fixes", "src/loop.ts", "src/report.ts", "");
+    expect(shapeOutput(["git", "log", "--name-only", "-1"], names, "", 0)).toEqual({ text: names, savedChars: 0 });
+
+    const graph = ["* commit 4157b82d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b", "| Author: Kévin Aubrée <kev@example.com>", "|", "|     live fixes", "|"].join("\n");
+    expect(shapeOutput(["git", "log", "--graph"], graph, "", 0)).toEqual({ text: graph, savedChars: 0 });
+
+    // `git -C dir log -p` reaches the same shaper and must bail the same way
+    expect(shapeOutput(["git", "-C", "/tmp/x", "log", "-p"], patch, "", 0).shaper).toBeUndefined();
+  });
+
+  test("git log without a body still shapes, and says what it dropped (merge, message body)", () => {
+    const raw = [
+      commit("aaaaaaa1111111111111111111111111111111", "subject one", "    a body line", "    another body line", ""),
+      ["commit bbbbbbb2222222222222222222222222222222", "Merge: 78ea8ca ea499e5", "Author: Kévin Aubrée <kev@example.com>", "Date:   Mon Aug 31 22:10:45 2026 +0200", "", "    subject two", ""].join("\n"),
+    ].join("\n");
+    const r = shapeOutput(["git", "log", "-2"], raw, "", 0);
+    expect(r.shaper).toBe("git-log");
+    expect(r.text.split("\n")).toEqual(["aaaaaaa subject one (+2 body lines)", "bbbbbbb subject two (merge)"]);
+  });
+
+  test("git diff: a rename, a new file, a deletion, a mode change and a binary file are annotated, never silently dropped", () => {
+    const rename = ["diff --git a/src/a.ts b/src/b.ts", "similarity index 100%", "rename from src/a.ts", "rename to src/b.ts", "", "diff --git a/logo.png b/logo.png", "index 1111111..2222222 100644", "Binary files a/logo.png and b/logo.png differ", "", "diff --git a/scripts/run.sh b/scripts/run.sh", "old mode 100644", "new mode 100755", "", "diff --git a/docs/old.md b/docs/old.md", "deleted file mode 100644", "index 3333333..0000000", "--- a/docs/old.md", "+++ /dev/null", "@@ -1,2 +0,0 @@", "-one", "-two"].join("\n");
+    const r = shapeOutput(["git", "diff", "-M"], rename, "", 0);
+    expect(r.shaper).toBe("git-diff");
+    // the whole content of a pure rename used to be the bare "### src/b.ts"
+    expect(r.text).toContain("### src/a.ts → src/b.ts (100% similar, renamed)");
+    expect(r.text).toContain("### logo.png (binary, differs)");
+    expect(r.text).toContain("### scripts/run.sh (mode 100644→100755)");
+    expect(r.text).toContain("### docs/old.md (deleted)");
+    expect(r.text).toContain("-one");
+    expect(r.text).not.toContain("index 1111111");
+  });
+
+  test("git diff: a new file keeps its marker and its hunks", async () => {
+    const raw = await fixture("git-diff.txt");
+    const r = shapeOutput(["git", "diff"], raw, "", 0);
+    expect(r.text).toContain("### src/tools.ts\n");
+    expect(r.text).toContain("### src/shape.ts (new file)");
+  });
+
+  test("a test runner announces the lines it neither counted nor kept", async () => {
+    const raw = await fixture("bun-test-fail.txt");
+    const r = shapeOutput(["bun", "test"], raw, "", 1);
+    expect(r.text).toContain("…[1 other line omitted]"); // the `bun test v1.2.19` banner
+    const coverage = ["(pass) a", "(pass) b", "--------|---------|", "File    | % Funcs |", "All     |   91.20 |", " 2 pass", " 0 fail"].join("\n");
+    const c = shapeOutput(["bun", "test", "--coverage"], coverage, "", 0);
+    expect(c.text).toContain("2 passed");
+    expect(c.text).toContain("…[3 other lines omitted]");
+  });
+
+  test("ls -l: the tree keeps the names, and says the metadata is gone", () => {
+    const raw = ["total 8", "drwxr-xr-x  2 kev kev 4096 Sep  2 10:00 .", "-rw-r--r--  1 kev kev  120 Sep  2 10:00 a.txt", "-rw-r--r--  1 kev kev  120 Sep  2 10:00 b.txt", "lrwxrwxrwx  1 kev kev    5 Sep  2 10:00 c -> a.txt"].join("\n");
+    const r = shapeOutput(["ls", "-la"], raw, "", 0);
+    expect(r.shaper).toBe("list");
+    expect(r.text).toContain("…[long format: mode, owner, size, date and link target omitted]");
+    // a plain listing drops nothing, so it says nothing
+    const plain = shapeOutput(["find", "."], Array.from({ length: 12 }, (_, i) => `src/f${i}.ts`).join("\n"), "", 0);
+    expect(plain.text).not.toContain("long format");
+  });
+
+  test("git status: git's own `(use \"git add …\")` hints are noise and are not counted; anything else is announced", async () => {
+    const raw = await fixture("git-status.txt");
+    const r = shapeOutput(["git", "status"], raw, "", 0);
+    expect(r.text).not.toContain("other line");
+    const stashed = `${raw}\nYour stash currently has 2 entries\n`;
+    expect(shapeOutput(["git", "status"], stashed, "", 0).text).toContain("…[1 other line omitted]");
   });
 });

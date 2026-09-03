@@ -13,6 +13,14 @@ import type { ToolCall } from "./types.ts";
  *     reaches `after`, so without this a task whose first three calls were refused identically
  *     (seen live: `pattern` instead of `query`) could never run its corrected call — every
  *     later call was refused with no_progress for the rest of the task.
+ *
+ * Both counters are about a WORLD THAT DID NOT MOVE, so both are re-armed by `progress()`: a
+ * writing tool that succeeded changed the workspace, and `bun test` failing three times before
+ * the fix says nothing about `bun test` after it. Without this the guard was monotone for the
+ * whole task — the natural shape of a fix (run the check, see it red, write the file, run the
+ * check again) hit `repeated_failing_call` on the very call that would have proved the fix.
+ * The loop decides what counts as progress (`WRITING_TOOLS` in src/loop.ts); the guard only
+ * counts, exactly as it takes its failures from what happened and not from the worker's prose.
  */
 
 export const REPEAT_WARN_AT = 2;
@@ -72,5 +80,16 @@ export class ToolGuard {
     else this.failures.set(h, (this.failures.get(h) ?? 0) + 1);
     this.recentResults.push({ call: h, result: resultHash(`${ok ? "ok" : "fail"}\n${output}`) });
     if (this.recentResults.length > NO_PROGRESS_AT) this.recentResults.shift();
+  }
+
+  /**
+   * The world moved: forget every failure and every repeated result. Called by the loop after a
+   * writing tool succeeded (see `WRITING_TOOLS`), never inferred from prose. Idempotent, and safe
+   * to call on a guard that has counted nothing.
+   */
+  progress(): void {
+    this.failures.clear();
+    this.recentResults.length = 0;
+    this.lastWarnedFor = undefined;
   }
 }
