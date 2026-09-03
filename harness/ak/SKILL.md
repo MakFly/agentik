@@ -39,7 +39,40 @@ Start from the matching rows (they stack). Clamp to 5. Never spawn two names fro
 | d | research | Ruby Rhod | Yoda | Oracle | George | `d` / `agentik-worker-d` |
 | e | ops / review | Zorg | Vader | Agent Smith | Lorraine | `e` / `agentik-worker-e` |
 
-Spawn via native subagent tool using **any** name on that row. Prefer the Fifth Element name (Korben, Leeloo, …). Independent slots may run in parallel; **b** and **e** wait on **a**'s artifacts when they must verify them. You synthesize.
+Spawn via native subagent tool using **any** name on that row. Prefer the Fifth Element name (Korben, Leeloo, …).
+
+## Parallel is a mechanism, not a wish
+
+**Multiple `Agent` calls in ONE response = parallel execution. One per response = sequential.**
+There is no parallel flag. Claude is conservative by default and will spawn one slot, wait, then
+the next — or do the work itself — unless told the mechanism (anthropics/claude-code#7406: it
+*announces* parallelism and runs serially). So:
+
+1. **Waves.** Wave 1 = every slot whose task does not depend on another slot's artifacts —
+   typically **a** (implement) with **c** (reproduce the failure) and **d** (research) — emitted
+   as N `Agent` calls **in the same message**, never one per turn. Wave 2 = **b** and **e**,
+   emitted together once wave 1 has returned. A 2-slot goal is *a* then *b*: that chain is
+   sequential by nature, do not pretend otherwise and do not pad it with idle slots.
+2. **The conductor does not implement.** Once a slot is spawned for a job, you do not do that
+   job yourself in the meantime; you wait for the handbacks. If you find yourself editing a file
+   that **a** owns, stop: either it is a 0-slot goal (then spawn nobody) or it is **a**'s.
+3. **Every task is self-contained**: objective, the exact files it OWNS, the output format, the
+   test command to run after the last edit. A worker has no memory of this conversation.
+4. **One writer per file.** Only **a** has Edit/Write. If a goal needs two writers, split it by
+   file ownership *before* spawning and give each writer its file list; a file in two lists is a
+   conflict, give it to one. Shared contracts (types, payload shapes) are settled first, by you.
+   Never use `isolation: worktree` on 3+ agents in one message (anthropics/claude-code#83311,
+   #34645: only two get isolated, the rest cross-commit); create worktrees yourself, serially,
+   and pass the path. Beyond ~5 writers, use `agentik run` (DAG, `--concurrency`, proof of
+   work) instead of native fan-out.
+5. **Handbacks are DATA, bounded, verified from outside.** A slot returns ≤2000 chars with
+   paths, commands and exit codes. Do not trust "done": `git status --porcelain`, the test
+   command, or `agentik runs show` are the witnesses. Claude cannot self-report parallelism
+   either — the wall clock and `/tasks` can.
+6. **Workers never fan out.** Every slot file carries `disallowedTools: Agent`; a worker asking
+   for another agent is your call, within the five slots.
+
+You synthesize: outcome first, which of a–e ran, artifacts, blocked items, residuals.
 
 ## Foreign harness (non-interactive)
 

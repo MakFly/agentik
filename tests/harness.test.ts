@@ -131,6 +131,51 @@ describe("harness sources (repository files only — no machine state)", () => {
     }
   });
 
+  test("the 20 themed agent files are generated from the 5 canonical slots (no drift)", async () => {
+    const { expectedThemed } = await import("../harness/sync-agents.ts");
+    const themed = expectedThemed();
+    expect(themed.length).toBe(20);
+    for (const { file, content } of themed) {
+      expect(readFileSync(join(agentsDir, file), "utf8") === content ? "ok" : `stale: ${file} (run bun harness/sync-agents.ts)`).toBe("ok");
+    }
+    const p = Bun.spawn(["bun", join(root, "harness/sync-agents.ts"), "--check"], { stdout: "pipe", stderr: "pipe" });
+    expect(await p.exited).toBe(0);
+  });
+
+  test("every worker file forbids fan-out and bounds its handback; only slot a can write", () => {
+    for (const role of SUBAGENT_ROLES) {
+      const letter = role.slice(-1);
+      const body = readFileSync(join(agentsDir, `agentik-worker-${letter}.md`), "utf8");
+      expect(body).toContain("disallowedTools: Agent");
+      expect(body).toContain("## Handback");
+      expect(body).toContain("2000 characters");
+      const tools = body.match(/^tools: (.*)$/m)![1];
+      if (role === "worker_a") {
+        expect(tools).toContain("Edit");
+        expect(body).toContain("File ownership");
+      } else {
+        expect(tools).not.toContain("Edit");
+        expect(tools).not.toContain("Write");
+      }
+    }
+  });
+
+  test("the conductor prompts state the parallel MECHANISM (one message = parallel), not a wish", () => {
+    for (const file of [akSkill, skill, grokRuleSrc]) {
+      const body = readFileSync(file, "utf8");
+      expect(body).toMatch(/one response = parallel|ONE response = parallel|one response = sequential|per response = sequential/i);
+      expect(body).toMatch(/same message/);
+      expect(body).toMatch(/does not\s+implement|do not\s+implement/);
+      expect(body).toMatch(/one writer per file|only slot a edits|only \*\*a\*\* edits/i);
+    }
+    const ak = readFileSync(akSkill, "utf8");
+    expect(ak).toContain("disallowedTools: Agent");
+    expect(ak).toContain("isolation: worktree");
+    expect(ak).not.toContain("Default **2**");
+    expect(readFileSync(skill, "utf8")).not.toContain("Default **2**");
+    expect(readFileSync(grokRuleSrc, "utf8")).not.toContain("Default **2**");
+  });
+
   test("the grok rule (installed at ~/.grok/rules/agentik.md) points at agentik", () => {
     const body = readFileSync(grokRuleSrc, "utf8");
     for (const term of [

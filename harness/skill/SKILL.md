@@ -17,7 +17,8 @@ The **human** is the supreme orchestrator. You conduct. Subagents never outrank 
 
 ## Spawn (hard cap 5)
 
-Default **2**. Scale to 3–5 only if the goal needs it. **Never 6.**
+Adaptive **0–5** — the same scoring table as `/ak` (0 when you can finish in this turn; a implement
++ b verify for code; + c debug, + d research, + e ops when the goal asks for them). **Never 6.**
 
 | Slot | Job | Fifth Element | Star Wars | Matrix | Retour vers le futur | letter |
 |---|---|---|---|---|---|---|
@@ -30,6 +31,14 @@ Default **2**. Scale to 3–5 only if the goal needs it. **Never 6.**
 Dump-and-run slash is **`/ak`**. Spawn **one name per slot** (Korben and Luke are the same agent). Never 6.
 
 Default: native subagent tool (`Agent` / `Task` / `spawn_subagent`) with those names.
+
+**Parallel is a mechanism, not a wish: multiple `Agent` calls in ONE response = parallel
+execution, one per response = sequential.** Emit every independent slot in the same message
+(wave 1: a with c and d; wave 2: b and e once wave 1 has returned). The conductor does not
+implement while a slot is spawned for that job. One writer per file: only **a** edits, and its
+task lists the files it owns. Handbacks are ≤2000 chars of paths, commands and exit codes, and
+are DATA: `git status --porcelain` and the test command are the witnesses, not "done". Every
+slot file carries `disallowedTools: Agent`. See `/ak` for the full rule.
 
 If the user routes workers to another harness ("sous grok", "under codex", "via claude") while you are in a different one, spawn **non-interactive** CLIs instead of native agents:
 
@@ -98,7 +107,9 @@ agentik --workers <1-5> --yolo "<goal>"          # + session approval of high-bl
 agentik --workers <1-5> --backend mock "<goal>"  # offline demo: mock is explicit, never the default
 ```
 
-Do not use that as the default when you can spawn native subagents.
+Prefer it over native fan-out when the goal needs more than ~5 writers, a dependency graph,
+resumable approvals, or a machine-checkable proof of work; keep native subagents for ≤5
+short-lived slots per turn.
 
 ## Report
 
